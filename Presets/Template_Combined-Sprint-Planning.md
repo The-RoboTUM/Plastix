@@ -1,4 +1,6 @@
 # PlastiX - Connection Platform - Sprint 2 Planning
+
+## Duration
 > **Duration**: ?? - ??
 
 ## Availability
