@@ -1,4 +1,4 @@
-# PlastiX - Combined Sprint 2 Planning
+# PlastiX - Team Sprint 2 Planning
 
 ## Duration
 > **Duration**: ?? - ??
