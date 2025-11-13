@@ -4,13 +4,13 @@
 > **Duration**: ?? - ??
 
 ## Availability
-| **Connection Platform** |          | **Drone**  |          | **Robot Small** |          | **Robot Large** |          | **Ship**   |          |
+| **Octopus**             |          | **EVE**    |          | **Robby**       |          | **GripperX**    |          | **SharkX** |          |
 |-------------------------|----------|------------|----------|-----------------|----------|-----------------|----------|------------|----------|
 | **Person**              | **Time** | **Person** | **Time** | **Person**      | **Time** | **Person**      | **Time** | **Person** | **Time** |
-| Person 1                | ??       | Person 1   | ??       | Person 1        | ??       | Person 1        | ??       | Person 1   | ??       |
-| Person 2                | ??       | Person 2   | ??       | Person 2        | ??       | Person 2        | ??       | Person 2   | ??       |
-| Person 3                | ??       | Person 3   | ??       | Person 3        | ??       | Person 3        | ??       | Person 3   | ??       |
-| Person 4                | ??       | Person 4   | ??       | Person 4        | ??       | Person 4        | ??       | Person 4   | ??       |
+| Person 1                | ??       | Jan        | ??       | Person 1        | ??       | Person 1        | ??       | Person 1   | ??       |
+| Person 2                | ??       | Lina       | ??       | Person 2        | ??       | Person 2        | ??       | Person 2   | ??       |
+| Person 3                | ??       | Hoon       | ??       | Person 3        | ??       | Person 3        | ??       | Person 3   | ??       |
+| Person 4                | ??       | Andrei     | ??       | Person 4        | ??       | Person 4        | ??       | Person 4   | ??       |
 
 
 ## General Feedback
