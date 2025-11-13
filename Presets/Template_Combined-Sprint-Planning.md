@@ -4,7 +4,7 @@
 > **Duration**: ?? - ??
 
 ## Availability
-| **Connection Platform** |          | **EVE**    |          | **Robot Small** |          | **Robot Large** |          | **Ship**   |          |
+| **Octopus**             |          | **EVE**    |          | **Robby**       |          | **GripperX**    |          | **SharkX** |          |
 |-------------------------|----------|------------|----------|-----------------|----------|-----------------|----------|------------|----------|
 | **Person**              | **Time** | **Person** | **Time** | **Person**      | **Time** | **Person**      | **Time** | **Person** | **Time** |
 | Person 1                | ??       | Jan        | ??       | Person 1        | ??       | Person 1        | ??       | Person 1   | ??       |
