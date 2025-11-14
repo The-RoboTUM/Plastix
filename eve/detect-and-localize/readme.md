@@ -2,7 +2,7 @@ Instructions:
 
 running the code from terminal
 1. change directory to plastix_codebase folder
-    open an new terminal window (for example window powershell).
+    open an new terminal window (for example windows powershell).
     use `cd path/to/plastix_codebase` 
     
 2. start a new virtual enviornment (optional)
