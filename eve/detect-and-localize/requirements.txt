@@ -1,0 +1,5 @@
+# Core
+numpy>=1.25.0
+opencv-python>=4.9.0.80
+ultralytics>=8.2.0
+pupil-apriltags>=1.0.4
