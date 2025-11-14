@@ -27,7 +27,7 @@ running the code from terminal
     if you want to try a live video you can use the `--preset engineering_5` which uses the built in laptop camera
     you can always override individual arguments, or use your own arguments example: `--preset default --model yolov8n.pt`
 
-6. closing and deactivating
+6. closing and deactivating  
     `Q` to close the window (video and opencv)  
     `deactivate` to deactivate the virtual enviornment  
 
