@@ -10,40 +10,33 @@
 | Yaman                   |    10    |
 | Henry                   | 10       |
 | Florian                 | 10       |
- Mariacelest				10
+|  Mariacelest			  |	10       |
 
 
 ## Sprint Planning
 
 - CAD:
 	- [ ] Robot chassi base concept (must hold the arm and the vaccum system)
-- [ ] Research the Suspnsion option and integhrate it int our concept of the robot base  
-- [ ] Electronis Box (Dimensions, Design)
-- [ ] 
-- [ ]
+	- [ ] Research the Suspnsion option and integhrate it int our concept of the robot base  
+	- [ ] Electronis Box (Dimensions, Design)
 
 - Hardware & Electronis
 	- [ ] Reconsider the drivtrain solution and think about Mariascelests idea and the one from Robby and finalalize the system 
 	- [ ] Research Batterie Options based on consumtion 
-	- [ ]	Reaserch all the sensors and exact models 	
-	- [ ]	Research arm electronics ans needed componnents	
-	- [ ]	Reserach Gripper Components and which one we are using (tentacale gripper)
-	- [ ] 
-	- [ ]
-	- [ ]
+	- [ ]Reaserch all the sensors and exact models 	
+	- [ ]Research arm electronics ans needed componnents	
+	- [ ]Reserach Gripper Components and which one we are using (tentacale gripper)
 
 - Software
 	- [ ] programm to controll the robot manually 
 	- [ ]  setup raspberry to control the motors by inputs
-	- [ ] 
 
 - Simulation
 	- [ ] setup URDF Model (Henry)
 	- [ ] simulation of electronics (Altium)
+
 - Documentation
 	- [ ] all reaserch progress 
-	- [ ] 
-	- [ ]
 
 ## Sprint Retrospective
 
