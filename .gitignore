@@ -1,0 +1,73 @@
+# Build directories (COLCON)
+build/
+install/
+log/
+
+# ROS build files
+*_ws/
+.devel/
+.catkin/
+
+# Python
+__pycache__/
+*.py[cod]
+*.so
+*.egg-info/
+.pytest_cache/
+
+# C/C++
+*.o
+*.a
+*.la
+*.lo
+*.so
+*.so.*
+*.dylib
+*.dll
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.project
+.cproject
+.settings/
+
+# System files
+.DS_Store
+Thumbs.db
+*.orig
+*.rej
+
+# Logs and databases
+*.log
+*.sql
+*.sqlite
+
+# Coverage
+.coverage
+htmlcov/
+
+# Documentation
+docs/_build/
+
+# Temporary files
+temp/
+tmp/
+
+# Package-specific ignores
+# local.yml
+# params/local.yaml
