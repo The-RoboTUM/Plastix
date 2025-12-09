@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'robby_control'
+package_name = 'robby_communication'
 
 setup(
     name=package_name,
@@ -24,7 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            "robby_brain = robby_control.robby_brain:main"
+            "test_gps_dispatcher = robby_communication.test_gps_dispatcher:main"
         ],
     },
 )
