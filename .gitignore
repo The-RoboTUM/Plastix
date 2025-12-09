@@ -4,6 +4,7 @@ install/
 log/
 
 # ROS build files
+*_ws/
 .devel/
 .catkin/
 
