@@ -3,6 +3,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import String
 from collections import deque
+from time import sleep
+from robby_common.robby_common.enums import Signal, State
 
 """
 The brain is a state machine that has four states: Idle, Navigation, Recognition, Collection
@@ -16,21 +18,6 @@ Functions needed:
 3. A state changer based on signals received
 """
 
-class State():
-    IDLE = "IDLE"
-    NAVIGATION = "NAVIGATION"
-    RECOGNITION = "RECOGNITION"
-    COLLECTION = "COLLECTION"
-
-class Signal():
-    NEW_LOCATION = "NEW_LOCATION"
-    ARRIVED = "ARRIVED"
-    RECOGNIZED = "RECOGNIZED"
-    COLLECTED = "COLLECTED"
-    FAILED_NAVIGATION = "FAILED_NAVIGATION"
-    FAILED_RECOGNITION = "FAILED_RECOGNITION"
-    HALT = "HALT"
-
 class Brain(Node):
 
     def __init__(self):
@@ -42,25 +29,19 @@ class Brain(Node):
         self.current_target = None
 
         #Publishers
-        self.state_publisher = self.create_publisher(String, "robby_state_", 10)
-        self.target_publisher = self.create_publisher(NavSatFix, "robby_target_", 10)
-        self.signal_publisher = self.create_publisher(String, "robby_update_", 10)
+        self.state_publisher = self.create_publisher(String, "robby_state", 10)
+        self.translate_publisher = self.create_publisher(NavSatFix, "robby_translate", 10)
 
         #Subscribers
-        self.new_location_subscriber = self.create_subscription(NavSatFix, "robby_new_location_", self.new_location_callback, 10)
-        self.signal_subscriber = self.create_subscription(String, "robby_update_", self.signal_handler, 10)
-
-        #Timers
-        self.target_dispatch_timer = self.create_timer(1., self.target_dispatcher)
+        self.new_location_subscriber = self.create_subscription(NavSatFix, "robby_new_location", self.new_location_callback, 10)
+        self.signal_subscriber = self.create_subscription(String, "robby_signal", self.signal_handler, 10)
 
     #Signal handler
     def signal_handler(self, signal : str):
         match signal:
+            #TODO
             case Signal.HALT:
                 pass
-            case Signal.NEW_LOCATION:
-                self.state = State.NAVIGATION
-                self.get_logger().info(f"New target: {self.current_target}")
             case Signal.ARRIVED:
                 self.state = State.RECOGNITION
                 self.get_logger().info("Arrived at target location")
@@ -70,28 +51,32 @@ class Brain(Node):
             case Signal.COLLECTED:
                 self.state = State.IDLE
                 self.get_logger().info("Collected trash")
+                self.current_target = None
             case Signal.FAILED_NAVIGATION | Signal.FAILED_RECOGNITION:
                 self.state = State.IDLE
                 self.get_logger().info(f"Failed with: {signal}")
+                self.current_target = None
+        self.state_publisher.publish(self.state)
 
-    #Dispatcher function on a timer (this won't be on a timer on the final version)
+    #Dispatcher function
     def target_dispatcher(self):
-        if len(self.locations) != 0 and self.state == State.IDLE:
-            gps = self.locations.popleft()
-            self.current_target = gps
-            self.target_publisher.publish(gps)
+        if len(self.locations) != 0 and self.current_target == None:
+            target = self.locations.popleft()
+            self.current_target = target
+            self.translate_publisher.publish(target)
 
-            signal = String()
-            signal.data = Signal.NEW_LOCATION
-            self.signal_publisher.publish(signal)
-            
-            self.signal_handler(Signal.NEW_LOCATION)
+            #Sleeping is here to give localizer enough time for translation just in case this can be removed
+            sleep(0.01)
+
+            self.state = State.NAVIGATION
+            self.get_logger().info(f"New target: {self.current_target}")
+            self.state_publisher.publish(self.state)
 
     #Callback to add new locations to queue
     def new_location_callback(self, gps : NavSatFix):
         self.locations.append(gps)
         self.get_logger().info(f"Received new location: {gps}")
-
+        self.target_dispatcher()
 
 def main(args = None):
     rclpy.init()

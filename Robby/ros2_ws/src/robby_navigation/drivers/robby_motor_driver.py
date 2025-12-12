@@ -8,7 +8,7 @@ class Motor_Driver(Node):
     def __init__(self, left_pins, right_pins):
         super().__init__("robby_motor_driver")
 
-        #Variables
+        #Variable
         self.robot = Robot(left_pins, right_pins)
 
         #Subscriber

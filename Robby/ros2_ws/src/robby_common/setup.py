@@ -1,6 +1,6 @@
 from setuptools import find_packages, setup
 
-package_name = 'robby_navigation'
+package_name = 'robby_common'
 
 setup(
     name=package_name,
@@ -24,8 +24,6 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            "robby_motor_driver = drivers.robby_motor_driver:main",
-            "robby_sensor_driver = drivers.robby_sensor_driver:main"
         ],
     },
 )
