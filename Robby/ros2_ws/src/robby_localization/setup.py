@@ -24,6 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
+            "robby_localizer = robby_localization.robby_localizer:main"
         ],
     },
 )

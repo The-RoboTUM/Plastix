@@ -26,6 +26,7 @@ setup(
         'console_scripts': [
             "robby_motor_driver = drivers.robby_motor_driver:main",
             "robby_sensor_driver = drivers.robby_sensor_driver:main"
+            "robby_navigator = robby_navigation.robby_navigator:main"
         ],
     },
 )
