@@ -4,7 +4,7 @@ from sensor_msgs.msg import NavSatFix
 from std_msgs.msg import String
 from collections import deque
 from time import sleep
-from robby_common.robby_common.enums import Signal, State
+from robby_common.enums import Signal, State
 
 """
 The brain is a state machine that has four states: Idle, Navigation, Recognition, Collection

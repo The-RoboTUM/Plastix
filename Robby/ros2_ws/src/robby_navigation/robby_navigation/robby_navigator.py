@@ -3,7 +3,7 @@ from rclpy.node import Node
 from geometry_msgs.msg import Pose
 from geometry_msgs.msg import Twist
 from std_msgs.msg import String, Bool, Float32MultiArray
-from robby_common.robby_common.enums import Signal, State
+from robby_common.enums import Signal, State
 
 """
 The navgigator is responsible for the following:
@@ -21,6 +21,8 @@ class Navigator(Node):
 
         #Variables
         self.state = State.IDLE
+        
+        #VARIABLES TO STORE DATA FROM SUBSCRIBERS NOT IMPLEMENTED
 
         #Publishers
         self.signal_publisher = self.create_publisher(String, "robby_signal", 10)
@@ -29,16 +31,28 @@ class Navigator(Node):
 
         #Subscribers
         self.state_subscriber = self.create_subscription(String, "robby_state", self.state_callback, 10)
-        self.pose_subscriber = self.create_subscription(Pose, "robby_pose", None, 10)
-        self.target_pose_subscriber = self.create_subscription(Pose, "robby_target_pose", None, 10)
-        self.sensor_data_subscriber = self.create_subscription(Float32MultiArray, "robby_sensor_data", None, 10)
+        self.pose_subscriber = self.create_subscription(Pose, "robby_pose", self.pose_callback, 10)
+        self.target_pose_subscriber = self.create_subscription(Pose, "robby_target_pose", self.target_pose_callback, 10)
+        self.sensor_data_subscriber = self.create_subscription(Float32MultiArray, "robby_sensor_data", self.sensor_callback, 10)
         #This subscription is fully a template even the msg type can change
-        self.trash_pose_subscriber = self.create_subscription(Pose, "robby_trash_pose", None, 10)
+        self.trash_pose_subscriber = self.create_subscription(Pose, "robby_trash_pose", self.trash_pose_callback, 10)
 
         #Timer
         self.run_timer = self.create_timer(0.0001, self.run)
 
-    def state_callback(self):
+    def state_callback(self, msg):
+        pass
+
+    def pose_callback(self, msg):
+        pass
+    
+    def target_pose_callback(self, msg):
+        pass
+
+    def sensor_callback(self, msg):
+        pass
+
+    def trash_pose_callback(self, msg):
         pass
 
     #Main function of navigator, will act according to current state
