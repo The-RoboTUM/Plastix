@@ -1,0 +1,10 @@
+# LocationQuery.srv
+# Query location database
+
+float64 radius
+float64 lat
+float64 lon
+---
+Location[] locations
+bool success
+

@@ -1,0 +1,12 @@
+# ExecuteTask.action
+# Long-running task execution
+
+string task_id
+geometry_msgs/Point target_location
+---
+bool success
+string result_message
+---
+float32 progress
+string status_message
+

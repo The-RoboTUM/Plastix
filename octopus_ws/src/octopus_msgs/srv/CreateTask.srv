@@ -1,0 +1,9 @@
+# CreateTask.srv
+# Create a new task in database
+
+string task_type
+geometry_msgs/Point location
+---
+string task_id
+bool success
+

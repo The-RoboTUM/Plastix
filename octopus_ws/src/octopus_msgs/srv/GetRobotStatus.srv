@@ -1,0 +1,8 @@
+# GetRobotStatus.srv
+# Request robot status
+
+string robot_name
+---
+RobotStatus status
+bool success
+
