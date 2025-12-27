@@ -1,0 +1,53 @@
+from launch import LaunchDescription
+from launch.actions import DeclareLaunchArgument
+from launch.conditions import IfCondition
+from launch.substitutions import Command, LaunchConfiguration, PathJoinSubstitution
+from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
+from ament_index_python.packages import get_package_share_directory
+
+def generate_launch_description():
+    pkg = get_package_share_directory('view_robot_pkg')
+
+    use_gui = DeclareLaunchArgument(
+        'use_gui',
+        default_value='true',
+        description='Use joint_state_publisher_gui to move joints'
+    )
+
+    urdf_file = PathJoinSubstitution([pkg, 'urdf', 'v2_full_suspension_rigid.urdf'])
+    robot_description = Command(['cat ', urdf_file])
+
+    jsp_gui = Node(
+        condition=IfCondition(LaunchConfiguration('use_gui')),
+        package='joint_state_publisher_gui',
+        executable='joint_state_publisher_gui',
+        name='joint_state_publisher_gui',
+        parameters=[{'rate': 30.0}],
+        emulate_tty=True
+    )
+
+    rsp = Node(
+        package='robot_state_publisher',
+        executable='robot_state_publisher',
+        name='robot_state_publisher',
+        parameters=[{
+            'robot_description': ParameterValue(robot_description, value_type=str)
+        }],
+        output='screen'
+    )
+
+    rviz = Node(
+        package='rviz2',
+        executable='rviz2',
+        name='rviz2',
+        arguments=['-d', PathJoinSubstitution([pkg, 'rviz', 'default_view.rviz'])],
+        output='screen'
+    )
+
+    return LaunchDescription([
+        use_gui,
+        jsp_gui,
+        rsp,
+        rviz
+    ])

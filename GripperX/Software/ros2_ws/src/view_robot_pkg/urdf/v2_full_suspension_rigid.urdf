@@ -1,0 +1,259 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- This URDF was automatically created by SolidWorks to URDF Exporter! Originally created by Stephen Brawner (brawner@gmail.com) 
+     Commit Version: 1.6.0-4-g7f85cfe  Build Version: 1.6.7995.38578
+     For more information, please see http://wiki.ros.org/sw_urdf_exporter -->
+<robot
+  name="Drive System Assembly v2">
+  <link
+    name="base_link">
+    <inertial>
+      <origin
+        xyz="-0.035467 0.085284 0.019884"
+        rpy="0 0 0" />
+      <mass
+        value="3.7675" />
+      <inertia
+        ixx="0.027746"
+        ixy="1.4687E-07"
+        ixz="1.0053E-11"
+        iyy="0.041627"
+        iyz="1.6432E-08"
+        izz="0.055296" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://view_robot_pkg/meshes/v2_full_suspension_rigid/base_link.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.75294 0.75294 0.75294 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://view_robot_pkg/meshes/v2_full_suspension_rigid/base_link.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <link
+    name="front_left_wheel">
+    <inertial>
+      <origin
+        xyz="0 -0.017483 1.1919E-05"
+        rpy="0 0 0" />
+      <mass
+        value="0.95445" />
+      <inertia
+        ixx="0.0018999"
+        ixy="-4.2455E-21"
+        ixz="-5.2948E-20"
+        iyy="0.003172"
+        iyz="-1.4933E-16"
+        izz="0.0018999" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://view_robot_pkg/meshes/v2_full_suspension_rigid/front_left_wheel.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://view_robot_pkg/meshes/v2_full_suspension_rigid/front_left_wheel.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="front_left_wheel"
+    type="continuous">
+    <origin
+      xyz="0.14 0.35409 -0.034361"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="front_left_wheel" />
+    <axis
+      xyz="0 1 0" />
+  </joint>
+  <link
+    name="rear_left_wheel">
+    <inertial>
+      <origin
+        xyz="-2.7756E-17 -0.0175 3.1225E-17"
+        rpy="0 0 0" />
+      <mass
+        value="0.95445" />
+      <inertia
+        ixx="0.0018999"
+        ixy="6.1259E-20"
+        ixz="2.4263E-19"
+        iyy="0.003172"
+        iyz="-2.1835E-18"
+        izz="0.0018999" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://view_robot_pkg/meshes/v2_full_suspension_rigid/rear_left_wheel.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.79216 0.81961 0.93333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://view_robot_pkg/meshes/v2_full_suspension_rigid/rear_left_wheel.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rear_left_wheel"
+    type="continuous">
+    <origin
+      xyz="-0.14 0.35413 -0.034332"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="rear_left_wheel" />
+    <axis
+      xyz="0 1 0" />
+  </joint>
+  <link
+    name="front_right_wheel">
+    <inertial>
+      <origin
+        xyz="2.77555756156289E-17 0.0175000000000001 9.71445146547012E-17"
+        rpy="0 0 0" />
+      <mass
+        value="0.954447374493125" />
+      <inertia
+        ixx="0.00189991308956925"
+        ixy="-7.97064002101643E-20"
+        ixz="-1.95480907695151E-19"
+        iyy="0.00317195920576368"
+        iyz="6.55435139182759E-18"
+        izz="0.00189991308956925" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://view_robot_pkg/meshes/v2_full_suspension_rigid/front_right_wheel.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://view_robot_pkg/meshes/v2_full_suspension_rigid/front_right_wheel.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="front_right_wheel"
+    type="continuous">
+    <origin
+      xyz="0.14 -0.35409 -0.034361"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="front_right_wheel" />
+    <axis
+      xyz="0 1 0" />
+  </joint>
+  <link
+    name="rear_right_wheel">
+    <inertial>
+      <origin
+        xyz="2.77555756156289E-17 0.0175 9.36750677027476E-17"
+        rpy="0 0 0" />
+      <mass
+        value="0.954447374493125" />
+      <inertia
+        ixx="0.00189991308956925"
+        ixy="-7.12029724594505E-20"
+        ixz="-1.44743992785326E-19"
+        iyy="0.00317195920576368"
+        iyz="6.53982076104718E-18"
+        izz="0.00189991308956925" />
+    </inertial>
+    <visual>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://view_robot_pkg/meshes/v2_full_suspension_rigid/rear_right_wheel.STL" />
+      </geometry>
+      <material
+        name="">
+        <color
+          rgba="0.792156862745098 0.819607843137255 0.933333333333333 1" />
+      </material>
+    </visual>
+    <collision>
+      <origin
+        xyz="0 0 0"
+        rpy="0 0 0" />
+      <geometry>
+        <mesh
+          filename="package://view_robot_pkg/meshes/v2_full_suspension_rigid/rear_right_wheel.STL" />
+      </geometry>
+    </collision>
+  </link>
+  <joint
+    name="rear_right_wheel"
+    type="continuous">
+    <origin
+      xyz="-0.14 -0.35411 -0.034349"
+      rpy="0 0 0" />
+    <parent
+      link="base_link" />
+    <child
+      link="rear_right_wheel" />
+    <axis
+      xyz="0 1 0" />
+  </joint>
+</robot>
