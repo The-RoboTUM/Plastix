@@ -1,0 +1,51 @@
+<?xml version="1.0" ?>
+<sdf version="1.6">
+
+  <model name="human_proxy_moving">
+    <static>false</static>
+
+    <link name="link">
+      <inertial>
+        <mass>60</mass>
+        <inertia>
+          <ixx>1.0</ixx>
+          <ixy>0.0</ixy>
+          <ixz>0.0</ixz>
+          <iyy>1.0</iyy>
+          <iyz>0.0</iyz>
+          <izz>1.0</izz>
+        </inertia>
+      </inertial>
+
+      <visual name="visual">
+        <geometry>
+          <cylinder>
+            <radius>0.22</radius>
+            <length>1.7</length>
+          </cylinder>
+        </geometry>
+        <material>
+          <ambient>0.2 0.2 0.8 1</ambient>
+        </material>
+      </visual>
+
+      <collision name="collision">
+        <geometry>
+          <cylinder>
+            <radius>0.22</radius>
+            <length>1.7</length>
+          </cylinder>
+        </geometry>
+      </collision>
+    </link>
+
+    
+    <plugin name="planar_move" filename="libgazebo_ros_planar_move.so">
+      <robotNamespace>/</robotNamespace>
+      <x_vel>0.5</x_vel>
+      <y_vel>0.0</y_vel>
+      <yaw_vel>0.0</yaw_vel>
+    </plugin>
+   
+  </model>
+</sdf>

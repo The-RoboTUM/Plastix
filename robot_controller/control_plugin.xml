@@ -1,0 +1,8 @@
+<!-- Copied and adapted from diff_drive_controller (https://github.com/ros-controls/ros2_controllers) -->
+<library path="robot_controller">
+  <class name="robot_controller_interface/RobotControllerInterface" type="robot_controller_interface::RobotControllerInterface" base_class_type="controller_interface::ControllerInterface">
+  <description>
+    Plugin para controller 
+  </description>
+  </class>
+</library>

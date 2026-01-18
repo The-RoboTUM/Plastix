@@ -1,0 +1,188 @@
+<?xml version="1.0"?>
+<robot name="robot" xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+<xacro:include filename="$(find robot_description)/urdf/robot_gazebo.urdf.xacro"/>
+<xacro:include filename="$(find robot_description)/urdf/robot_ros_control.xacro"/>
+
+  <!-- parameters  -->
+  <xacro:property name="wheel_radius" value="0.1"/>
+  <xacro:property name="wheel_width" value="0.05"/>
+  <xacro:property name="width" value="0.4"/>   
+  <xacro:property name="large" value="0.6"/> 
+  <xacro:property name="tall" value="0.1"/> 
+  <xacro:property name="a" value="0.45"/> 
+  
+
+  <material name="blue">
+    <color rgba="0 0 0.8 1"/>
+  </material>
+  <material name="black">
+    <color rgba="0 0 0 1"/>
+  </material>
+  <material name="white">
+    <color rgba="1 1 1 1"/>
+  </material>
+
+
+  <!-- base link-->
+  <link name="base_link"/>
+
+  <!-- body link-->
+  <link name="body_link">
+
+    <visual>
+      <geometry>
+        <box size="${large} ${width} ${tall}"/>
+      </geometry>bl_wheel
+      <origin xyz="0 0 0"/>
+      <material name="blue"/>
+    </visual>
+
+    <collision>
+      <geometry>
+        <box size="${large} ${width} ${tall}"/>
+      </geometry>
+      <origin xyz="0 0 0"/>
+    </collision>
+
+    <inertial>
+      <origin xyz="0 0 0"/>
+      <mass value="1.0"/>
+      <inertia
+        ixx="0.02" ixy="0" ixz="0"
+        iyy="0.04" iyz="0"
+        izz="0.05"/>
+    </inertial>
+
+  </link>
+
+
+  <joint name="base_joint" type="fixed">
+    <origin xyz="0 0 ${tall/2 + 0.01}" rpy="0 0 0"/>
+    <parent link="base_link" />
+    <child link="body_link" />
+  </joint>
+
+  <!-- wheel macro -->
+  <xacro:macro name="wheel" params="name x y">
+
+    <link name="${name}_wheel">
+      <visual>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+        <origin rpy="1.5708  0 0"/>
+        <material name="black"/>
+      </visual>
+
+      <inertial>
+        <origin rpy="1.5708 0 0" />
+        <mass value="1"/>
+        <inertia
+          ixx="0.05" ixy="0.0" ixz="0.0"
+          iyy="0.05" iyz="0.0"
+          izz="0.01"/>
+      </inertial>
+
+      <collision>
+        <geometry>
+          <cylinder radius="${wheel_radius}" length="${wheel_width}"/>
+        </geometry>
+        <origin rpy="1.5708 0 0"/>
+      </collision>
+    </link>
+
+    <joint name="${name}_wheel_joint" type="continuous">
+      <parent link="body_link"/>
+      <child link="${name}_wheel"/>
+      <origin xyz="${x} ${y} -0.01"/>
+      <axis xyz="0 1 0"/>
+    </joint>
+
+  </xacro:macro>
+
+  <!-- wheels -->
+  <xacro:wheel name="front_left"  x="${  a/2 }"  y="${  width/2 + wheel_width/2}"/>
+  <xacro:wheel name="rear_left"   x="${ -a/2 }"  y="${  width/2 + wheel_width/2}"/>
+  <xacro:wheel name="front_right" x="${  a/2 }"  y="${ -width/2 -wheel_width/2}"/>
+  <xacro:wheel name="rear_right"  x="${ -a/2 }"  y="${ -width/2 -wheel_width/2 }"/>
+
+
+
+
+  <!-- IMU -->
+  <link name="imu_link">
+    <inertial>
+      <origin xyz="-0.00552433659106688 0.000168210391520346 0.000514000497342681"/>
+      <mass value="0.000528415362211671"/>
+      <inertia
+        ixx="1.46176048428261E-08" ixy="1.40015117949421E-10" ixz="-1.99633872937403E-12"
+        iyy="8.59662482954888E-09" iyz="7.52375112767959E-12"
+        izz="2.30279421279312E-08"/>
+    </inertial>
+
+    <visual>
+      <geometry>
+        <box size="0.02 0.02 0.01"/>
+      </geometry>
+      <material name="white"/>
+    </visual>
+
+    <collision>
+      <geometry>
+        <box size="0.02 0.02 0.01"/>
+      </geometry>
+    </collision>
+
+  </link>
+
+  <joint name="imu_joint" type="fixed">
+      <origin xyz="0 0 ${tall/2}" rpy="0 0 0" />
+      <parent link="body_link" />
+      <child link="imu_link" />
+      <axis xyz="0 0 0" />
+  </joint>
+
+
+
+
+  <!-- LIDAR -->
+  
+  <link name="laser_link">
+    <inertial>
+      <origin xyz="0 0 0"/>
+      <mass value="0.073084435549317"/>
+      <inertia
+        ixx="1.96074931730795E-05" ixy="-3.62091076640009E-07" ixz="4.28230084046735E-07"
+        iyy="2.40983835136327E-05" iyz="1.50180909250652E-08"
+        izz="4.14184164228595E-05"/>
+    </inertial>
+
+    <visual>
+      <geometry>
+        <cylinder radius="0.04" length="0.05"/>
+      </geometry>
+      <material name="dark_grey">
+        <color rgba="0.3 0.3 0.3 1"/>
+      </material>
+    </visual>
+
+    <collision>
+      <geometry>
+        <cylinder radius="0.04" length="0.05"/>
+      </geometry>
+    </collision>
+
+  </link>
+  
+  <joint name="laser_joint" type="fixed">
+    <origin xyz="0 0 0.095" rpy="0 0 3.14" />
+    <parent link="body_link" />
+    <child link="laser_link" />
+    <axis xyz="0 0 0" />
+  </joint>
+
+
+
+
+</robot>
