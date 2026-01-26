@@ -1,0 +1,258 @@
+# Octopus Fleet ROS 2 Integration
+
+Complete guide to integrating your Octopus dashboard with ROS 2.
+
+## Prerequisites
+
+```bash
+# Install ROS 2 Humble (Ubuntu 22.04)
+sudo apt update
+sudo apt install ros-humble-desktop ros-humble-tf2-ros ros-humble-nav2-bringup
+source /opt/ros/humble/setup.bash
+
+# Install Python dependencies
+pip3 install rclpy sqlite3
+```
+
+## Quick Start
+
+### 1. Create ROS 2 Workspace
+
+```bash
+# Create workspace
+mkdir -p ~/octopus_ws/src
+cd ~/octopus_ws/src
+
+# Create package structure
+mkdir -p octopus_fleet/{msg,launch,scripts,config}
+cd octopus_fleet
+```
+
+### 2. Copy Files
+
+Copy the following files from the artifacts:
+
+**Package Configuration:**
+- `package.xml` → `~/octopus_ws/src/octopus_fleet/package.xml`
+- `CMakeLists.txt` → `~/octopus_ws/src/octopus_fleet/CMakeLists.txt`
+
+**Message Definitions (create these files):**
+- `msg/DevicePosition.msg`
+- `msg/DeviceStatus.msg`
+- `msg/FleetStatus.msg`
+
+**Python Nodes:**
+- `scripts/bridge_node.py` → Make executable: `chmod +x scripts/bridge_node.py`
+- `scripts/device_commander.py` → Make executable: `chmod +x scripts/device_commander.py`
+
+**Launch File:**
+- `launch/octopus_fleet.launch.py`
+
+### 3. Build Workspace
+
+```bash
+cd ~/octopus_ws
+colcon build --packages-select octopus_fleet
+source install/setup.bash
+```
+
+### 4. Run Everything
+
+**Terminal 1 - Your existing simulation:**
+```bash
+cd ~/octopus-dashboard
+python simulate_movement.py
+```
+
+**Terminal 2 - Your API server:**
+```bash
+cd ~/octopus-dashboard
+uvicorn api:app --reload
+```
+
+**Terminal 3 - ROS 2 Bridge:**
+```bash
+source ~/octopus_ws/install/setup.bash
+ros2 run octopus_fleet bridge_node
+```
+
+**Terminal 4 - ROS 2 Commander (optional):**
+```bash
+source ~/octopus_ws/install/setup.bash
+ros2 run octopus_fleet device_commander
+```
+
+## Verify It's Working
+
+### Check Published Topics
+
+```bash
+# List all topics
+ros2 topic list
+
+# Should see:
+# /octopus/devices/drone_1/pose
+# /octopus/devices/robot_1/pose
+# /octopus/devices/laptop/pose
+# /octopus/fleet_status
+# ... etc
+```
+
+### Monitor Device Positions
+
+```bash
+# Watch drone position updates
+ros2 topic echo /octopus/devices/drone_1/pose
+
+# Watch battery status
+ros2 topic echo /octopus/devices/drone_1/battery
+```
+
+### View in RViz2
+
+```bash
+rviz2
+```
+
+Then add displays:
+- Add → By topic → `/octopus/devices/*/pose` → PoseStamped
+- Add → TF → to see coordinate frames
+- Fixed Frame: `map`
+
+You should see all your devices positioned relative to the laptop!
+
+## Send Commands to Devices
+
+### Via Command Line
+
+```bash
+# Send goto command
+ros2 topic pub --once /octopus/commands std_msgs/msg/String \
+  '{data: "{\"type\":\"goto\",\"device_id\":\"drone_1\",\"x\":100,\"y\":50,\"z\":20}"}'
+
+# Return home command
+ros2 topic pub --once /octopus/commands std_msgs/msg/String \
+  '{data: "{\"type\":\"return_home\",\"device_id\":\"robot_1\"}"}'
+
+# Emergency stop
+ros2 topic pub --once /octopus/commands std_msgs/msg/String \
+  '{data: "{\"type\":\"stop\",\"device_id\":\"drone_1\"}"}'
+```
+
+### Via Python Script
+
+```python
+import rclpy
+from rclpy.node import Node
+from std_msgs.msg import String
+import json
+
+rclpy.init()
+node = Node('command_sender')
+pub = node.create_publisher(String, '/octopus/commands', 10)
+
+# Send goto command
+cmd = {
+    'type': 'goto',
+    'device_id': 'drone_1',
+    'x': 100.0,
+    'y': 50.0,
+    'z': 20.0
+}
+msg = String()
+msg.data = json.dumps(cmd)
+pub.publish(msg)
+
+node.destroy_node()
+rclpy.shutdown()
+```
+
+## Coordinate Frames
+
+The system uses these TF frames:
+- `map` - Global frame (laptop origin at 0,0)
+- `drone_1`, `robot_1`, etc. - Individual device frames
+
+All positions are in meters from the laptop position.
+
+## Troubleshooting
+
+**"No module named 'octopus_fleet'"**
+```bash
+source ~/octopus_ws/install/setup.bash
+```
+
+**"Cannot connect to database"**
+```bash
+# Make sure simulate_movement.py is running
+# Check DB_PATH in bridge_node.py matches your database location
+```
+
+**"No messages on topics"**
+```bash
+# Check bridge node is running
+ros2 node list  # Should show /octopus_bridge
+
+# Check database has data
+sqlite3 octopusfinal.db "SELECT * FROM locations;"
+```
+
+## Next Steps
+
+1. **Add real hardware integration:**
+   - Install `mavros` for drone control
+   - Add `nav2` for robot navigation
+
+2. **Create action servers:**
+   - Long-running navigation tasks
+   - Return-to-base behavior
+   - Patrol patterns
+
+3. **Add visualization:**
+   - Custom RViz plugins
+   - Real-time path planning visualization
+
+4. **Implement fleet coordination:**
+   - Collision avoidance
+   - Task allocation
+   - Swarm behaviors
+
+## Architecture
+
+```
+┌─────────────────┐
+│  Dashboard      │  (Your existing web interface)
+│  (Browser)      │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  FastAPI        │  (Your existing API)
+│  + Database     │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  ROS 2 Bridge   │  ◄──── New! Publishes to ROS topics
+│  Node           │
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  ROS 2          │
+│  Topics/TF      │  ◄──── Other ROS nodes can subscribe
+└────────┬────────┘
+         │
+         ▼
+┌─────────────────┐
+│  Real Hardware  │  (Future: actual drones/robots)
+│  Controllers    │
+└─────────────────┘
+```
+
+## Resources
+
+- [ROS 2 Documentation](https://docs.ros.org/en/humble/)
+- [Navigation2](https://navigation.ros.org/)
+- [MAVROS for drones](https://github.com/mavlink/mavros)
+- [TF2 Tutorials](https://docs.ros.org/en/humble/Tutorials/Intermediate/Tf2/Tf2-Main.html)
