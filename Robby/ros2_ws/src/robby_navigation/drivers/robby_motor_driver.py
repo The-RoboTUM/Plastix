@@ -20,7 +20,8 @@ class Motor_Driver(Node):
         right_speed = cmd.linear.x + cmd.angular.z
 
         #Set robot speed
-        self.robot.value = (left_speed, right_speed)
+        self.robot.left_motor.value = left_speed
+        self.robot.right_motor.value = right_speed
 
     def destroy_node(self):
         self.robot.close()

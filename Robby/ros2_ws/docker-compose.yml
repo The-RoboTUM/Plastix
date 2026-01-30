@@ -1,0 +1,31 @@
+services:
+  robby-sim:
+    build: .
+    container_name: robby-humble
+    hostname: robby-humble
+    volumes:
+      - ./src:/workspace/src
+      - ./log:/workspace/log
+      - ./install:/workspace/install
+      - ./build:/workspace/build
+      - /tmp/.X11-unix:/tmp/.X11-unix
+      - robby_humble_home:/root
+    environment:
+      - ROS_DOMAIN_ID=0
+      - QT_X11_NO_MITSHM=1
+      - DISPLAY=${DISPLAY}
+    network_mode: "host"
+    stdin_open: true
+    tty: true
+    entrypoint: >
+      bash -c "
+        set -e
+        source /opt/ros/humble/setup.bash
+        cd /workspace
+        colcon build
+        source install/setup.bash
+        exec bash
+      "
+
+volumes:
+  robby_humble_home:
