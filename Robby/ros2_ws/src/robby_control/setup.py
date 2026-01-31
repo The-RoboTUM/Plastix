@@ -24,7 +24,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            "robby_brain = robby_control.robby_brain:main"
+            "controller = robby_control.controller:main"
         ],
     },
 )

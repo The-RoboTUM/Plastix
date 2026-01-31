@@ -1,4 +1,6 @@
 # Need to have this image installed
+# On pi need another image this one is only for x86_64
+# Also remove gazebo + gedit for launch on pi
 FROM osrf/ros:humble-desktop
 WORKDIR /workspace
 RUN apt update && apt install -y \

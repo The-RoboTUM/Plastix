@@ -1,5 +1,5 @@
 services:
-  robby-sim:
+  robby-humble:
     build: .
     container_name: robby-humble
     hostname: robby-humble
