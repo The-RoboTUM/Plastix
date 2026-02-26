@@ -11,6 +11,10 @@ __pycache__/
 *.safetensors       # ignore safetensors files
 *.pt                # ignore pytorch files
 
+# ignore zip files
+*.zip
+
 # ignore images
 *.jpg
 *.png
+*.svg
