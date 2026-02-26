@@ -5,3 +5,12 @@ log/
 __pycache__/
 *.pyc
 .vscode/
+
+# ignore large files
+*.db                # ignore data base files
+*.safetensors       # ignore safetensors files
+*.pt                # ignore pytorch files
+
+# ignore images
+*.jpg
+*.png
