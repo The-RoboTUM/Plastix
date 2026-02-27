@@ -18,3 +18,6 @@ __pycache__/
 *.jpg
 *.png
 *.svg
+
+# ignore ROS2 interface file
+interface
