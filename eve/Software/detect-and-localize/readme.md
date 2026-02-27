@@ -4,9 +4,9 @@ running the code from terminal
 
 1. Download the footage folder from https://nextcloud.itq.de/apps/files/files/2210?dir=/CirQmind%20Plastix%20%28S3%29/Additional%20Content/Eve/code/detect-and-localize and move it to the data folder. The files are kinda big, so I did not want to have them on Git
 
-2. change directory to plastix_codebase folder  
+2. change directory to detect-and-localize folder  
     open an new terminal window (for example windows powershell).
-    use `cd path/to/plastix_codebase` 
+    use `cd path/to/detect_adn_localize` 
     
 3. start a new virtual enviornment (optional)  
     `python -m venv .venv`  
