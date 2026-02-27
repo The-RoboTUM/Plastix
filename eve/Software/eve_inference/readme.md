@@ -1,0 +1,3 @@
+
+This directory was written by Jan Wech.
+unfortnatly it could not been uploaded to git fully, as it contains a lot of LFS files. I have put those in the .gitignore file, to prevent causing issues on git. In the future these might be pushed to git and tracked via LFS. For the time being I would recommend just downloading the directory from Nextcloud, where it is uploaded as a .zip file. Besides from that, you can find more documentation on the functionality of all the individual parts via readmes.
