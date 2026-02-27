@@ -1,5 +1,5 @@
 What this is:
-This code was developed to detect and localize trash form an image or video. To localize trash it uses at least 4 apriltags in a square or other pattern. The pattern can be configured in a csv. file in the tags folder. 
+This code was developed to detect and localize trash form an image or video. For detection, specifically trained YOLO models are used. To at least 4 apriltags in a square or other pattern are used. The pattern can be configured in a csv. file in the tags folder. 
 
 Status:
 This is somewhat outdated and does not make sense to be used with our current aproach of using the drones GPS to localize the waste using when flying outdoors, but it might be useful for the indoor waste localization. 
@@ -15,6 +15,8 @@ at the end of this step you should have:
     - presets
     - src
     - main.py
+    - requirements.txt
+    - readme.md
     
 2. change directory to detect-and-localize folder  
     open an new terminal window (for example windows powershell).
