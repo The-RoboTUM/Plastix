@@ -1,0 +1,18 @@
+{
+    "ROS2.distro": "humble",
+    "python.autoComplete.extraPaths": [
+        "/home/jan/ROS2/ABB/ws_quest2ros/install/ros_tcp_endpoint/lib/python3.10/site-packages",
+        "/home/jan/ROS2/ABB/ws_quest2ros/install/quest2ros/local/lib/python3.10/dist-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ],
+    "python.analysis.extraPaths": [
+        "/home/jan/ROS2/ABB/ws_quest2ros/install/ros_tcp_endpoint/lib/python3.10/site-packages",
+        "/home/jan/ROS2/ABB/ws_quest2ros/install/quest2ros/local/lib/python3.10/dist-packages",
+        "/opt/ros/humble/lib/python3.10/site-packages",
+        "/opt/ros/humble/local/lib/python3.10/dist-packages"
+    ],
+    "python-envs.defaultEnvManager": "ms-python.python:venv",
+    "python-envs.defaultPackageManager": "ms-python.python:pip",
+    "python-envs.pythonProjects": []
+}

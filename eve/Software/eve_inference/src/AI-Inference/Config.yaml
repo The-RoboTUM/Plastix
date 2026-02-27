@@ -1,0 +1,24 @@
+camera_setting:
+  camera_roll_angle : 0 # angle of camera mounting around x-axis in degree
+  camera_pitch_angle : 5 # angle of camera mounting around y-axis in degree
+  camera_yaw_angle : 0 # angle of camera mounting around z-axis in degree
+
+  focal_length : 10 # the focal length of the camera in mm
+  horizontal_sensorwidth : 100 # horizontal sensor width in mm
+  vertical_sensorwidth : 50 # vertical sensor width in mm
+
+drone_to_camera_coordinate_system: # translational and rotational position in reference to Drone coordinate system
+  translation_x : 0 # translation in x direction
+  translation_y : 0 # translation in y direction
+  translation_z : 0 # translation in z direction
+
+  rotation_x : 0 # rotation around x-axis
+  rotation_y : 0 # rotation around y-axis
+  rotation_z : 0 # rotation around z-axis
+
+
+
+
+
+
+
