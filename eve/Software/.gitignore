@@ -1,0 +1,23 @@
+
+build/
+install/
+log/
+__pycache__/
+*.pyc
+.vscode/
+
+# ignore large files
+*.db                # ignore data base files
+*.safetensors       # ignore safetensors files
+*.pt                # ignore pytorch files
+
+# ignore zip files
+*.zip
+
+# ignore images
+*.jpg
+*.png
+*.svg
+
+# ignore ROS2 interface file
+interface
