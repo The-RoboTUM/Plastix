@@ -1,0 +1,205 @@
+# Quick Start: Multi-Team Communication
+
+## 🚀 Setup (5 minutes per team)
+
+### Step 1: Copy New Files
+
+```bash
+cd ~/octopus-dashboard
+
+# Create multi-team bridge
+nano multi_team_bridge.py
+# Paste content from "Multi-Team Bridge Node" artifact
+
+# Create aggregator
+nano team_aggregator.py
+# Paste content from "Team Aggregator Node" artifact
+
+# Make executable
+chmod +x multi_team_bridge.py team_aggregator.py
+
+# Create config
+nano ros2_config.sh
+```
+
+**In ros2_config.sh:**
+```bash
+#!/bin/bash
+export ROS_DOMAIN_ID=0  # SAME for all teams
+export TEAM_ID="team_garching"  # UNIQUE per team!
+export ROS_LOCALHOST_ONLY=0
+source /opt/ros/jazzy/setup.bash
+echo "✅ Team: $TEAM_ID, Domain: $ROS_DOMAIN_ID"
+```
+
+```bash
+chmod +x ros2_config.sh
+```
+
+### Step 2: Each Team Updates Their Team ID
+
+**Team Garching (you):**
+```bash
+export TEAM_ID="team_garching"
+```
+
+**Team Munich:**
+```bash
+export TEAM_ID="team_munich"
+```
+
+**Team Berlin:**
+```bash
+export TEAM_ID="team_berlin"
+```
+
+## 🎮 Running It
+
+### Each Team Runs (3 terminals):
+
+**Terminal 1 - Your Simulation:**
+```bash
+cd ~/octopus-dashboard
+python simulate_movement.py
+```
+
+**Terminal 2 - Multi-Team Bridge:**
+```bash
+cd ~/octopus-dashboard
+source ros2_config.sh
+python3 multi_team_bridge.py
+```
+
+**Terminal 3 - Check It's Working:**
+```bash
+source ros2_config.sh
+ros2 topic list | grep devices
+```
+
+You should see:
+```
+/team_garching/devices/drone_1/pose
+/team_garching/devices/robot_1/pose
+```
+
+## 🌐 See All Teams (Run on ANY laptop)
+
+**Terminal 4 - Aggregator (optional, can run on any laptop):**
+```bash
+cd ~/octopus-dashboard
+source ros2_config.sh
+python3 team_aggregator.py
+```
+
+Output will show:
+```
+🌐 MULTI-TEAM STATUS DASHBOARD
+================================================================================
+
+📍 TEAM_GARCHING: 5 devices
+   • drone_1         | Pos: (  66.3,   43.9,  20.5)m | Battery: 87%
+   • robot_1         | Pos: ( -69.2, -124.7,   0.2)m | Battery: 65%
+   ...
+
+📍 TEAM_MUNICH: 5 devices
+   • drone_1         | Pos: ( 123.4,   56.7,  25.0)m | Battery: 92%
+   ...
+
+📊 TOTAL: 2 teams, 10 devices
+```
+
+## ✅ Verification
+
+### Test 1: See Other Teams' Topics
+
+```bash
+source ros2_config.sh
+
+# List all topics
+ros2 topic list
+
+# Should see YOUR team and OTHER teams:
+# /team_garching/devices/drone_1/pose
+# /team_munich/devices/drone_1/pose
+```
+
+### Test 2: Subscribe to Another Team
+
+```bash
+# Watch Team Munich's drone
+ros2 topic echo /team_munich/devices/drone_1/pose
+```
+
+### Test 3: Network Discovery
+
+```bash
+# See all ROS 2 nodes from all teams
+ros2 node list
+
+# Should see nodes like:
+# /team_garching_bridge
+# /team_munich_bridge
+```
+
+## 🔧 Troubleshooting
+
+**Problem: Can't see other teams**
+
+✅ Check you're on same network:
+```bash
+ping <other-team-laptop-ip>
+```
+
+✅ Check same Domain ID:
+```bash
+echo $ROS_DOMAIN_ID  # Should be same on all laptops
+```
+
+✅ Check firewall:
+```bash
+sudo ufw allow 7400:7600/udp  # Open DDS ports
+```
+
+**Problem: Topics timeout**
+
+✅ Check ROS_LOCALHOST_ONLY:
+```bash
+echo $ROS_LOCALHOST_ONLY  # Should be 0
+```
+
+## 🎯 What Each Team Can Do Now
+
+1. **See other teams' robots** in real-time
+2. **Coordinate movements** to avoid collisions
+3. **Share task assignments** across teams
+4. **Monitor overall fleet** of all teams combined
+5. **Build collaborative behaviors** (swarms, formations)
+
+## 📊 Next Steps: Collaborative Features
+
+### Shared Task Pool
+Teams can claim tasks from a shared pool
+
+### Collision Avoidance
+Monitor other teams' positions to avoid collisions
+
+### Formation Flying
+Multiple teams coordinate drone formations
+
+### Resource Sharing
+Share charging stations, data, etc.
+
+## 🏆 Competition Mode
+
+For competitions, each team can:
+- See other teams (transparency)
+- Keep strategy private (don't share plans)
+- Monitor overall performance
+
+Set different topics for:
+- **Public data**: `/team_X/devices/*/pose` (visible to all)
+- **Private data**: `/team_X/internal/strategy` (not published)
+
+---
+
+**Ready to go multi-team? Just run the 3 commands on each laptop! 🚀**

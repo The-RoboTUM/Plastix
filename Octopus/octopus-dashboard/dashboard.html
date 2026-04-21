@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8"/>
+    <title>Octopus Dashboard</title>
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/css/bootstrap.min.css" rel="stylesheet"/>
+    <style>
+        html,body { height:100%; margin:0; }
+        #container { display:flex; height:100vh; gap:10px; padding:10px; box-sizing:border-box; }
+        #left { flex: 1 1 70%; border-radius:8px; overflow:hidden; border:1px solid #ddd; }
+        #right { width: 360px; display:flex; flex-direction:column; gap:10px; }
+        .card { padding:10px; border-radius:8px; border:1px solid #ddd; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
+        .card h5 { margin:0 0 8px 0; font-size:16px; }
+        iframe { width:100%; height:100%; border:0; }
+        ul.simple { padding-left:1rem; margin:0; }
+    </style>
+</head>
+<body>
+  <div id="container">
+    <div id="left" class="card">
+      <!-- map.html im iframe einbetten -->
+      <iframe id="mapframe" src="map.html"></iframe>
+    </div>
+
+    <div id="right">
+      <div id="tasks" class="card">
+        <h5>🗂 Aktuelle Tasks</h5>
+        <div id="tasks-content">Loading tasks...</div>
+      </div>
+
+      <div id="battery" class="card">
+        <h5>🔋 Batteriestatus</h5>
+        <div id="battery-content">Loading battery...</div>
+      </div>
+
+      <div id="stats" class="card">
+        <h5>📊 System-Statistiken</h5>
+        <div id="stats-content">Loading stats...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Beispiel-Daten JS (ersetzt später durch API-Aufrufe) -->
+  <script src="example_data.js"></script>
+</body>
+</html>
