@@ -1,6 +1,6 @@
 # PlastiX - Main Repository
 Welcome to the PlastiX project which is part of CirQmind. Here you will find the [Wiki](https://gitex.itq.de/cirqmind/PlastiX/-/wikis/home), the [Issue Board](https://gitex.itq.de/cirqmind/PlastiX/-/boards) and the project files in their respective branches.
-
+Hallo
 ## Git Usage
 ### Cloning the Repository
 1. Open a terminal window (or do this e.g. via the VS Code Extension).
