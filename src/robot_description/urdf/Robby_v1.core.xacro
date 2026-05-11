@@ -1,0 +1,398 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:macro
+    name="mesh_box_link"
+    params="name inertial_xyz mass ixx ixy ixz iyy iyz izz mesh_file rgba collision_origin collision_size mesh_uri_root">
+    <link name="${name}">
+      <inertial>
+        <origin xyz="${inertial_xyz}" rpy="0 0 0" />
+        <mass value="${mass}" />
+        <inertia
+          ixx="${ixx}"
+          ixy="${ixy}"
+          ixz="${ixz}"
+          iyy="${iyy}"
+          iyz="${iyz}"
+          izz="${izz}" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="${mesh_uri_root}/${mesh_file}" />
+        </geometry>
+        <material name="">
+          <color rgba="${rgba}" />
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="${collision_origin}" rpy="0 0 0" />
+        <geometry>
+          <box size="${collision_size}" />
+        </geometry>
+      </collision>
+    </link>
+  </xacro:macro>
+
+  <xacro:macro
+    name="mesh_cylinder_link"
+    params="name inertial_xyz mass ixx ixy ixz iyy iyz izz mesh_file rgba collision_origin collision_radius collision_length mesh_uri_root">
+    <link name="${name}">
+      <inertial>
+        <origin xyz="${inertial_xyz}" rpy="0 0 0" />
+        <mass value="${mass}" />
+        <inertia
+          ixx="${ixx}"
+          ixy="${ixy}"
+          ixz="${ixz}"
+          iyy="${iyy}"
+          iyz="${iyz}"
+          izz="${izz}" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="${mesh_uri_root}/${mesh_file}" />
+        </geometry>
+        <material name="">
+          <color rgba="${rgba}" />
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="${collision_origin}" rpy="0 0 0" />
+        <geometry>
+          <cylinder radius="${collision_radius}" length="${collision_length}" />
+        </geometry>
+      </collision>
+    </link>
+  </xacro:macro>
+
+  <xacro:macro name="steer_joint" params="name xyz parent child limit effort velocity damping friction">
+    <joint name="${name}" type="revolute">
+      <origin xyz="${xyz}" rpy="0 0 0" />
+      <parent link="${parent}" />
+      <child link="${child}" />
+      <axis xyz="0 0 1" />
+      <limit lower="${-limit}" upper="${limit}" effort="${effort}" velocity="${velocity}" />
+      <dynamics damping="${damping}" friction="${friction}" />
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="drive_joint" params="name xyz rpy parent child axis effort velocity damping friction">
+    <joint name="${name}" type="continuous">
+      <origin xyz="${xyz}" rpy="${rpy}" />
+      <parent link="${parent}" />
+      <child link="${child}" />
+      <axis xyz="${axis}" />
+      <limit effort="${effort}" velocity="${velocity}" />
+      <dynamics damping="${damping}" friction="${friction}" />
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="robby_robot" params="mesh_dir">
+    <xacro:property name="mesh_uri_root" value="${mesh_dir}" />
+    <xacro:property name="front_steer_limit" value="1.5708" />
+    <xacro:property name="rear_steer_limit" value="1.5708" />
+    <xacro:property name="joint_effort" value="10" />
+    <xacro:property name="joint_velocity" value="10" />
+    <xacro:property name="joint_damping" value="0.1" />
+    <xacro:property name="joint_friction" value="0.1" />
+    <xacro:property name="wheel_rgba" value="0.964705882352941 0.964705882352941 0.952941176470588 1" />
+    <xacro:property name="base_rgba" value="0.854901960784314 0.349019607843137 0.349019607843137 1" />
+    <xacro:property name="wheel_collision_length" value="0.062" />
+
+    <xacro:property name="wheel_radius" value="0.052" />
+    <xacro:property name="track_width" value="0.33112" />
+    <xacro:property name="front_axle_x" value="0.201335" />
+    <xacro:property name="rear_axle_x" value="-0.204665" />
+    <xacro:property name="wheelbase" value="${front_axle_x - rear_axle_x}" />
+    <xacro:property name="left_steer_y" value="${track_width / 2.0}" />
+    <xacro:property name="right_steer_y" value="${-track_width / 2.0}" />
+    <xacro:property name="steer_mount_z_nominal" value="0.04325" />
+
+    <xacro:property name="front_left_steer_xyz" value="${front_axle_x + 0.000065} ${left_steer_y} ${steer_mount_z_nominal + 0.000001}" />
+    <xacro:property name="front_right_steer_xyz" value="${front_axle_x - 0.000065} ${right_steer_y} ${steer_mount_z_nominal}" />
+    <xacro:property name="back_left_steer_xyz" value="${rear_axle_x - 0.000065} ${left_steer_y} ${steer_mount_z_nominal + 0.001999}" />
+    <xacro:property name="back_right_steer_xyz" value="${rear_axle_x + 0.000065} ${right_steer_y} ${steer_mount_z_nominal}" />
+
+    <xacro:property name="front_left_wheel_offset_xyz" value="-0.00095872 0.072001 -0.13909" />
+    <xacro:property name="back_left_wheel_offset_xyz" value="-0.0005765 0.072005 -0.14109" />
+    <xacro:property name="back_right_wheel_offset_xyz" value="-0.00071852 -0.073582 -0.1361" />
+    <xacro:property name="front_right_wheel_offset_xyz" value="-0.00076762 -0.072004 -0.13909" />
+
+    <xacro:property name="front_left_wheel_rpy" value="-1.5708 0 0.015251" />
+    <xacro:property name="back_left_wheel_rpy" value="-1.5708 0 0.0099427" />
+    <xacro:property name="back_right_wheel_rpy" value="-1.5708 0 -0.0078748" />
+    <xacro:property name="front_right_wheel_rpy" value="-1.5708 0 -0.0087292" />
+    <xacro:property name="base_footprint_to_base_link_z" value="0.1478" />
+
+    <link name="base_footprint" />
+
+    <link name="base_link" />
+
+    <joint name="base_footprint_joint" type="fixed">
+      <origin xyz="0 0 ${base_footprint_to_base_link_z}" rpy="0 0 0" />
+      <parent link="base_footprint" />
+      <child link="base_link" />
+    </joint>
+
+    <xacro:mesh_box_link
+      name="chassis_link"
+      inertial_xyz="-0.0202853583615552 -0.0035672102008257 0.0384224210186663"
+      mass="2.2668069894461"
+      ixx="0.00935572177906156"
+      ixy="7.8725799589304E-09"
+      ixz="0.00155513248174071"
+      iyy="0.013073444250648"
+      iyz="-4.07017227501552E-08"
+      izz="0.017855946897602"
+      mesh_file="base_link.STL"
+      rgba="${base_rgba}"
+      collision_origin="-0.001575 0 0.069"
+      collision_size="0.480668 0.396114 0.150001"
+      mesh_uri_root="${mesh_uri_root}" />
+
+    <joint name="base_to_chassis_joint" type="fixed">
+      <origin xyz="0 0 0" rpy="0 0 0" />
+      <parent link="base_link" />
+      <child link="chassis_link" />
+    </joint>
+
+    <link name="imu_link">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <mass value="0.001" />
+        <inertia ixx="1e-6" ixy="0.0" ixz="0.0" iyy="1e-6" iyz="0.0" izz="1e-6" />
+      </inertial>
+    </link>
+
+    <joint name="imu_joint" type="fixed">
+      <origin xyz="0 0 0.08" rpy="0 0 0" />
+      <parent link="chassis_link" />
+      <child link="imu_link" />
+    </joint>
+
+    <xacro:mesh_box_link
+      name="front_left_steer"
+      inertial_xyz="0.00013064414965952 -0.00712793384390203 -0.099167907470358"
+      mass="0.251781132487417"
+      ixx="0.00021743551373503"
+      ixy="1.36860311137519E-06"
+      ixz="5.07501890882553E-07"
+      iyy="0.000126727845844533"
+      iyz="-3.34647392291718E-05"
+      izz="0.000169195629547439"
+      mesh_file="front_left_steer.STL"
+      rgba="${wheel_rgba}"
+      collision_origin="0.000305 0.000836 -0.079148"
+      collision_size="0.051519 0.142418 0.160397"
+      mesh_uri_root="${mesh_uri_root}" />
+
+    <xacro:steer_joint
+      name="f_left_steer"
+      xyz="${front_left_steer_xyz}"
+      parent="chassis_link"
+      child="front_left_steer"
+      limit="${front_steer_limit}"
+      effort="${joint_effort}"
+      velocity="${joint_velocity}"
+      damping="${joint_damping}"
+      friction="${joint_friction}" />
+
+    <xacro:mesh_cylinder_link
+      name="front_left_wheel"
+      inertial_xyz="-0.000152709268499918 -9.70744181462424E-07 -0.0293675372404548"
+      mass="0.115832809619263"
+      ixx="0.000133495109179925"
+      ixy="7.48118425206543E-14"
+      ixz="4.06679703392529E-09"
+      iyy="0.000133508500148116"
+      iyz="-7.10495622112089E-10"
+      izz="0.000211939042658774"
+      mesh_file="front_left_wheel.STL"
+      rgba="${wheel_rgba}"
+      collision_origin="-0.000145 0 -0.031"
+      collision_radius="${wheel_radius}"
+      collision_length="${wheel_collision_length}"
+      mesh_uri_root="${mesh_uri_root}" />
+
+    <xacro:drive_joint
+      name="f_leftwheel"
+      xyz="${front_left_wheel_offset_xyz}"
+      rpy="${front_left_wheel_rpy}"
+      parent="front_left_steer"
+      child="front_left_wheel"
+      axis="0 0 1"
+      effort="${joint_effort}"
+      velocity="${joint_velocity}"
+      damping="${joint_damping}"
+      friction="${joint_friction}" />
+
+    <xacro:mesh_box_link
+      name="back_left_steer"
+      inertial_xyz="9.28109305935038E-05 -0.00712852545284898 -0.101167907583658"
+      mass="0.251781132525178"
+      ixx="0.000217447487430463"
+      ixy="8.87032766970658E-07"
+      ixz="3.29855165907127E-07"
+      iyy="0.000126715873155165"
+      iyz="-3.34669623327156E-05"
+      izz="0.000169195628565899"
+      mesh_file="back_left_steer.STL"
+      rgba="${wheel_rgba}"
+      collision_origin="0.000199 0.000894 -0.081148"
+      collision_size="0.050992 0.142279 0.160397"
+      mesh_uri_root="${mesh_uri_root}" />
+
+    <xacro:steer_joint
+      name="b_leftsteer"
+      xyz="${back_left_steer_xyz}"
+      parent="chassis_link"
+      child="back_left_steer"
+      limit="${rear_steer_limit}"
+      effort="${joint_effort}"
+      velocity="${joint_velocity}"
+      damping="${joint_damping}"
+      friction="${joint_friction}" />
+
+    <xacro:mesh_cylinder_link
+      name="back_left_wheel"
+      inertial_xyz="-0.000152709267548859 -9.71167783692106E-07 -0.029367537223414"
+      mass="0.115832809709875"
+      ixx="0.000133495109180129"
+      ixy="3.73920551199565E-14"
+      ixz="4.06679907772533E-09"
+      iyy="0.00013350850014901"
+      iyz="-7.10484063198117E-10"
+      izz="0.000211939042658999"
+      mesh_file="back_left_wheel.STL"
+      rgba="${wheel_rgba}"
+      collision_origin="-0.000145 0 -0.031"
+      collision_radius="${wheel_radius}"
+      collision_length="${wheel_collision_length}"
+      mesh_uri_root="${mesh_uri_root}" />
+
+    <xacro:drive_joint
+      name="b_leftwheel"
+      xyz="${back_left_wheel_offset_xyz}"
+      rpy="${back_left_wheel_rpy}"
+      parent="back_left_steer"
+      child="back_left_wheel"
+      axis="0 0 1"
+      effort="${joint_effort}"
+      velocity="${joint_velocity}"
+      damping="${joint_damping}"
+      friction="${joint_friction}" />
+
+    <xacro:mesh_box_link
+      name="back_right_steer"
+      inertial_xyz="3.09555434352959E-05 0.00694767645726482 -0.104187659676429"
+      mass="0.229463165297732"
+      ixx="0.000207384199528673"
+      ixy="-7.31104211905778E-07"
+      ixz="2.67266326731571E-07"
+      iyy="0.000116493139211524"
+      iyz="3.35524819424789E-05"
+      izz="0.00016798247146896"
+      mesh_file="back_right_steer.STL"
+      rgba="${wheel_rgba}"
+      collision_origin="0.000157 -0.001704 -0.096554"
+      collision_size="0.050786 0.143797 0.119607"
+      mesh_uri_root="${mesh_uri_root}" />
+
+    <xacro:steer_joint
+      name="b_rightsteer"
+      xyz="${back_right_steer_xyz}"
+      parent="chassis_link"
+      child="back_right_steer"
+      limit="${rear_steer_limit}"
+      effort="${joint_effort}"
+      velocity="${joint_velocity}"
+      damping="${joint_damping}"
+      friction="${joint_friction}" />
+
+    <xacro:mesh_cylinder_link
+      name="back_right_wheel"
+      inertial_xyz="0.000152709273591192 -9.71170377131458E-07 0.0293675371615253"
+      mass="0.115832810022218"
+      ixx="0.000133495109183378"
+      ixy="-3.62614646190951E-14"
+      ixz="4.06680017161528E-09"
+      iyy="0.000133508500154647"
+      iyz="7.10483036587695E-10"
+      izz="0.000211939042659798"
+      mesh_file="back_right_wheel.STL"
+      rgba="${wheel_rgba}"
+      collision_origin="0.000145 0 0.031"
+      collision_radius="${wheel_radius}"
+      collision_length="${wheel_collision_length}"
+      mesh_uri_root="${mesh_uri_root}" />
+
+    <xacro:drive_joint
+      name="b_rightwheel"
+      xyz="${back_right_wheel_offset_xyz}"
+      rpy="${back_right_wheel_rpy}"
+      parent="back_right_steer"
+      child="back_right_wheel"
+      axis="0 0 -1"
+      effort="${joint_effort}"
+      velocity="${joint_velocity}"
+      damping="${joint_damping}"
+      friction="${joint_friction}" />
+
+    <xacro:mesh_box_link
+      name="front_right_steer"
+      inertial_xyz="4.05809295395687E-05 0.00712901046523262 -0.0991679078738846"
+      mass="0.251781132690095"
+      ixx="0.000217448974290903"
+      ixy="-8.0742080901355E-07"
+      ixz="2.95193136544424E-07"
+      iyy="0.00012671438820613"
+      iyz="3.34672871896417E-05"
+      izz="0.000169195626775715"
+      mesh_file="front_right_steer.STL"
+      rgba="${wheel_rgba}"
+      collision_origin="0.000175 -0.000905 -0.079148"
+      collision_size="0.050871 0.142241 0.160397"
+      mesh_uri_root="${mesh_uri_root}" />
+
+    <xacro:steer_joint
+      name="f_right_steer"
+      xyz="${front_right_steer_xyz}"
+      parent="chassis_link"
+      child="front_right_steer"
+      limit="${front_steer_limit}"
+      effort="${joint_effort}"
+      velocity="${joint_velocity}"
+      damping="${joint_damping}"
+      friction="${joint_friction}" />
+
+    <xacro:mesh_cylinder_link
+      name="front_right_wheel"
+      inertial_xyz="0.00015270927387756 -9.71170482401418E-07 0.0293675371584356"
+      mass="0.115832810036923"
+      ixx="0.000133495109183675"
+      ixy="-3.62122798652987E-14"
+      ixz="4.06680027009567E-09"
+      iyy="0.000133508500155057"
+      iyz="7.10482989342022E-10"
+      izz="0.000211939042659837"
+      mesh_file="front_right_wheel.STL"
+      rgba="${wheel_rgba}"
+      collision_origin="0.000145 0 0.031"
+      collision_radius="${wheel_radius}"
+      collision_length="${wheel_collision_length}"
+      mesh_uri_root="${mesh_uri_root}" />
+
+    <xacro:drive_joint
+      name="f_rightwheel"
+      xyz="${front_right_wheel_offset_xyz}"
+      rpy="${front_right_wheel_rpy}"
+      parent="front_right_steer"
+      child="front_right_wheel"
+      axis="0 0 -1"
+      effort="${joint_effort}"
+      velocity="${joint_velocity}"
+      damping="${joint_damping}"
+      friction="${joint_friction}" />
+  </xacro:macro>
+</robot>

@@ -1,0 +1,106 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="Robby_v1">
+  <xacro:arg name="mesh_dir" default="package://robby_description/meshes" />
+  <xacro:arg name="controllers_file" default="" />
+  <xacro:arg name="imu_update_rate" default="100.0" />
+  <xacro:arg name="use_lidar" default="false" />
+  <xacro:arg name="lidar_xyz" default="0 0 0.15" />
+  <xacro:arg name="lidar_rpy" default="0 0 0" />
+  <xacro:arg name="lidar_topic" default="/scan" />
+  <xacro:arg name="lidar_update_rate" default="15.0" />
+  <xacro:arg name="use_camera" default="false" />
+  <xacro:arg name="camera_xyz" default="0.12 0 0.18" />
+  <xacro:arg name="camera_rpy" default="0 0 0" />
+  <xacro:arg name="camera_topic" default="/camera/image_raw" />
+  <xacro:arg name="camera_update_rate" default="15.0" />
+
+  <xacro:include filename="Robby_v1.core.xacro" />
+  <xacro:include filename="Robby_v1.lidar.xacro" />
+  <xacro:include filename="Robby_v1.camera.xacro" />
+
+  <xacro:macro name="ros2_control_position_joint" params="joint_name">
+    <joint name="${joint_name}">
+      <command_interface name="position" />
+      <state_interface name="position" />
+      <state_interface name="velocity" />
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="ros2_control_velocity_joint" params="joint_name">
+    <joint name="${joint_name}">
+      <command_interface name="velocity" />
+      <state_interface name="position" />
+      <state_interface name="velocity" />
+    </joint>
+  </xacro:macro>
+
+  <xacro:robby_robot mesh_dir="$(arg mesh_dir)" />
+
+  <xacro:if value="$(arg use_lidar)">
+    <xacro:robby_lidar
+      parent="chassis_link"
+      xyz="$(arg lidar_xyz)"
+      rpy="$(arg lidar_rpy)"
+      add_gazebo="true"
+      topic="$(arg lidar_topic)"
+      update_rate="$(arg lidar_update_rate)" />
+  </xacro:if>
+
+  <xacro:if value="$(arg use_camera)">
+    <xacro:robby_camera
+      parent="chassis_link"
+      xyz="$(arg camera_xyz)"
+      rpy="$(arg camera_rpy)"
+      add_gazebo="true"
+      topic="$(arg camera_topic)"
+      update_rate="$(arg camera_update_rate)" />
+  </xacro:if>
+
+  <gazebo reference="imu_link">
+    <sensor name="imu_sensor" type="imu">
+      <always_on>1</always_on>
+      <update_rate>$(arg imu_update_rate)</update_rate>
+      <topic>/imu/data</topic>
+    </sensor>
+  </gazebo>
+
+  <ros2_control name="RobbyGazeboSystem" type="system">
+    <hardware>
+      <plugin>gz_ros2_control/GazeboSimSystem</plugin>
+    </hardware>
+
+    <xacro:ros2_control_position_joint joint_name="f_left_steer" />
+    <xacro:ros2_control_position_joint joint_name="f_right_steer" />
+    <xacro:ros2_control_position_joint joint_name="b_leftsteer" />
+    <xacro:ros2_control_position_joint joint_name="b_rightsteer" />
+
+    <xacro:ros2_control_velocity_joint joint_name="f_leftwheel" />
+    <xacro:ros2_control_velocity_joint joint_name="f_rightwheel" />
+    <xacro:ros2_control_velocity_joint joint_name="b_leftwheel" />
+    <xacro:ros2_control_velocity_joint joint_name="b_rightwheel" />
+  </ros2_control>
+
+  <gazebo>
+    <plugin
+      filename="gz-sim-odometry-publisher-system"
+      name="gz::sim::systems::OdometryPublisher">
+      <dimensions>2</dimensions>
+      <odom_frame>ground_truth</odom_frame>
+      <robot_base_frame>base_footprint</robot_base_frame>
+      <odom_topic>/ground_truth/odom</odom_topic>
+      <gaussian_noise>0.0</gaussian_noise>
+    </plugin>
+
+    <plugin
+      filename="libgz_ros2_control-system.so"
+      name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <ros>
+        <namespace>/</namespace>
+      </ros>
+      <robot_param>robot_description</robot_param>
+      <robot_param_node>robot_state_publisher</robot_param_node>
+      <controller_manager_name>controller_manager</controller_manager_name>
+      <parameters>$(arg controllers_file)</parameters>
+    </plugin>
+  </gazebo>
+</robot>
