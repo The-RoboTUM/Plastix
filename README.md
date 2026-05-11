@@ -138,10 +138,10 @@ Declare in each `package.xml` only what that package actually needs to build or 
 ## Build
 
 ```bash
-cd /home/celeste/itq_ros2
-source /opt/ros/<DISTRO>/setup.bash   # replace <DISTRO> with your ROS 2 distro, e.g. jazzy
-colcon build
-source install/setup.bash
+cd /home/${Username}/${ros2_ws}
+source /opt/ros/${DISTRO}/setup.bash    # replace <DISTRO> with your ROS 2 distro, e.g. jazzy - no need if only one Distro installedm since the ${...} gets for you
+colcon build                            # use colcon build --packages-select <package_name> in order to not build every package and just the one that you require.
+source install/setup.bash               # add in .bashrc file, so not to source it everytime
 ```
 
 Replace the path above with your clone location if different.
