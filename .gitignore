@@ -31,7 +31,7 @@ CTestTestfile.cmake
 Thumbs.db
 
 # Optional: uncomment if you keep personal editor config local only
-# .vscode/
+.vscode/
 
 # --- Large / machine-local artifacts (uncomment if you use them in-tree) ---
 # *.bag

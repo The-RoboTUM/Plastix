@@ -92,6 +92,22 @@ The sections below describe **what belongs in each package** so the stack stays 
 
 ---
 
+## sensors
+
+**Role:** All Sensor nodes with a single launch file that would startup all sensor publishers. The Sensor Nodes include Camera, GPS, Wheel Encoders, IMU, Lidar and anything else that the team decides.
+
+**Typical contents** 
+
+- ** ** (`launch/`): e.g. `bringup.launch.py` that includes other packages’ launches with consistent args (`use_sim_time`, namespaces).
+- **
+
+**Design guideline**
+
+- Keep `sensors` thin: orchestration and defaults, not the only place holding URDF or low-level controller parameters.
+
+
+---
+
 ## Layout on disk
 
 All of these packages are **siblings** under `src/`. `robot_bringup` is not a folder that contains the others; it is the same kind of ROS package as the rest:
@@ -103,6 +119,7 @@ src/
 ├── robot_description/
 ├── robot_localization/
 └── robot_mapping/
+└── sensors/
 ```
 
 ## What `robot_bringup` does at runtime
