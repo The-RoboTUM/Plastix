@@ -98,7 +98,7 @@ The sections below describe **what belongs in each package** so the stack stays 
 
 **Typical contents** 
 
-- ** ** (`launch/`): e.g. `bringup.launch.py` that includes other packages’ launches with consistent args (`use_sim_time`, namespaces).
+- ** ** (`launch/`): e.g. `sensors.launch.py` that includes other packages’ launches with consistent args (`use_sim_time`, namespaces).
 - **
 
 **Design guideline**

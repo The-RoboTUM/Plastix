@@ -7,6 +7,7 @@
 #include "sensor_msgs/msg/image.hpp"
 #include <cv_bridge/cv_bridge.hpp>
 #include <opencv2/opencv.hpp>
+#include <sensor_msgs/msg/camera_info.hpp>
 
 class D405PointCloudNode : public rclcpp::Node {
 public:
