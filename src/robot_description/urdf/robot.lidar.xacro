@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
   <xacro:macro
-    name="robby_lidar"
+    name="robot_lidar"
     params="
       parent:=chassis_link
       xyz:='0 0 0.15'

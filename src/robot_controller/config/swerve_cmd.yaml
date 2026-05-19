@@ -1,0 +1,28 @@
+swerve_cmd_node:
+  ros__parameters:
+    a: 0.203
+    b: 0.16556
+    wheel_radius: 0.052
+    cmd_vel_topic: /cmd_vel
+    joint_state_topic: /joint_states
+    command_topic: /swerve_cmd_joint_states
+    steering_angle_limit: 1.5708
+    max_wheel_angular_speed: 30.0
+    kx: 4.0
+    ky: 4.0
+    ktheta: 3.0
+    kd_gains:
+      - 5.0
+      - 5.0
+      - 5.0
+      - 5.0
+    steering_joint_names:
+      - f_left_steer
+      - b_leftsteer
+      - b_rightsteer
+      - f_right_steer
+    drive_joint_names:
+      - f_leftwheel
+      - b_leftwheel
+      - b_rightwheel
+      - f_rightwheel

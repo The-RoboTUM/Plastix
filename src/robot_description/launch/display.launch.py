@@ -10,13 +10,13 @@ import xacro
 
 
 def generate_launch_description():
-    package_share = Path(get_package_share_directory("robby_description"))
-    xacro_path = package_share / "urdf" / "Robby_v1.urdf.xacro"
+    package_share = Path(get_package_share_directory("robot_description"))
+    xacro_path = package_share / "urdf" / "robot.urdf.xacro"
     rviz_config = package_share / "rviz" / "display.rviz"
     use_joint_state_publisher_gui = LaunchConfiguration("use_joint_state_publisher_gui")
     robot_description = xacro.process_file(
         str(xacro_path),
-        mappings={"mesh_dir": "package://robby_description/meshes"},
+        mappings={"mesh_dir": "package://robot_description/meshes"},
     ).toxml()
 
     return LaunchDescription(

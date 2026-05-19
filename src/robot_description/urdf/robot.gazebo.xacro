@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
-<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="Robby_v1">
-  <xacro:arg name="mesh_dir" default="package://robby_description/meshes" />
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="robot">
+  <xacro:arg name="mesh_dir" default="package://robot_description/meshes" />
   <xacro:arg name="controllers_file" default="" />
   <xacro:arg name="imu_update_rate" default="100.0" />
   <xacro:arg name="use_lidar" default="false" />
@@ -14,9 +14,9 @@
   <xacro:arg name="camera_topic" default="/camera/image_raw" />
   <xacro:arg name="camera_update_rate" default="15.0" />
 
-  <xacro:include filename="Robby_v1.core.xacro" />
-  <xacro:include filename="Robby_v1.lidar.xacro" />
-  <xacro:include filename="Robby_v1.camera.xacro" />
+  <xacro:include filename="robot.core.xacro" />
+  <xacro:include filename="robot.lidar.xacro" />
+  <xacro:include filename="robot.camera.xacro" />
 
   <xacro:macro name="ros2_control_position_joint" params="joint_name">
     <joint name="${joint_name}">
@@ -34,10 +34,10 @@
     </joint>
   </xacro:macro>
 
-  <xacro:robby_robot mesh_dir="$(arg mesh_dir)" />
+  <xacro:robot_robot mesh_dir="$(arg mesh_dir)" />
 
   <xacro:if value="$(arg use_lidar)">
-    <xacro:robby_lidar
+    <xacro:robot_lidar
       parent="chassis_link"
       xyz="$(arg lidar_xyz)"
       rpy="$(arg lidar_rpy)"
@@ -47,7 +47,7 @@
   </xacro:if>
 
   <xacro:if value="$(arg use_camera)">
-    <xacro:robby_camera
+    <xacro:robot_camera
       parent="chassis_link"
       xyz="$(arg camera_xyz)"
       rpy="$(arg camera_rpy)"
@@ -64,7 +64,7 @@
     </sensor>
   </gazebo>
 
-  <ros2_control name="RobbyGazeboSystem" type="system">
+  <ros2_control name="robotGazeboSystem" type="system">
     <hardware>
       <plugin>gz_ros2_control/GazeboSimSystem</plugin>
     </hardware>

@@ -88,7 +88,7 @@
     </joint>
   </xacro:macro>
 
-  <xacro:macro name="robby_robot" params="mesh_dir">
+  <xacro:macro name="robot_robot" params="mesh_dir">
     <xacro:property name="mesh_uri_root" value="${mesh_dir}" />
     <xacro:property name="front_steer_limit" value="1.5708" />
     <xacro:property name="rear_steer_limit" value="1.5708" />

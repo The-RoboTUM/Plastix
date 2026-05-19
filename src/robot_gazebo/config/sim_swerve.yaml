@@ -1,0 +1,43 @@
+sim_swerve:
+  # Save the full terminal output of the sim launch to a timestamped log file.
+  enable_runtime_logging: false
+
+  # Subdirectory under the workspace root where sim launch logs should be written.
+  runtime_log_subdir: debug_logs/launch_output
+
+  # Enable the 2D lidar overlay on the robot and bridge the /scan topic into ROS 2.
+  use_lidar: true
+
+  # Enable the RGB-D camera overlay and bridge /camera/image, /camera/depth_image,
+  # and /camera/camera_info into ROS 2.
+  use_camera: true
+
+  # Start the localization stack from robot_localization/launch/localization.launch.py.
+  enable_localization: true
+
+  # Start the laser scan matcher and fuse /laser/odom into the EKF.
+  # Set this to false when you want SLAM to use /scan without LiDAR odom affecting EKF.
+  enable_laser_odometry: false
+  
+  # Start slam_toolbox inside the same localization launch.
+  # This should usually be true only for mapping / map-relative localization workflows.
+  enable_slam: true
+
+  # Start saved-map localization with nav2_map_server + AMCL.
+  enable_saved_map_localization: false
+
+  # Start Nav2 servers on top of the saved-map localization stack.
+  enable_nav2: false
+
+  # Gazebo world file to load, relative to robot_gazebo/worlds/.
+  world_file: mapping_arena.world.sdf
+
+  # Robot spawn position in the Gazebo world frame [m].
+  spawn_x: -6.0
+  spawn_y: 0.0
+  spawn_z: 0.2
+
+  # Robot spawn orientation in the Gazebo world frame [rad].
+  spawn_roll: 0.0
+  spawn_pitch: 0.0
+  spawn_yaw: 0.0
