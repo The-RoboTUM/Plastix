@@ -7,14 +7,14 @@
       xyz:='0.15 0.0 0.0195'
       rpy:='0 0 0'
       add_gazebo:=false
-      topic:=/camera
+      topic:=/camera/image_raw
       update_rate:=30.0
       width:=1280
       height:=720
       hfov:=1.5184
       vfov:=1.0122
       near_clip:=0.07
-      far_clip:=6.0
+      far_clip:=8.0
       stereo_baseline:=0.018
       dimension_x:=0.042
       dimension_y:=0.042

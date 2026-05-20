@@ -27,6 +27,6 @@
       parent="chassis_link"
       xyz="$(arg camera_xyz)"
       rpy="$(arg camera_rpy)"
-      add_gazebo="false" />
+      add_gazebo="true" />
   </xacro:if>
 </robot>

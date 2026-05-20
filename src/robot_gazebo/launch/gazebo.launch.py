@@ -38,7 +38,6 @@ def generate_launch_description():
     xacro_path = description_share / "urdf" / "robot.gazebo.xacro"
     controllers_file = gazebo_share / "config" / "ros2_controllers.yaml"
     
-    # --- FIXED: Direct fallback to mapping_arena.world if not specified in YAML ---
     world_default = str(
         gazebo_share / "worlds" / str(sim_defaults.get("world_file", "mapping_arena.world"))
     )
@@ -100,13 +99,18 @@ def generate_launch_description():
             "/imu/data@sensor_msgs/msg/Imu[gz.msgs.IMU",
             "/ground_truth/odom@nav_msgs/msg/Odometry[gz.msgs.Odometry",
             "/scan@sensor_msgs/msg/LaserScan@gz.msgs.LaserScan",
-            "/camera/image@sensor_msgs/msg/Image@gz.msgs.Image",
-            "/camera/depth_image@sensor_msgs/msg/Image@gz.msgs.Image",
-            "/camera/camera_info@sensor_msgs/msg/CameraInfo@gz.msgs.CameraInfo",
+
+            "/camera/image_raw/image@sensor_msgs/msg/Image[gz.msgs.Image",
+            "/camera/image_raw/depth_image@sensor_msgs/msg/Image[gz.msgs.Image",
+            "/camera/image_raw/camera_info@sensor_msgs/msg/CameraInfo[gz.msgs.CameraInfo",
+        ],
+        remappings=[
+            ("/camera/image_raw/image", "/camera/image_raw"),
+            ("/camera/image_raw/depth_image", "/camera/depth_image_raw"),
+            ("/camera/image_raw/camera_info", "/camera/camera_info"),
         ],
     )
 
-    # --- FIXED: Changed 'parameters' to 'arguments' for ros_gz_sim's create node ---
     spawn_robot = Node(
         package="ros_gz_sim",
         executable="create",
@@ -129,6 +133,24 @@ def generate_launch_description():
         executable="spawner",
         arguments=["joint_state_broadcaster", "--controller-manager", "/controller_manager"],
         output="screen",
+    )
+
+    ros_gz_color_bridge = Node(
+        package="ros_gz_image",
+        executable="image_bridge",
+        name="ros_gz_color_bridge",
+        arguments=["/camera/image_raw/image"],
+        output="screen",
+        condition=IfCondition(use_camera)
+    )
+
+    ros_gz_depth_bridge = Node(
+        package="ros_gz_image",
+        executable="image_bridge",
+        name="ros_gz_depth_bridge",
+        arguments=["/camera/image_raw/depth_image"],
+        output="screen",
+        condition=IfCondition(use_camera)
     )
 
     steering_position_controller = Node(
@@ -250,5 +272,7 @@ def generate_launch_description():
             load_wheel_controller,
             swerve_cmd_node,
             joint_command_bridge,
+            ros_gz_color_bridge,
+            ros_gz_depth_bridge,
         ]
     )
