@@ -26,11 +26,18 @@ public:
         // Initialize OpenCV ORB Detector and Matcher to avoid Segfaults
         orb_detector_ = cv::ORB::create(500);
         matcher_ = cv::BFMatcher::create(cv::NORM_HAMMING, true);
+        bool simulation_enabled_ = true; // set True, if working with simulated signals
 
         // Subscribers
-        rgb_sub_.subscribe(this, "/camera/color/image_raw");
-        depth_sub_.subscribe(this, "/camera/depth/image_raw");
-        info_sub_.subscribe(this, "/camera/color/camera_info");
+        if(simulation_enabled_==true){
+            rgb_sub_.subscribe(this, "/camera/image_raw/image");                //TODO: Change to Simulation topic
+            depth_sub_.subscribe(this, "/camera/image_raw/depth_image_raw");    //TODO: Change to Simulation topic
+            info_sub_.subscribe(this, "/camera/image_raw/camera_info");         //TODO: Change to Simulation topic
+        }else{
+            rgb_sub_.subscribe(this, "/camera/color/image_raw");
+            depth_sub_.subscribe(this, "/camera/depth/image_raw");
+            info_sub_.subscribe(this, "/camera/color/camera_info");
+        }
 
         // Publish PointCloud2
         pc2_pub_ = this->create_publisher<sensor_msgs::msg::PointCloud2>("camera/pointcloud2", 10);
