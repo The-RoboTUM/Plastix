@@ -4,7 +4,6 @@ from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 import cv2
 import os
-from datetime import datetime
 
 
 class CameraNode(Node):
@@ -57,8 +56,7 @@ class CameraNode(Node):
         
         # Save image every 10 frames
         if self.frame_count % 10 == 0:
-            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
-            cv2.imwrite(f'{self.storage_dir}/frame_{timestamp}.jpg', frame)
+            cv2.imwrite(f'{self.storage_dir}.jpg', frame)
         self.frame_count += 1
 
     def destroy_node(self):
