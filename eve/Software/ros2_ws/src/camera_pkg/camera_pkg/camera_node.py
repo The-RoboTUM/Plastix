@@ -3,6 +3,8 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image
 from cv_bridge import CvBridge
 import cv2
+import os
+from datetime import datetime
 
 
 class CameraNode(Node):
@@ -36,6 +38,11 @@ class CameraNode(Node):
         )
 
         self.timer = self.create_timer(1.0 / frame_rate, self.publish_frame)
+        
+        # Setup image storage directory
+        self.storage_dir = '/tmp/camera_images'
+        os.makedirs(self.storage_dir, exist_ok=True)
+        self.frame_count = 0
 
     def publish_frame(self):
         ret, frame = self.cap.read()
@@ -47,6 +54,12 @@ class CameraNode(Node):
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = 'camera_frame'
         self.publisher.publish(msg)
+        
+        # Save image every 10 frames
+        if self.frame_count % 10 == 0:
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S_%f')[:-3]
+            cv2.imwrite(f'{self.storage_dir}/frame_{timestamp}.jpg', frame)
+        self.frame_count += 1
 
     def destroy_node(self):
         self.cap.release()
