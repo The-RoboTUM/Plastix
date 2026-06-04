@@ -1,0 +1,9 @@
+repositories:
+  csm:
+    type: git
+    url: https://github.com/AlexKaravaev/csm.git
+    version: ros2_csm_eigen
+  ros2_laser_scan_matcher:
+    type: git
+    url: https://github.com/AlexKaravaev/ros2_laser_scan_matcher.git
+    version: main

@@ -1,0 +1,366 @@
+\documentclass[12pt,a4paper]{report}
+
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[a4paper,margin=1in]{geometry}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{longtable}
+\usepackage{enumitem}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue!50!black,
+  urlcolor=blue!50!black,
+  citecolor=blue!50!black
+}
+
+\title{Digital Twin Architecture and Vehicle Mathematics for the ITQ robot Platform}
+\author{Aditya}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+\tableofcontents
+\clearpage
+
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+This document describes the current digital twin pipeline for the ITQ robot mobile robot. The original mechanical platform was designed as a four-wheel-drive, four-wheel-steer robot. For the current software stage, however, the platform is intentionally simplified to an Ackermann-style vehicle by locking the rear steering joints at zero and commanding only the front steering joints. The present system contains a ROS~2 robot description, Gazebo Sim integration, joint-level control through \texttt{ros2\_control}, wheel-based odometry, IMU preprocessing, and Extended Kalman Filter (EKF) fusion through the \texttt{robot\_localization} package. This report summarizes the mathematical model used in the current software, the role of each ROS package, the frame definitions, the estimation pipeline, and the current limitations.
+
+\chapter{Introduction}
+
+\section{Motivation}
+The main objective of the current work is to create a simulation and estimation pipeline that is as close as possible to a real robotic deployment. Rather than relying on perfect world-state information from the simulator, the software stack is designed to infer the robot state from simulated sensor information, in the same way that a physical robot would rely on wheel encoders, steering states, and IMU measurements.
+
+\section{Current Simplification Strategy}
+Although the long-term platform goal is a steer-drive robot with richer motion modes, the current software uses an Ackermann-style approximation in order to develop the digital twin incrementally. The simplification is defined by the following assumptions:
+\begin{itemize}[leftmargin=*]
+  \item the rear steering joints are locked at zero,
+  \item the front steering joints define the instantaneous turning geometry,
+  \item all four wheels remain driven,
+  \item state estimation is based on wheel motion and IMU data rather than simulator ground truth.
+\end{itemize}
+
+\chapter{Robot Frames and Coordinate Conventions}
+
+\section{Frame Definitions}
+The current robot model uses the following principal frames:
+\begin{itemize}[leftmargin=*]
+  \item \textbf{\texttt{base\_link}}: abstract root frame of the robot,
+  \item \textbf{\texttt{chassis\_link}}: physical chassis body under \texttt{base\_link},
+  \item \textbf{\texttt{imu\_link}}: IMU mounting frame attached to the chassis,
+  \item \textbf{\texttt{odom}}: locally consistent odometry frame used for motion tracking,
+  \item \textbf{\texttt{map}}: reserved global frame for future localization correction.
+\end{itemize}
+
+The transform chain used in the present system is
+\begin{equation}
+\texttt{odom} \rightarrow \texttt{base\_link} \rightarrow \texttt{chassis\_link} \rightarrow \texttt{joint/link tree}.
+\end{equation}
+
+\section{Interpretation of the Frames}
+The \texttt{base\_link} frame is the logical robot body reference used by controllers, odometry, and localization. The \texttt{chassis\_link} is the actual rigid body that contains the mesh, inertia, and collision geometry. This distinction is useful because it avoids assigning root-link inertia directly to \texttt{base\_link} while preserving a clean TF tree for estimation and control.
+
+\chapter{Vehicle Geometry}
+
+\section{Key Parameters}
+The current software uses the following geometric parameters:
+\begin{align}
+ L &= \text{wheelbase} \approx 0.406 \, \text{m}, \\
+ W &= \text{track width} \approx 0.33112 \, \text{m}, \\
+ r_w &= \text{wheel radius} = 0.052 \, \text{m}.
+\end{align}
+
+These quantities are defined in the xacro description and reused by the command and odometry nodes.
+
+\section{Ackermann Simplification}
+For the current stage, the steerable wheels are reduced to the two front wheels. The rear steering joints remain at zero:
+\begin{equation}
+\delta_{rl} = 0, \qquad \delta_{rr} = 0.
+\end{equation}
+The front steering joints are denoted by
+\begin{equation}
+\delta_{fl}, \qquad \delta_{fr}.
+\end{equation}
+
+\chapter{Control Mathematics}
+
+\section{Command Interface}
+The robot receives a body-frame velocity command
+\begin{equation}
+\mathbf{u} =
+\begin{bmatrix}
+v_x \\
+\omega_z
+\end{bmatrix},
+\end{equation}
+where \(v_x\) is the commanded longitudinal velocity and \(\omega_z\) is the commanded yaw rate.
+
+In the current Ackermann simplification, lateral velocity \(v_y\) is ignored.
+
+\section{Instantaneous Turning Radius}
+For a non-zero yaw command, the nominal turning radius is
+\begin{equation}
+R = \left| \frac{v_x}{\omega_z} \right|.
+\end{equation}
+The inner and outer rear radii are then
+\begin{align}
+R_{\text{in}} &= R - \frac{W}{2}, \\
+R_{\text{out}} &= R + \frac{W}{2}.
+\end{align}
+
+\section{Steering Angles}
+The corresponding front steering angles are
+\begin{align}
+\delta_{\text{in}} &= \tan^{-1}\left( \frac{L}{R_{\text{in}}} \right), \\
+\delta_{\text{out}} &= \tan^{-1}\left( \frac{L}{R_{\text{out}}} \right).
+\end{align}
+
+For a left turn (\(\omega_z > 0\)):
+\begin{align}
+\delta_{fl} &= \delta_{\text{in}}, \\
+\delta_{fr} &= \delta_{\text{out}}.
+\end{align}
+
+For a right turn (\(\omega_z < 0\)):
+\begin{align}
+\delta_{fl} &= -\delta_{\text{out}}, \\
+\delta_{fr} &= -\delta_{\text{in}}.
+\end{align}
+
+\section{Wheel Linear Speeds}
+The rear wheel linear speeds are
+\begin{align}
+v_{rl} &= s \, |\omega_z| \, R_l, \\
+v_{rr} &= s \, |\omega_z| \, R_r,
+\end{align}
+where \(s = \operatorname{sign}(v_x)\), and \(R_l, R_r\) are the left and right turning radii after the left/right assignment has been resolved.
+
+The front wheel linear speeds follow from the front wheel path radii:
+\begin{align}
+v_{fl} &= s \, |\omega_z| \sqrt{R_l^2 + L^2}, \\
+v_{fr} &= s \, |\omega_z| \sqrt{R_r^2 + L^2}.
+\end{align}
+
+Wheel angular velocities are obtained by
+\begin{equation}
+\dot{\phi}_i = \frac{v_i}{r_w}.
+\end{equation}
+
+\chapter{Wheel Odometry Model}
+
+\section{Motivation}
+The current estimation architecture intentionally avoids using simulator ground truth as the primary source of robot pose. Instead, the simulator provides sensor-like feedback through joint states and IMU messages. This allows the software stack to resemble the structure required on real hardware.
+
+\section{Encoder-Derived Wheel Travel}
+For each wheel, the incremental wheel travel is computed from the change in joint position:
+\begin{equation}
+\Delta s_i = \Delta \phi_i \, r_w.
+\end{equation}
+
+Because the right-side wheel joints use mirrored joint axes in the URDF, sign correction is applied before odometry is computed. In software, this is represented by per-wheel multipliers:
+\begin{equation}
+\Delta s_i^{\text{corr}} = m_i \, \Delta s_i,
+\end{equation}
+where \(m_i \in \{-1, +1\}\) depends on the wheel joint orientation convention.
+
+\section{Current Ackermann Odometry Approximation}
+The current raw wheel odometry is not based on the full four-wheel swerve least-squares model during normal operation. Instead, it uses a rear-axle Ackermann approximation:
+\begin{align}
+\Delta s_r &= \frac{1}{2}\left(\Delta s_{rl}^{\text{corr}} + \Delta s_{rr}^{\text{corr}}\right), \\
+\Delta \psi &= \frac{\Delta s_{rr}^{\text{corr}} - \Delta s_{rl}^{\text{corr}}}{W}.
+\end{align}
+
+The body-frame incremental displacement is therefore approximated as
+\begin{align}
+\Delta x_b &= \Delta s_r, \\
+\Delta y_b &= 0, \\
+\Delta \theta &= \Delta \psi.
+\end{align}
+
+\section{Pose Update}
+Let the previous robot pose in the odometry frame be \((x_k, y_k, \theta_k)\). The next pose is computed using midpoint heading integration:
+\begin{align}
+\theta_{k+1/2} &= \theta_k + \frac{1}{2}\Delta \theta, \\
+x_{k+1} &= x_k + \cos(\theta_{k+1/2})\Delta x_b - \sin(\theta_{k+1/2})\Delta y_b, \\
+y_{k+1} &= y_k + \sin(\theta_{k+1/2})\Delta x_b + \cos(\theta_{k+1/2})\Delta y_b, \\
+\theta_{k+1} &= \theta_k + \Delta \theta.
+\end{align}
+
+\section{Velocities}
+Given the sample interval \(\Delta t\), the reported body velocities are
+\begin{align}
+v_x &= \frac{\Delta x_b}{\Delta t}, \\
+v_y &= \frac{\Delta y_b}{\Delta t}, \\
+\omega_z &= \frac{\Delta \theta}{\Delta t}.
+\end{align}
+
+\chapter{IMU Processing}
+
+\section{Raw IMU Source}
+In simulation, the IMU is defined as a Gazebo sensor attached to \texttt{imu\_link}. The IMU data is bridged from Gazebo to ROS~2 using \texttt{ros\_gz\_bridge}.
+
+\section{IMU Preprocessing}
+Before entering the EKF, the IMU message is normalized by a preprocessing node. The current preprocessing performs the following tasks:
+\begin{itemize}[leftmargin=*]
+  \item forces the ROS frame identifier to \texttt{imu\_link},
+  \item fills orientation covariance if it is missing,
+  \item fills angular-velocity covariance if it is missing,
+  \item fills linear-acceleration covariance if it is missing.
+\end{itemize}
+
+This step is important because state estimation requires a consistent frame name and non-degenerate covariance matrices.
+
+\chapter{Extended Kalman Filter Fusion}
+
+\section{Implementation Strategy}
+The current EKF is not implemented manually inside this workspace. Instead, the system uses the ROS~2 package \texttt{robot\_localization}, specifically the \texttt{ekf\_node}. Therefore:
+\begin{itemize}[leftmargin=*]
+  \item the process and update logic are provided by the package,
+  \item the workspace only provides measurement sources and configuration,
+  \item the filter model is a generic rigid-body motion model rather than a custom tire-force vehicle model.
+\end{itemize}
+
+\section{State Interpretation}
+The EKF internally estimates a general motion state including position, orientation, linear velocity, angular velocity, and linear acceleration. Conceptually, the state can be written as
+\begin{equation}
+\mathbf{x} =
+\begin{bmatrix}
+x, y, z, \phi, \theta, \psi, v_x, v_y, v_z, \omega_x, \omega_y, \omega_z, a_x, a_y, a_z
+\end{bmatrix}^{\top}.
+\end{equation}
+
+\section{Measurements Used in the Current Pipeline}
+The current filter uses:
+\begin{itemize}[leftmargin=*]
+  \item raw wheel odometry from \texttt{/wheel/odom},
+  \item filtered IMU messages from \texttt{/imu/data/filtered}.
+\end{itemize}
+
+At the present tuning stage:
+\begin{itemize}[leftmargin=*]
+  \item wheel odometry contributes primarily longitudinal motion,
+  \item IMU contributes heading and yaw rate,
+  \item linear acceleration is currently not emphasized in the fusion.
+\end{itemize}
+
+\section{Why the EKF is Needed}
+Wheel odometry alone accumulates drift and is sensitive to wheel slip, steering error, and imperfect kinematic assumptions. The IMU alone provides angular information and short-term inertial behavior, but not reliable position by itself. The EKF combines these partial sources into a smoother and more consistent local pose estimate.
+
+\chapter{Software Architecture}
+
+\section{Package-Level Structure}
+The current workspace is organized into four main packages:
+\begin{longtable}{>{\raggedright\arraybackslash}p{0.18\textwidth} >{\raggedright\arraybackslash}p{0.75\textwidth}}
+\toprule
+\textbf{Package} & \textbf{Role} \\
+\midrule
+\endhead
+\texttt{robot\_description} & Robot geometry, xacro files, mesh resources, RViz launch, and the separation between the clean robot model and the Gazebo-specific overlay. \\
+\texttt{robot\_control} & Ackermann command conversion, wheel/joint command bridging, and raw wheel odometry estimation. \\
+\texttt{robot\_gazebo} & Gazebo world, \texttt{ros2\_control} controllers, robot spawning, sensor bridging, and simulation bring-up. \\
+\texttt{robot\_localization} & IMU preprocessing and EKF configuration through \texttt{robot\_localization}. \\
+\bottomrule
+\end{longtable}
+
+\section{Main Executable Nodes}
+The present software pipeline includes the following main nodes:
+\begin{longtable}{>{\raggedright\arraybackslash}p{0.28\textwidth} >{\raggedright\arraybackslash}p{0.62\textwidth}}
+\toprule
+\textbf{Node} & \textbf{Function} \\
+\midrule
+\endhead
+\texttt{robot\_state\_publisher} & Publishes the TF tree from the robot description and current joint states. \\
+\texttt{ackermann\_cmd\_node} & Converts \texttt{/cmd\_vel} to steering angles and wheel velocity commands. \\
+\texttt{ackermann\_controller\_bridge} & Converts joint-command style output into the command topics required by the ROS~2 controllers. \\
+\texttt{joint\_state\_broadcaster} & Publishes \texttt{/joint\_states} from the simulated hardware interfaces. \\
+\texttt{swerve\_odometry\_node} & Computes raw wheel odometry, currently in Ackermann odometry mode. \\
+\texttt{imu\_preprocessor\_node} & Normalizes IMU frame identifiers and covariance fields. \\
+\texttt{ekf\_filter\_node} & Fuses wheel odometry and IMU data. \\
+\bottomrule
+\end{longtable}
+
+\section{Current Topic Flow}
+The operational signal flow is:
+\begin{align}
+\texttt{/cmd\_vel}
+&\rightarrow \texttt{ackermann\_cmd\_node} \nonumber \\
+&\rightarrow \texttt{/ackermann\_cmd\_joint\_states} \nonumber \\
+&\rightarrow \texttt{ackermann\_controller\_bridge} \nonumber \\
+&\rightarrow \texttt{/steering\_position\_controller/commands}, \,
+\texttt{/wheel\_velocity\_controller/commands}.
+\end{align}
+
+Meanwhile, the state-estimation side follows:
+\begin{align}
+\texttt{Gazebo joints}
+&\rightarrow \texttt{/joint\_states}
+\rightarrow \texttt{swerve\_odometry\_node}
+\rightarrow \texttt{/wheel/odom}, \\
+\texttt{Gazebo IMU}
+&\rightarrow \texttt{/imu/data}
+\rightarrow \texttt{imu\_preprocessor\_node}
+\rightarrow \texttt{/imu/data/filtered}, \\
+\left( \texttt{/wheel/odom}, \texttt{/imu/data/filtered} \right)
+&\rightarrow \texttt{ekf\_filter\_node}
+\rightarrow \texttt{/odometry/filtered}, \, \texttt{odom} \rightarrow \texttt{base\_link}.
+\end{align}
+
+\chapter{Why Gazebo Ground Truth is Not the Main State Source}
+
+\section{Design Philosophy}
+Although Gazebo can provide perfect world-state information, the present digital twin intentionally does not use that as the primary feedback source for localization. The reason is that the long-term objective is not simply to animate a robot in simulation, but to create a software architecture that can later be transferred to real hardware.
+
+\section{Practical Interpretation}
+The simulator is therefore used primarily as a provider of:
+\begin{itemize}[leftmargin=*]
+  \item joint-state measurements,
+  \item IMU measurements,
+  \item simulation clock,
+  \item controlled actuation through \texttt{ros2\_control}.
+\end{itemize}
+
+This makes the pipeline closer to the physical robot, where no perfect world pose is available by default.
+
+\chapter{Current Limitations}
+
+\section{Kinematic Approximation}
+The platform is mechanically capable of richer motion than the present software uses. The current odometry and command stack assume Ackermann-like motion, which is a useful engineering simplification but not the final intended platform behavior.
+
+\section{Estimator Model}
+The current EKF is a generic package-level filter configuration. It is not a custom vehicle-state observer derived from a first-principles dynamic model. Therefore, it is best viewed as a robust engineering estimator rather than a final model-based observer.
+
+\section{Remaining Tuning Work}
+The following aspects still require refinement:
+\begin{itemize}[leftmargin=*]
+  \item consistency between simulated path radius and estimated path radius,
+  \item IMU noise and covariance tuning,
+  \item wheel odometry calibration,
+  \item future transition back toward a full steer-drive or swerve-drive formulation.
+\end{itemize}
+
+\chapter{Conclusion}
+The current ITQ robot software stack already forms a meaningful digital twin foundation. The robot description is separated from the Gazebo overlay, the command path is functional, the simulator uses \texttt{ros2\_control}, and the state estimation pipeline relies on wheel motion and IMU data rather than direct simulator truth. At the present stage, the most accurate way to describe the pipeline is as a ROS~2 Ackermann-style estimation and control stack built on top of a mechanically richer steer-drive robot. This provides a practical base for future work on more advanced steering modes, improved localization, and eventual transfer to hardware.
+
+\chapter*{Appendix: Current Files of Interest}
+\addcontentsline{toc}{chapter}{Appendix: Current Files of Interest}
+\begin{itemize}[leftmargin=*]
+  \item \texttt{src/robot\_description/urdf/robot\_v1.core.xacro}
+  \item \texttt{src/robot\_description/urdf/robot\_v1.gazebo.xacro}
+  \item \texttt{src/robot\_description/urdf/robot\_v1.urdf.xacro}
+  \item \texttt{src/robot\_control/robot\_control/ackermann\_cmd\_node.py}
+  \item \texttt{src/robot\_control/robot\_control/swerve\_odometry\_node.py}
+  \item \texttt{src/robot\_control/config/swerve\_odometry.yaml}
+  \item \texttt{src/robot\_gazebo/launch/sim\_ackermann.launch.py}
+  \item \texttt{src/robot\_gazebo/config/ros2\_controllers.yaml}
+  \item \texttt{src/robot\_localization/robot\_localization/imu\_preprocessor\_node.py}
+  \item \texttt{src/robot\_localization/config/ekf.yaml}
+\end{itemize}
+
+\end{document}
