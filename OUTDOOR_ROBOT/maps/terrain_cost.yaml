@@ -1,0 +1,10 @@
+# Traversability / terrain difficulty overlay (same frame as arena_map.yaml).
+# PGM: 0 = easy ground, 200 = high-cost zones (simulated grass), only on free space.
+# Used by bot_planning global costmap layer (topic /terrain_costmap).
+image: terrain_cost.pgm
+mode: scale
+resolution: 0.050
+origin: [-2.009, -7.041, 0]
+negate: 0
+occupied_thresh: 100
+free_thresh: 0
