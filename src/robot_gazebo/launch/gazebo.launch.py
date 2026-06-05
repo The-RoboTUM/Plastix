@@ -173,6 +173,7 @@ def generate_launch_description():
         name="swerve_cmd_node",
         output="screen",
         parameters=[str(control_share / "config" / "swerve_cmd.yaml"), {"use_sim_time": True}],
+        condition=IfCondition(LaunchConfiguration("use_lidar")),
     )
 
     joint_command_bridge = Node(

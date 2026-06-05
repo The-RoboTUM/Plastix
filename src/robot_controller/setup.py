@@ -13,6 +13,7 @@ setup(
         (f"share/{package_name}/config", ["config/joint_command_bridge.yaml"]),
         (f"share/{package_name}/config", ["config/swerve_cmd.yaml"]),
         (f"share/{package_name}/launch", ["launch/swerve.launch.py"]),
+        (f"share/{package_name}/launch", ["launch/control.launch.py"]),
     ],
     install_requires=["setuptools"],
     zip_safe=True,
@@ -24,6 +25,8 @@ setup(
         "console_scripts": [
             "joint_command_bridge = robot_controller.joint_command_bridge:main",
             "swerve_cmd_node = robot_controller.swerve_cmd_node:main",
+            "robot_control = robot_controller.robot_control:main",
+            "swerve_teleop_node = robot_controller.swerve_teleop_node:main",
         ],
     },
 )

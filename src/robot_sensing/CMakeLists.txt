@@ -40,7 +40,6 @@ ament_target_dependencies(realsense_node
   sensor_msgs
   std_msgs
   cv_bridge
-  image_transport
 )
 ament_target_dependencies(realsense_slam_provider
   rclcpp
@@ -48,10 +47,16 @@ ament_target_dependencies(realsense_slam_provider
   cv_bridge
 )
 
-install(TARGETS realsense_node
+# 1. Install the compiled C++ binaries (targets)
+install(TARGETS 
+  realsense_node
+  realsense_slam_provider
   DESTINATION lib/${PROJECT_NAME}
 )
-install(TARGETS realsense_slam_provider
+
+# 2. Install any Python/shell scripts separately as PROGRAMS
+install(PROGRAMS 
+  scripts/imu_bno085.py
   DESTINATION lib/${PROJECT_NAME}
 )
 

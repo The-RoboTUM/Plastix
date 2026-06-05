@@ -10,8 +10,8 @@ from launch_ros.actions import SetUseSimTime
 
 
 def generate_launch_description():
-    bot_gazebo = get_package_share_directory("bot_gazebo")
-    bot_description = get_package_share_directory("bot_description")
+    robot_gazebo = get_package_share_directory("robot_gazebo")
+    robot_description = get_package_share_directory("robot_description")
     ros_gz_sim = get_package_share_directory("ros_gz_sim")
 
     world_file = LaunchConfiguration("world_file")
@@ -39,7 +39,7 @@ def generate_launch_description():
 
     simulate_robot = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(bot_gazebo, "launch", "simulate_robot.launch.py")
+            os.path.join(robot_gazebo, "launch", "simulate_robot.launch.py")
         ),
         launch_arguments={
             "use_lidar": use_lidar,
@@ -55,7 +55,7 @@ def generate_launch_description():
 
     rviz = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
-            os.path.join(bot_description, "launch", "rviz.launch.py")
+            os.path.join(robot_description, "launch", "rviz.launch.py")
         ),
         launch_arguments={"use_sim_time": "true"}.items(),
         condition=IfCondition(use_rviz),
@@ -67,7 +67,7 @@ def generate_launch_description():
             SetEnvironmentVariable(name="GZ_SIM_SYSTEM_PLUGIN_PATH", value=ros_lib),
             DeclareLaunchArgument(
                 "world_file",
-                default_value=os.path.join(bot_gazebo, "worlds", "mapping_arena.world.sdf"),
+                default_value=os.path.join(robot_gazebo, "worlds", "mapping_arena.world.sdf"),
                 description="Gazebo world file.",
             ),
             DeclareLaunchArgument("use_lidar", default_value="true"),
