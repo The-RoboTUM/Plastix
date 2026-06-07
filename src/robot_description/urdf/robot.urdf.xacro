@@ -2,11 +2,13 @@
 <!-- Clean robot description only. Gazebo and ros2_control live in robot.gazebo.xacro. -->
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="robot">
   <xacro:arg name="mesh_dir" default="package://robot_description/meshes" />
-  <xacro:arg name="use_lidar" default="false" />
-  <xacro:arg name="lidar_xyz" default="0 0 0.15" />
+
+  <xacro:arg name="use_lidar" default="true" />
+  <xacro:arg name="lidar_xyz" default="0.1 0 0.09" />
   <xacro:arg name="lidar_rpy" default="0 0 0" />
-  <xacro:arg name="use_camera" default="false" />
-  <xacro:arg name="camera_xyz" default="0.12 0 0.18" />
+  
+  <xacro:arg name="use_camera" default="true" />
+  <xacro:arg name="camera_xyz" default="0.16 0 0.02" />
   <xacro:arg name="camera_rpy" default="0 0 0" />
 
   <xacro:include filename="robot.core.xacro" />

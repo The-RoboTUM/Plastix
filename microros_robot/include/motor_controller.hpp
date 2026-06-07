@@ -12,6 +12,7 @@ static constexpr bool MOTOR_USE_ENCODERS = true;
 
 // Calibración encoder: ticks por segundo cuando velocidad normalizada == 1.0
 static constexpr float MAX_TICKS_PER_SEC = 2000.0f;
+
 // Pulsos por revolución del encoder en el eje del motor (CPR * reducción)
 static constexpr float ENCODER_TICKS_PER_REV = 1440.0f;
 

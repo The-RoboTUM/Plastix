@@ -6,6 +6,7 @@ void MotorController::encoderIsr0() {
   if (!instance_) {
     return;
   }
+  
   const MotorChannel &ch = instance_->channels_[0];
   if (digitalRead(ch.enc_pin_b) != digitalRead(ch.enc_pin_a)) {
     instance_->states_[0].encoder_ticks++;

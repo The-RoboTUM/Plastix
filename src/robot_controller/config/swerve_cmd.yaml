@@ -6,7 +6,7 @@ swerve_cmd_node:
     cmd_vel_topic: /cmd_vel
     joint_state_topic: /joint_states
     command_topic: /swerve_cmd_joint_states
-    steering_angle_limit: 1.5708
+    steering_angle_limit: 0.7854
     max_wheel_angular_speed: 30.0
     kx: 4.0
     ky: 4.0

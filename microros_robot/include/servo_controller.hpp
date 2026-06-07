@@ -18,7 +18,7 @@ static constexpr int16_t SERVO_MAX_SPEED = 3400;
 static constexpr uint8_t SERVO_ACCELERATION = 50;
 
 // Default Feetech IDs (set during servo configuration)
-static constexpr uint8_t SERVO_IDS[NUM_STEER_SERVOS] = {1, 2, 3, 4};
+static constexpr uint8_t SERVO_IDS[NUM_STEER_SERVOS] = {11, 12, 13, 14};
 
 class ServoController {
 public:

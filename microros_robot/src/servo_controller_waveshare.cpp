@@ -38,7 +38,7 @@ void subscription_callback(const void * msvgin) {
     uint16_t target_position = constrain(incoming_msg->data, 0, 4095);
     
     // Drive the servo via Serial2! (ID, Position, Speed, Acceleration)
-    st.WritePosEx(SERVO_ID, target_position, 1500, 50);
+    st.WritePosEx(SERVO_ID, target_position, SERVO_MAX_SPEED/2, SERVO_ACCELERATION);
     
     // Toggle LED to visually acknowledge message arrival
     digitalWrite(LED_PIN, !digitalRead(LED_PIN));
@@ -47,7 +47,7 @@ void subscription_callback(const void * msvgin) {
 void setup() {
     // 1. Initialize the Waveshare Servo on Hardware Serial 2
     // Pins: RX2 = GPIO16, TX2 = GPIO17
-    Serial2.begin(1000000, SERIAL_8N1, 16, 17);
+    Serial2.begin(SERVO_UART_BAUD, SERIAL_8N1, SERVO_UART_RX_PIN, SERVO_UART_TX_PIN);
     st.pSerial = &Serial2;
 
     // 2. Initialize micro-ROS transport layer via the default USB Serial

@@ -17,8 +17,7 @@
 //   [4..7] steering servo velocities                 normalized [-1, 1]
 // ---------------------------------------------------------------------------
 
-static constexpr uint8_t NUM_CMD_VALUES =
-    NUM_DRIVE_MOTORS + NUM_STEER_SERVOS;
+static constexpr uint8_t NUM_CMD_VALUES = NUM_DRIVE_MOTORS + NUM_STEER_SERVOS;
 
 static constexpr uint32_t SAFETY_TIMEOUT_MS = 1000;
 static constexpr float CMD_DEADBAND = 0.05f;
@@ -117,13 +116,11 @@ void setup_micro_ros() {
 
   inp_msg.data.capacity = NUM_CMD_VALUES;
   inp_msg.data.size = NUM_CMD_VALUES;
-  inp_msg.data.data =
-      static_cast<float *>(malloc(inp_msg.data.capacity * sizeof(float)));
+  inp_msg.data.data = static_cast<float *>(malloc(inp_msg.data.capacity * sizeof(float)));
 
   out_msg.data.capacity = NUM_CMD_VALUES;
   out_msg.data.size = NUM_CMD_VALUES;
-  out_msg.data.data =
-      static_cast<float *>(malloc(out_msg.data.capacity * sizeof(float)));
+  out_msg.data.data = static_cast<float *>(malloc(out_msg.data.capacity * sizeof(float)));
 
   microros_initialized = true;
 }
@@ -207,11 +204,8 @@ void setup() {
     setup_micro_ros();
   }
 
-  xTaskCreatePinnedToCore(steeringLoop, "Steering Control Loop", 4096, NULL, 1,
-                          NULL, 0);
-
-  xTaskCreatePinnedToCore(driveLoop, "Drive Control Loop", 4096, NULL, 1, NULL,
-                          1);
+  xTaskCreatePinnedToCore(steeringLoop, "Steering Control Loop", 4096, NULL, 1, NULL, 0);
+  xTaskCreatePinnedToCore(driveLoop, "Drive Control Loop", 4096, NULL, 1, NULL, 1);
 }
 
 void loop() {

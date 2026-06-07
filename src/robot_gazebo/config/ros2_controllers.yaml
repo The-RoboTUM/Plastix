@@ -19,6 +19,7 @@ steering_position_controller:
       - f_right_steer
       - b_leftsteer
       - b_rightsteer
+    interface_name: position
 
 wheel_velocity_controller:
   ros__parameters:
