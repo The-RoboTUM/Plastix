@@ -18,6 +18,7 @@ class CameraNode(Node):
         self.declare_parameter('frame_height', 480)
         self.declare_parameter('jpeg_quality', 80)
         self.declare_parameter('verbose', False)
+        self.declare_parameter('publish_raw', False)
 
         device_index = self.get_parameter('device_index').value
         frame_rate = self.get_parameter('frame_rate').value
@@ -25,13 +26,14 @@ class CameraNode(Node):
         height = self.get_parameter('frame_height').value
         self.jpeg_quality = self.get_parameter('jpeg_quality').value
         self.verbose = self.get_parameter('verbose').value
+        self.publish_raw = self.get_parameter('publish_raw').value
 
         qos = QoSPresetProfiles.SENSOR_DATA.value
-        self.raw_publisher = self.create_publisher(Image, 'camera/image_raw', qos)
+        self.raw_publisher = self.create_publisher(Image, 'camera/image_raw', qos) if self.publish_raw else None
         self.compressed_publisher = self.create_publisher(
             CompressedImage, 'camera/image_raw/compressed', qos
         )
-        self.bridge = CvBridge()
+        self.bridge = CvBridge() if self.publish_raw else None
 
         self.cap = cv2.VideoCapture(device_index, cv2.CAP_V4L2)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
@@ -43,12 +45,11 @@ class CameraNode(Node):
             raise RuntimeError('Camera not available')
 
         if self.verbose:
+            topics = 'camera/image_raw (raw) and camera/image_raw/compressed (JPEG)' if self.publish_raw else 'camera/image_raw/compressed (JPEG)'
             self.get_logger().info(
                 f'Camera opened at /dev/video{device_index} ({int(width)}x{int(height)} @ {frame_rate} fps)'
             )
-            self.get_logger().info(
-                'Publishing on camera/image_raw (raw) and camera/image_raw/compressed (JPEG)'
-            )
+            self.get_logger().info(f'Publishing on {topics}')
 
         self.timer = self.create_timer(1.0 / frame_rate, self.publish_frame)
 
@@ -65,10 +66,11 @@ class CameraNode(Node):
 
         stamp = self.get_clock().now().to_msg()
 
-        raw_msg = self.bridge.cv2_to_imgmsg(frame, encoding='bgr8')
-        raw_msg.header.stamp = stamp
-        raw_msg.header.frame_id = 'camera_frame'
-        self.raw_publisher.publish(raw_msg)
+        if self.publish_raw:
+            raw_msg = self.bridge.cv2_to_imgmsg(frame, encoding='bgr8')
+            raw_msg.header.stamp = stamp
+            raw_msg.header.frame_id = 'camera_frame'
+            self.raw_publisher.publish(raw_msg)
 
         _, jpeg_buf = cv2.imencode(
             '.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, self.jpeg_quality]

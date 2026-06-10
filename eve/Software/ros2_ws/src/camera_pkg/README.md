@@ -49,6 +49,7 @@ ros2 run camera_pkg camera_node --ros-args \
 | `frame_rate` | `30.0` | Frames per second |
 | `jpeg_quality` | `80` | JPEG compression quality (1–100) |
 | `verbose` | `false` | Print info/warn logs to console |
+| `publish_raw` | `false` | Also publish uncompressed `camera/image_raw` topic |
 
 ## Viewing the stream remotely over WiFi
 
