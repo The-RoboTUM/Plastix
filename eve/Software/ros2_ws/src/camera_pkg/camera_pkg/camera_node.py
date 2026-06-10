@@ -29,11 +29,11 @@ class CameraNode(Node):
         self.publish_raw = self.get_parameter('publish_raw').value
 
         qos = QoSPresetProfiles.SENSOR_DATA.value
-        self.raw_publisher = self.create_publisher(Image, 'camera/image_raw', qos) if self.publish_raw else None
+        self.raw_publisher = self.create_publisher(Image, 'camera/image_raw', qos)
         self.compressed_publisher = self.create_publisher(
             CompressedImage, 'camera/image_raw/compressed', qos
         )
-        self.bridge = CvBridge() if self.publish_raw else None
+        self.bridge = CvBridge()
 
         self.cap = cv2.VideoCapture(device_index, cv2.CAP_V4L2)
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
@@ -44,12 +44,11 @@ class CameraNode(Node):
             self.get_logger().error(f'Failed to open camera at device index {device_index}')
             raise RuntimeError('Camera not available')
 
-        if self.verbose:
-            topics = 'camera/image_raw (raw) and camera/image_raw/compressed (JPEG)' if self.publish_raw else 'camera/image_raw/compressed (JPEG)'
-            self.get_logger().info(
-                f'Camera opened at /dev/video{device_index} ({int(width)}x{int(height)} @ {frame_rate} fps)'
-            )
-            self.get_logger().info(f'Publishing on {topics}')
+        topics = 'camera/image_raw and camera/image_raw/compressed' if self.publish_raw else 'camera/image_raw/compressed only'
+        self.get_logger().info(
+            f'Camera opened at /dev/video{device_index} ({int(width)}x{int(height)} @ {frame_rate} fps)'
+        )
+        self.get_logger().info(f'Publishing on {topics}')
 
         self.timer = self.create_timer(1.0 / frame_rate, self.publish_frame)
 
