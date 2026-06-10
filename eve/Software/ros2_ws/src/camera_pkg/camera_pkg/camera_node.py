@@ -17,12 +17,14 @@ class CameraNode(Node):
         self.declare_parameter('frame_width', 640)
         self.declare_parameter('frame_height', 480)
         self.declare_parameter('jpeg_quality', 80)
+        self.declare_parameter('verbose', False)
 
         device_index = self.get_parameter('device_index').value
         frame_rate = self.get_parameter('frame_rate').value
         width = self.get_parameter('frame_width').value
         height = self.get_parameter('frame_height').value
         self.jpeg_quality = self.get_parameter('jpeg_quality').value
+        self.verbose = self.get_parameter('verbose').value
 
         qos = QoSPresetProfiles.SENSOR_DATA.value
         self.raw_publisher = self.create_publisher(Image, 'camera/image_raw', qos)
@@ -40,12 +42,13 @@ class CameraNode(Node):
             self.get_logger().error(f'Failed to open camera at device index {device_index}')
             raise RuntimeError('Camera not available')
 
-        self.get_logger().info(
-            f'Camera opened at /dev/video{device_index} ({int(width)}x{int(height)} @ {frame_rate} fps)'
-        )
-        self.get_logger().info(
-            'Publishing on camera/image_raw (raw) and camera/image_raw/compressed (JPEG)'
-        )
+        if self.verbose:
+            self.get_logger().info(
+                f'Camera opened at /dev/video{device_index} ({int(width)}x{int(height)} @ {frame_rate} fps)'
+            )
+            self.get_logger().info(
+                'Publishing on camera/image_raw (raw) and camera/image_raw/compressed (JPEG)'
+            )
 
         self.timer = self.create_timer(1.0 / frame_rate, self.publish_frame)
 
@@ -56,7 +59,8 @@ class CameraNode(Node):
     def publish_frame(self):
         ret, frame = self.cap.read()
         if not ret:
-            self.get_logger().warn('Failed to capture frame')
+            if self.verbose:
+                self.get_logger().warn('Failed to capture frame')
             return
 
         stamp = self.get_clock().now().to_msg()
