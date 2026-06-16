@@ -1,10 +1,9 @@
 # How to Test `octopus_mapping`
 
-This file explains how to test the first Octopus ROS2 mapping prototype.
+This file explains how to test the first Octopus ROS2 mapping prototype with fake detections.
 
 The test checks this pipeline:
 
-```text
 fake detection
 -> /octopus/detections_world
 -> grid_map_builder_node
