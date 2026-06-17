@@ -1,0 +1,6 @@
+sharx_receiver:
+  ros__parameters:
+    device_id: "sharx_1"
+    command_topic: "/octopus/commands"
+    status_topic: "/sharx/status"
+    target_file: "/tmp/sharx_latest_target.json"
