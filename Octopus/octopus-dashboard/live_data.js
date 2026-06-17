@@ -37,9 +37,65 @@ async function loadStats(){
   `;
 }
 
+async function loadMapPatch(){
+  const el = document.getElementById("map-patch-content");
+  if(!el){ return; }
+
+  const res = await fetch('/api/map_patch/latest');
+  const data = await res.json();
+
+  if(data.status === "empty" || !data.patch){
+    el.innerHTML = "<i>No map patch received yet.</i>";
+    return;
+  }
+
+  const patch = data.patch;
+  const cells = patch.updated_cells || [];
+
+  if(!cells.length){
+    el.innerHTML = "<i>Latest patch contains no updated cells.</i>";
+    return;
+  }
+
+  let html = `
+    <small>Frame: <strong>${patch.frame_id || "unknown"}</strong></small><br/>
+    <small>Received: ${patch.received_at || "unknown"}</small>
+    <table class="table table-sm mt-2">
+      <thead>
+        <tr>
+          <th>Cell</th>
+          <th>x,y</th>
+          <th>Trash</th>
+          <th>Conf.</th>
+        </tr>
+      </thead>
+      <tbody>
+  `;
+
+  cells.slice(0, 5).forEach(c => {
+    const trash = c.trash_probability ?? c.semantic_trash_probability ?? 0;
+    const confidence = c.confidence ?? 0;
+    html += `
+      <tr>
+        <td>${c.row}, ${c.col}</td>
+        <td>${Number(c.x).toFixed(2)}, ${Number(c.y).toFixed(2)}</td>
+        <td>${Number(trash).toFixed(2)}</td>
+        <td>${Number(confidence).toFixed(2)}</td>
+      </tr>
+    `;
+  });
+
+  html += `
+      </tbody>
+    </table>
+  `;
+
+  el.innerHTML = html;
+}
+
 async function refreshAll(){
   try {
-    await Promise.all([loadTasks(), loadBattery(), loadStats()]);
+    await Promise.all([loadTasks(), loadBattery(), loadStats(), loadMapPatch()]);
   } catch(e){
     console.error("API error", e);
   }

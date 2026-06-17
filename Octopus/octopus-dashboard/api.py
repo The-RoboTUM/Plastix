@@ -2,7 +2,7 @@ from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
 import sqlite3
 from pydantic import BaseModel
-from typing import List
+from typing import List, Dict, Any
 import os
 from datetime import datetime
 
@@ -82,6 +82,65 @@ def get_stats():
         "open_tasks": pending_count,
         "last_update": last_update
     }
+
+
+# In-memory map patch storage for first prototype.
+# Later this can be moved into SQLite.
+MAP_PATCHES: List[Dict[str, Any]] = []
+
+
+@app.post("/api/map_patch")
+def post_map_patch(patch: Dict[str, Any]):
+    """
+    Receive a map patch from ROS2/backend bridge.
+
+    First prototype:
+    - stores patches in memory
+    - keeps only the latest 100 patches
+    """
+    patch["received_at"] = datetime.now().isoformat()
+
+    MAP_PATCHES.append(patch)
+
+    if len(MAP_PATCHES) > 100:
+        del MAP_PATCHES[:-100]
+
+    return {
+        "status": "ok",
+        "stored_patches": len(MAP_PATCHES),
+        "latest_patch": patch,
+    }
+
+
+@app.get("/api/map_patch/latest")
+def get_latest_map_patch():
+    """
+    Return the latest map patch.
+    """
+    if not MAP_PATCHES:
+        return {
+            "status": "empty",
+            "message": "No map patch received yet.",
+            "patch": None,
+        }
+
+    return {
+        "status": "ok",
+        "patch": MAP_PATCHES[-1],
+    }
+
+
+@app.get("/api/map_patches")
+def get_map_patches(limit: int = 20):
+    """
+    Return recent map patches.
+    """
+    return {
+        "status": "ok",
+        "count": min(limit, len(MAP_PATCHES)),
+        "patches": MAP_PATCHES[-limit:],
+    }
+
 
 # Mount static files - this serves HTML, CSS, JS from the current directory
 app.mount("/", StaticFiles(directory=".", html=True), name="static")
