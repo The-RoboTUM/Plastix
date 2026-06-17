@@ -29,9 +29,6 @@ The current implementation:
 
 * Ubuntu 24.04
 * ROS 2 Jazzy
-* C++17
-* Laptop architecture: x86_64
-* Raspberry Pi architecture: aarch64
 * Laptop and Raspberry Pi connected to the same local network
 
 ## Package contents
