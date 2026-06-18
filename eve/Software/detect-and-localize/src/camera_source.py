@@ -30,7 +30,7 @@ class CameraSource:
         elif 'usb' in self.source:
             self.source_type = 'usb'
             idx = int(self.source[3:])
-            self.cap = cv2.VideoCapture(idx, cv2.CAP_DSHOW)
+            self.cap = cv2.VideoCapture(idx)
         elif self.source.startswith('rtsp://') or self.source.startswith('http'):
             self.source_type = 'stream'
             self.cap = cv2.VideoCapture(self.source)

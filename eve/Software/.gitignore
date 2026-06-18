@@ -10,6 +10,8 @@ __pycache__/
 *.db                # ignore data base files
 *.safetensors       # ignore safetensors files
 *.pt                # ignore pytorch files
+*.onnx              # ignore ONNX model files
+*.torchscript       # ignore TorchScript model files
 
 # ignore zip files
 *.zip
@@ -19,5 +21,18 @@ __pycache__/
 *.png
 *.svg
 
+# ignore detect-and-localize data folder
+detect-and-localize/data/
+
+# ignore video files
+*.mp4
+*.mkv
+*.avi
+*.mov
+
 # ignore ROS2 interface file
 interface
+
+CLAUDE.md
+
+*.venv

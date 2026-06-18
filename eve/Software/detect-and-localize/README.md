@@ -1,47 +1,96 @@
-What this is:
-This code was developed to detect and localize trash form an image or video. For detection, specifically trained YOLO models are used. To at least 4 apriltags in a square or other pattern are used. The pattern can be configured in a csv. file in the tags folder. 
+## What this is
 
-Status:
-This is somewhat outdated and does not make sense to be used with our current aproach of using the drones GPS to localize the waste using when flying outdoors, but it might be useful for the indoor waste localization. 
+Detects and localizes trash from an image, video file, or live camera feed. YOLO models are used for detection.
 
-Instructions:
+**Two localization modes:**
 
-running the code from terminal
+- **AprilTag mode** (default): Localization to real-world 2D coordinates via AprilTag markers (`tag16h5` family). At least 4 tags must be visible for the homography to work. Tag layout is configured in a `.csv` file in `data/tags/`. Provide the file with `--tags`.
+- **Image coordinate mode**: When no `--tags` file is given, detected trash is reported in normalized image coordinates — `(0, 1)` = top-left, `(1, 0)` = bottom-right, `(0.5, 0.5)` = center. Useful for footage without AprilTags (e.g. outdoor/drone footage).
 
-1. Download the data folder from https://nextcloud.itq.de/apps/files/files/2210?dir=/CirQmind%20Plastix%20%28S3%29/Additional%20Content/Eve/code/detect-and-localize and move it and replace the empty data flolder. The files are kinda big, so I did not want to have them on Git
-at the end of this step you should have:
+## Status
 
-    - data
-    - presets
-    - src
-    - main.py
-    - requirements.txt
-    - readme.md
-    
-2. change directory to detect-and-localize folder  
-    open an new terminal window (for example windows powershell).
-    use `cd path/to/detect_adn_localize` 
-    
-3. start a new virtual enviornment (optional)  
-    `python -m venv .venv`  
-    `.venv\Scripts\activate`  
+Originally intended for **indoor use** with a controlled environment and AprilTag markers. Image coordinate mode extends it to outdoor footage without any tag setup.
 
-4. install requiremnts  
-    `pip install --upgrade pip`  
-    `pip install -r requirements.txt`  
+## Setup
 
-5. run the programm  
-    presets have been created to satisfy the following arguments:  
-    --model (the yolo model you want to use)  
-    --source: (videosource)  
-    --thresh: (confidence threshhold)  
-    --tags: (.csv file which defines the arrangement of apriltags used)  
-    --yolo_frameskip (running yolo each frame can be intensive when )  
-    to get your feet wet you can run the default preset by running python `main.py --preset default`
-    if you want to try a live video you can use the `--preset engineering_5` which uses the built in laptop camera
-    you can always override individual arguments, or use your own arguments example: `--preset default --model yolov8n.pt`
+### 1. Get the data folder
 
-6. closing and deactivating  
-    `Q` to close the window (video and opencv)  
-    `deactivate` to deactivate the virtual enviornment  
+The data folder (models, footage, tag configs) is too large for Git. It is stored separately at Nextcloud:  
+`https://nextcloud.itq.de/apps/files/files/2210?dir=/CirQmind%20Plastix%20%28S3%29/Additional%20Content/Eve/code/detect-and-localize`
+
+At the end of this step the directory should contain:
+```
+data/
+presets/
+src/
+main.py
+requirements.txt
+README.md
+```
+
+### 2. Change to the project directory
+
+```bash
+cd /home/robik/PlastiX/eve/Software/detect-and-localize
+```
+
+### 3. Create a virtual environment (optional but recommended)
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate      # Linux / Mac
+# .venv\Scripts\activate       # Windows
+```
+
+### 4. Install dependencies
+
+```bash
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+> **Note:** `main.py` also imports `ncnn`, which is not in `requirements.txt` and not actually used. If the import fails, install it with `pip install ncnn` or remove the import from `main.py`.
+
+## Running
+
+Presets are YAML files in `presets/` that bundle all arguments. CLI arguments always override preset values.
+
+| Argument | Description |
+|---|---|
+| `--preset` | Name of a preset YAML in `presets/` (default: `default`) |
+| `--model` | Path to YOLO `.pt` model file |
+| `--source` | Input source: video file, image folder, `usb<index>` for USB camera, or RTSP URL |
+| `--thresh` | Confidence threshold (0.0–1.0) |
+| `--tags` | `.csv` file defining the AprilTag positions in world space (optional; omit or pass `""` for image coordinate mode) |
+| `--yolo_frameskip` | Run YOLO every N+1 frames (0 = every frame). Useful for performance. |
+
+**Run the default preset (video file demo):**
+```bash
+python main.py --preset default
+```
+
+**Run with a USB camera:**
+```bash
+python main.py --model data/models/indoor_11s.pt --source usb0 --thresh 0.6 --tags data/tags/tags_whiteboard.csv --yolo_frameskip 2
+```
+
+**Run without AprilTags (image coordinate mode):**
+```bash
+python main.py --preset default --source data/footage/outdoor.mp4 --tags ""
+```
+
+Or create a preset without a `tags` key — the mode activates automatically when `tags` is absent.
+
+**Override a single argument from a preset:**
+```bash
+python main.py --preset default --model data/models/fotogenic_11s.pt
+```
+
+Press `Q` to close the OpenCV windows.
+
+## Closing
+
+```bash
+deactivate    # deactivate the virtual environment
+```
 

@@ -29,7 +29,7 @@ parser.add_argument('--preset', default='default', help='Name of preset YAML in 
 parser.add_argument('--model', help='Path to YOLO model file')
 parser.add_argument('--source', help='Input source (camera, folder, etc.)')
 parser.add_argument('--thresh', type=float, help='Confidence threshold')
-parser.add_argument('--tags', help='.CSV file with AprilTag positions')
+parser.add_argument('--tags', default=None, help='.CSV file with AprilTag positions (optional; omit to use normalized image coordinates)')
 parser.add_argument('--yolo_frameskip', type=int, help='Number of frames to skip between YOLO inferences')
 
 args = parser.parse_args()
@@ -43,22 +43,34 @@ config = {**preset, **{k: v for k, v in vars(args).items() if v is not None}}
 path_keys = ["model", "tags"]  # adjust to your YAML
 
 for key in path_keys:
-    if key in config and not os.path.isabs(config[key]):
+    if key in config and config[key] and not os.path.isabs(config[key]):
         config[key] = os.path.join(script_dir, config[key])
 
 print("🔧 Loaded configuration:")
 for k, v in config.items():
     print(f"  {k}: {v}")
 
-yolo = YOLODetector (config ["model"], config ["thresh"])
+yolo = YOLODetector(config["model"], config["thresh"])
 yolo_frameskip = config.get("yolo_frameskip", 0)
 camera = CameraSource(config["source"])
-tags_world = load_tag_positions(config["tags"])
 viz = Visualizer()
 tracker = GarbageTracker(max_lost=100, confirm_frames=10, dist_thresh=0.2)
-world_center, scale = viz.compute_viewport(tags_world)
+
+tags_csv = config.get("tags") or None  # treat empty string as no tags
+use_tags = tags_csv is not None
+if use_tags:
+    tags_world = load_tag_positions(tags_csv)
+    world_center, scale = viz.compute_viewport(tags_world)
+else:
+    tags_world = {}
+    world_center = np.array([0.5, 0.5])
+    scale = viz.canvas_size - 2 * viz.margin
+    print("ℹ️  No tags file provided — using normalized image coordinates (0,0)=bottom-left, (1,1)=top-right")
+
 confirmed_tracks = {}
 frame_count = 0
+frame_annotated = None
+detections = []
 fps_meter = FPSMeter(avg_len=100)
 
 
@@ -77,13 +89,12 @@ while True:
     if process_yolo:
         detections, frame_annotated = yolo.detect(frame, draw=True)
     elif frame_annotated is None:
-        frame_annotated = frame.copy()  # fallback if skip on first frame
+        frame_annotated = frame.copy()
 
     frame_count += 1
-    
 
     detections_world = []
-    if H is not None:
+    if use_tags and H is not None:
         for det in detections:
             xmin, ymin, xmax, ymax = det["bbox"]
             u, v = (xmin + xmax) / 2, (ymin + ymax) / 2
@@ -91,13 +102,23 @@ while True:
                 pt = np.array([[[u, v]]], np.float32)
                 pt_w = cv2.perspectiveTransform(pt, H)
                 detections_world.append(pt_w[0, 0])
+    elif not use_tags:
+        frame_h, frame_w = frame.shape[:2]
+        for det in detections:
+            xmin, ymin, xmax, ymax = det["bbox"]
+            u, v = (xmin + xmax) / 2, (ymin + ymax) / 2
+            if det["class"] == "rubbish":
+                nx = u / frame_w
+                ny = 1.0 - v / frame_h  # flip so (0,1)=top-left, (1,0)=bottom-right
+                detections_world.append(np.array([nx, ny]))
 
     confirmed, new_conf = tracker.update(detections_world)
     for t in new_conf:
         confirmed_tracks[t["id"]] = t["pos"]
         tid = t["id"]
         pos = t["pos"]
-        print(f"✅ New confirmed rubbish #{tid} at world pos {pos}")
+        label = "image pos" if not use_tags else "world pos"
+        print(f"✅ New confirmed rubbish #{tid} at {label} ({pos[0]:.3f}, {pos[1]:.3f})")
 
     canvas = viz.draw_canvas(tags_world, detections_world, confirmed_tracks, world_center, scale)
     
