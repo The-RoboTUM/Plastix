@@ -1,6 +1,8 @@
+import os
+from glob import glob
 from setuptools import find_packages, setup
 
-package_name = 'camera_pkg'
+package_name = 'detection_pkg'
 
 setup(
     name=package_name,
@@ -10,12 +12,13 @@ setup(
         ('share/ament_index/resource_index/packages',
             ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
+        (os.path.join('share', package_name, 'launch'), glob('launch/*.launch.py')),
     ],
     install_requires=['setuptools'],
     zip_safe=True,
     maintainer='victor-tipkemper',
     maintainer_email='victor.tipkemper@tum.de',
-    description='TODO: Package description',
+    description='Trash detection + localization node: subscribes to camera frames and publishes 2D positions.',
     license='Apache-2.0',
     extras_require={
         'test': [
@@ -24,8 +27,7 @@ setup(
     },
     entry_points={
         'console_scripts': [
-            'camera_node = camera_pkg.camera_node:main',
-            'video_publisher = camera_pkg.video_publisher:main'
+            'detector_node = detection_pkg.detector_node:main'
         ],
     },
 )
