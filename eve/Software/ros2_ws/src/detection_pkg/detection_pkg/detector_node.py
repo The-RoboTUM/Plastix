@@ -29,28 +29,32 @@ class DetectorNode(Node):
         super().__init__('detector_node')
 
         # Path to the detect-and-localize repo that holds the shared pipeline.
-        default_repo = '/home/victor-tipkemper/projects/robotics/PlastiX/eve/Software/detect-and-localize'
+        default_repo = os.path.expanduser('~/PlastiX/eve/Software/detect-and-localize')
         self.declare_parameter('detect_localize_path', default_repo)
-        self.declare_parameter('model', 'data/models/indoor_11s.pt')
+        self.declare_parameter('model', 'data/models/thousand_11s.pt')
         self.declare_parameter('thresh', 0.6)
         self.declare_parameter('tags', '')  # empty -> normalized image coordinates
-        self.declare_parameter('yolo_frameskip', 4)
-        self.declare_parameter('max_lost', 100)
+        self.declare_parameter('yolo_frameskip', 6)
+        self.declare_parameter('max_lost', 10)
         self.declare_parameter('confirm_frames', 10)
         self.declare_parameter('dist_thresh', 0.05)
         self.declare_parameter('move_thresh', 0.04)
         self.declare_parameter('input_topic', 'camera/image_raw/compressed')
         self.declare_parameter('output_frame', 'map')
+        self.declare_parameter('show_ui', False)
 
         repo_path = self.get_parameter('detect_localize_path').value
         self.output_frame = self.get_parameter('output_frame').value
         input_topic = self.get_parameter('input_topic').value
+        self.show_ui = self.get_parameter('show_ui').value
 
         # Make the shared pipeline importable, then build it.
         if repo_path not in sys.path:
             sys.path.insert(0, repo_path)
         try:
             from src.pipeline import DetectAndLocalize
+            from src.visualization import Visualizer
+            from src.fps_meter import FPSMeter
         except ImportError as exc:
             self.get_logger().error(
                 f"Could not import the pipeline from '{repo_path}'. Set the "
@@ -74,6 +78,10 @@ class DetectorNode(Node):
             move_thresh=self.get_parameter('move_thresh').value,
         )
 
+        self.visualizer = Visualizer() if self.show_ui else None
+        self._fps_meter = FPSMeter(avg_len=100) if self.show_ui else None
+        self._world_viewport = None  # (center, scale) computed once from tag positions
+
         # Live detections: reliable so standard tools/consumers receive them.
         self.detections_pub = self.create_publisher(PoseArray, '~/detections', 10)
         # Confirmed trash: latched so late joiners get the current map.
@@ -94,6 +102,19 @@ class DetectorNode(Node):
             f"{'world coords (tags)' if tags else 'normalized image coords'}, "
             f"output frame '{self.output_frame}'."
         )
+
+        if self.show_ui:
+            cv2.namedWindow('Frame', cv2.WINDOW_NORMAL)
+            cv2.namedWindow('World Map', cv2.WINDOW_NORMAL)
+            cv2.resizeWindow('Frame', 960, 540)
+            cv2.resizeWindow('World Map', 600, 600)
+            blank = np.ones((540, 960, 3), np.uint8) * 60
+            cv2.putText(blank, 'Waiting for stream...', (280, 270),
+                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (180, 180, 180), 2)
+            cv2.imshow('Frame', blank)
+            cv2.imshow('World Map', np.ones((600, 600, 3), np.uint8) * 60)
+            for _ in range(10):
+                cv2.waitKey(50)
 
     @staticmethod
     def _resolve(repo_path, path):
@@ -122,7 +143,7 @@ class DetectorNode(Node):
             self.get_logger().warn('Failed to decode frame')
             return
 
-        result = self.pipeline.process(frame, draw=False)
+        result = self.pipeline.process(frame, draw=self.show_ui)
         stamp = msg.header.stamp
 
         self.detections_pub.publish(
@@ -139,6 +160,43 @@ class DetectorNode(Node):
                     f"({pos[0]:.3f}, {pos[1]:.3f})"
                 )
 
+        if self.show_ui:
+            self._show_ui(result)
+
+
+    def _show_ui(self, result):
+        if self._world_viewport is None:
+            if self.pipeline.use_tags and self.pipeline.tags_world:
+                self._world_viewport = self.visualizer.compute_viewport(
+                    self.pipeline.tags_world
+                )
+            else:
+                self._world_viewport = (
+                    np.array([0.5, 0.5]),
+                    self.visualizer.canvas_size - 2 * self.visualizer.margin,
+                )
+
+        center, scale = self._world_viewport
+        canvas = self.visualizer.draw_canvas(
+            tag_positions=self.pipeline.tags_world,
+            detections_world=result['detections_world'],
+            confirmed_tracks=self.pipeline.confirmed_tracks,
+            world_center=center,
+            scale=scale,
+        )
+
+        _, _ = self._fps_meter.update()
+        if result['yolo_ran'] and result['annotated'] is not None:
+            self._fps_meter.draw_on_frame(
+                result['annotated'],
+                f"Objects: {len(self.pipeline.detections)}",
+            )
+
+        if result['annotated'] is not None:
+            cv2.imshow('Frame', result['annotated'])
+        cv2.imshow('World Map', canvas)
+        cv2.waitKey(1)
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -150,6 +208,7 @@ def main(args=None):
     finally:
         node.destroy_node()
         rclpy.shutdown()
+        cv2.destroyAllWindows()
 
 
 if __name__ == '__main__':
