@@ -12,6 +12,7 @@ endif()
 find_package(ament_cmake REQUIRED)
 find_package(rclcpp REQUIRED)
 find_package(std_msgs REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(nlohmann_json REQUIRED)
 
 add_executable(
@@ -46,10 +47,52 @@ target_link_libraries(
   nlohmann_json::nlohmann_json
 )
 
+add_executable(
+  sharx_teleop
+  src/sharx_teleop.cpp
+)
+
+ament_target_dependencies(
+  sharx_teleop
+  rclcpp
+  geometry_msgs
+)
+
+add_executable(
+  thruster_mixer
+  src/thruster_mixer.cpp
+)
+
+ament_target_dependencies(
+  thruster_mixer
+  rclcpp
+  geometry_msgs
+  std_msgs
+)
+
+add_executable(
+  movement_status
+  src/movement_status.cpp
+)
+
+ament_target_dependencies(
+  movement_status
+  rclcpp
+  std_msgs
+)
+
+target_link_libraries(
+  movement_status
+  nlohmann_json::nlohmann_json
+)
+
 install(
   TARGETS
     dummy_octopus
     sharx_receiver
+    sharx_teleop
+    thruster_mixer
+    movement_status
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -68,7 +111,5 @@ if(BUILD_TESTING)
 
   ament_lint_auto_find_test_dependencies()
 endif()
-
-
 
 ament_package()
