@@ -14,30 +14,36 @@ class GridMapBuilderNode(Node):
     def __init__(self):
         super().__init__("grid_map_builder_node")
 
-        # Map size: first prototype field
+        # Local prototype map geometry.
         self.declare_parameter("width_m", 5.0)
         self.declare_parameter("height_m", 3.0)
         self.declare_parameter("resolution", 0.10)
         self.declare_parameter("origin_x", 0.0)
         self.declare_parameter("origin_y", 0.0)
+        self.declare_parameter("default_coverage_confidence", 0.8)
 
         self.width_m = float(self.get_parameter("width_m").value)
         self.height_m = float(self.get_parameter("height_m").value)
         self.resolution = float(self.get_parameter("resolution").value)
         self.origin_x = float(self.get_parameter("origin_x").value)
         self.origin_y = float(self.get_parameter("origin_y").value)
+        self.default_coverage_confidence = float(
+            self.get_parameter("default_coverage_confidence").value
+        )
 
         self.cols = int(math.ceil(self.width_m / self.resolution))
         self.rows = int(math.ceil(self.height_m / self.resolution))
 
-        self.coverage = self.make_grid(0.0)
-        self.trash_probability = self.make_grid(0.0)
-        self.obstacle_probability = self.make_grid(0.0)
-        self.confidence = self.make_grid(0.0)
-        self.last_observed_time = self.make_grid(0.0)
-        self.source_id = [["" for _ in range(self.cols)] for _ in range(self.rows)]
+        self.layers = {
+            "coverage": self.make_grid(0.0),
+            "trash_probability": self.make_grid(0.0),
+            "obstacle_probability": self.make_grid(0.0),
+            "confidence": self.make_grid(0.0),
+            "last_observed_time": self.make_grid(0.0),
+            "source_id": self.make_grid(""),
+        }
 
-        self.detection_sub = self.create_subscription(
+        self.subscription = self.create_subscription(
             String,
             "/octopus/detections_world",
             self.detections_callback,
@@ -68,110 +74,220 @@ class GridMapBuilderNode(Node):
             10,
         )
 
-        self.timer = self.create_timer(1.0, self.publish_periodic_maps)
-
         self.get_logger().info(
             f"octopus_mapping started: {self.cols}x{self.rows} cells, "
             f"resolution={self.resolution} m/cell"
         )
 
-    def make_grid(self, value):
-        return [[value for _ in range(self.cols)] for _ in range(self.rows)]
+    def make_grid(self, default_value):
+        return [
+            [default_value for _ in range(self.cols)]
+            for _ in range(self.rows)
+        ]
 
-    def detections_callback(self, msg):
+    def detections_callback(self, msg: String):
         try:
             payload = json.loads(msg.data)
         except json.JSONDecodeError as exc:
-            self.get_logger().error(f"Invalid JSON: {exc}")
+            self.get_logger().error(f"Invalid JSON on /octopus/detections_world: {exc}")
             return
 
-        source_id = payload.get("source_id", "unknown_source")
         frame_id = payload.get("frame_id", "map")
-        detections = payload.get("detections", [])
-
         if frame_id != "map":
             self.get_logger().warn(
-                f"Expected frame_id='map', got frame_id='{frame_id}'"
+                f"Received frame_id='{frame_id}'. Prototype expects frame_id='map'."
             )
 
-        updated_cells = []
+        timestamp = float(payload.get("timestamp", time.time()))
+        source_id = str(payload.get("source_id", "unknown_source"))
 
+        updated_keys = set()
+
+        coverage_polygon = payload.get("coverage_polygon")
+        if coverage_polygon:
+            coverage_confidence = float(
+                payload.get("coverage_confidence", self.default_coverage_confidence)
+            )
+            updated_keys.update(
+                self.apply_coverage_polygon(
+                    coverage_polygon=coverage_polygon,
+                    source_id=source_id,
+                    timestamp=timestamp,
+                    confidence=coverage_confidence,
+                )
+            )
+
+        detections = payload.get("detections", [])
         for detection in detections:
-            updated_cell = self.apply_detection(detection, source_id)
-            if updated_cell is not None:
-                updated_cells.append(updated_cell)
+            key = self.apply_detection(
+                detection=detection,
+                source_id=source_id,
+                timestamp=timestamp,
+            )
+            if key is not None:
+                updated_keys.add(key)
 
-        if not updated_cells:
+        if not updated_keys:
+            self.get_logger().warn(
+                "Received message but no valid map cells were updated."
+            )
             return
 
+        updated_cells = [
+            self.cell_to_dict(row, col)
+            for row, col in sorted(updated_keys)
+        ]
+
         patch = {
-            "timestamp": time.time(),
+            "timestamp": timestamp,
             "frame_id": "map",
             "updated_cells": updated_cells,
         }
 
-        out = String()
-        out.data = json.dumps(patch)
-        self.map_patch_pub.publish(out)
+        self.publish_json(self.map_patch_pub, patch)
+        self.publish_global_map()
+        self.publish_occupancy_grids()
 
         self.get_logger().info(
             f"Published map patch with {len(updated_cells)} updated cell(s)"
         )
 
-    def apply_detection(self, detection, source_id):
+    def apply_detection(self, detection, source_id: str, timestamp: float):
         try:
             x = float(detection["x"])
             y = float(detection["y"])
-        except KeyError:
-            self.get_logger().warn(f"Detection missing x/y: {detection}")
+        except (KeyError, TypeError, ValueError):
+            self.get_logger().warn(f"Skipping invalid detection: {detection}")
             return None
 
-        class_name = detection.get("class_name", "trash")
-        confidence = float(detection.get("confidence", 0.8))
-        detection_source = detection.get("source_id", source_id)
-
-        cell = self.map_to_cell(x, y)
-
+        cell = self.xy_to_cell(x, y)
         if cell is None:
-            self.get_logger().warn(f"Detection outside map: x={x:.2f}, y={y:.2f}")
+            self.get_logger().warn(
+                f"Detection outside map bounds: x={x}, y={y}"
+            )
             return None
 
         row, col = cell
-        now = time.time()
+        class_name = str(detection.get("class_name", "trash"))
+        confidence = float(detection.get("confidence", 1.0))
 
-        self.coverage[row][col] = 1.0
-        self.confidence[row][col] = max(self.confidence[row][col], confidence)
-        self.last_observed_time[row][col] = now
-        self.source_id[row][col] = detection_source
+        self.layers["coverage"][row][col] = 1.0
+        self.layers["confidence"][row][col] = max(
+            self.layers["confidence"][row][col],
+            confidence,
+        )
+        self.layers["last_observed_time"][row][col] = timestamp
+        self.layers["source_id"][row][col] = source_id
 
         if class_name in ["trash", "plastic", "bottle", "cup", "bag"]:
-            self.trash_probability[row][col] = max(
-                self.trash_probability[row][col],
+            self.layers["trash_probability"][row][col] = max(
+                self.layers["trash_probability"][row][col],
                 confidence,
             )
 
         if class_name in ["obstacle", "tree", "rock", "wall"]:
-            self.obstacle_probability[row][col] = max(
-                self.obstacle_probability[row][col],
+            self.layers["obstacle_probability"][row][col] = max(
+                self.layers["obstacle_probability"][row][col],
                 confidence,
             )
 
-        cell_x, cell_y = self.cell_center(row, col)
+        return (row, col)
 
-        return {
-            "row": row,
-            "col": col,
-            "x": cell_x,
-            "y": cell_y,
-            "coverage": self.coverage[row][col],
-            "trash_probability": self.trash_probability[row][col],
-            "obstacle_probability": self.obstacle_probability[row][col],
-            "confidence": self.confidence[row][col],
-            "source_id": self.source_id[row][col],
-            "last_observed_time": self.last_observed_time[row][col],
-        }
+    def apply_coverage_polygon(
+        self,
+        coverage_polygon,
+        source_id: str,
+        timestamp: float,
+        confidence: float,
+    ):
+        polygon = self.parse_polygon(coverage_polygon)
+        if len(polygon) < 3:
+            self.get_logger().warn(
+                f"Skipping invalid coverage polygon: {coverage_polygon}"
+            )
+            return set()
 
-    def map_to_cell(self, x, y):
+        updated_keys = set()
+
+        min_x = max(min(p[0] for p in polygon), self.origin_x)
+        max_x = min(max(p[0] for p in polygon), self.origin_x + self.width_m)
+        min_y = max(min(p[1] for p in polygon), self.origin_y)
+        max_y = min(max(p[1] for p in polygon), self.origin_y + self.height_m)
+
+        min_cell = self.xy_to_cell(min_x, min_y)
+        max_cell = self.xy_to_cell(
+            max_x - 1e-9,
+            max_y - 1e-9,
+        )
+
+        if min_cell is None or max_cell is None:
+            self.get_logger().warn(
+                "Coverage polygon does not overlap map bounds."
+            )
+            return set()
+
+        min_row, min_col = min_cell
+        max_row, max_col = max_cell
+
+        for row in range(min_row, max_row + 1):
+            for col in range(min_col, max_col + 1):
+                x, y = self.cell_center(row, col)
+
+                if not self.point_in_polygon(x, y, polygon):
+                    continue
+
+                self.layers["coverage"][row][col] = 1.0
+                self.layers["confidence"][row][col] = max(
+                    self.layers["confidence"][row][col],
+                    confidence,
+                )
+                self.layers["last_observed_time"][row][col] = timestamp
+                self.layers["source_id"][row][col] = source_id
+
+                updated_keys.add((row, col))
+
+        return updated_keys
+
+    @staticmethod
+    def parse_polygon(raw_polygon):
+        polygon = []
+
+        for point in raw_polygon:
+            try:
+                if isinstance(point, dict):
+                    x = float(point["x"])
+                    y = float(point["y"])
+                else:
+                    x = float(point[0])
+                    y = float(point[1])
+                polygon.append((x, y))
+            except (KeyError, TypeError, ValueError, IndexError):
+                continue
+
+        return polygon
+
+    @staticmethod
+    def point_in_polygon(x, y, polygon):
+        inside = False
+        n = len(polygon)
+
+        j = n - 1
+        for i in range(n):
+            xi, yi = polygon[i]
+            xj, yj = polygon[j]
+
+            intersects = ((yi > y) != (yj > y)) and (
+                x < (xj - xi) * (y - yi) / ((yj - yi) + 1e-12) + xi
+            )
+
+            if intersects:
+                inside = not inside
+
+            j = i
+
+        return inside
+
+    def xy_to_cell(self, x, y):
         col = int((x - self.origin_x) / self.resolution)
         row = int((y - self.origin_y) / self.resolution)
 
@@ -187,46 +303,66 @@ class GridMapBuilderNode(Node):
         y = self.origin_y + (row + 0.5) * self.resolution
         return x, y
 
-    def publish_periodic_maps(self):
-        self.publish_global_map()
-        self.publish_occupancy_grid(
-            publisher=self.coverage_grid_pub,
-            layer=self.coverage,
-            mode="coverage",
-        )
-        self.publish_occupancy_grid(
-            publisher=self.trash_grid_pub,
-            layer=self.trash_probability,
-            mode="probability",
-        )
+    def cell_to_dict(self, row, col):
+        x, y = self.cell_center(row, col)
+
+        return {
+            "row": row,
+            "col": col,
+            "x": x,
+            "y": y,
+            "coverage": self.layers["coverage"][row][col],
+            "trash_probability": self.layers["trash_probability"][row][col],
+            "obstacle_probability": self.layers["obstacle_probability"][row][col],
+            "confidence": self.layers["confidence"][row][col],
+            "source_id": self.layers["source_id"][row][col],
+            "last_observed_time": self.layers["last_observed_time"][row][col],
+        }
+
+    def publish_json(self, publisher, payload):
+        msg = String()
+        msg.data = json.dumps(payload)
+        publisher.publish(msg)
 
     def publish_global_map(self):
+        cells = {}
+
+        for row in range(self.rows):
+            for col in range(self.cols):
+                if self.layers["coverage"][row][col] <= 0.0:
+                    continue
+
+                key = f"{row},{col}"
+                cells[key] = self.cell_to_dict(row, col)
+
         payload = {
+            "timestamp": time.time(),
             "frame_id": "map",
             "width_m": self.width_m,
             "height_m": self.height_m,
             "resolution": self.resolution,
-            "rows": self.rows,
-            "cols": self.cols,
             "origin_x": self.origin_x,
             "origin_y": self.origin_y,
-            "layers": {
-                "coverage": self.coverage,
-                "trash_probability": self.trash_probability,
-                "obstacle_probability": self.obstacle_probability,
-                "confidence": self.confidence,
-                "source_id": self.source_id,
-                "last_observed_time": self.last_observed_time,
-            },
+            "rows": self.rows,
+            "cols": self.cols,
+            "cells": cells,
         }
 
-        msg = String()
-        msg.data = json.dumps(payload)
-        self.global_map_pub.publish(msg)
+        self.publish_json(self.global_map_pub, payload)
 
-    def publish_occupancy_grid(self, publisher, layer, mode):
+    def publish_occupancy_grids(self):
+        self.coverage_grid_pub.publish(
+            self.layer_to_occupancy_grid("coverage")
+        )
+        self.trash_grid_pub.publish(
+            self.layer_to_occupancy_grid("trash_probability")
+        )
+
+    def layer_to_occupancy_grid(self, layer_name):
         grid = OccupancyGrid()
-        grid.header.stamp = self.get_clock().now().to_msg()
+
+        now = self.get_clock().now().to_msg()
+        grid.header.stamp = now
         grid.header.frame_id = "map"
 
         grid.info.resolution = self.resolution
@@ -241,15 +377,16 @@ class GridMapBuilderNode(Node):
 
         for row in range(self.rows):
             for col in range(self.cols):
-                value = layer[row][col]
+                coverage = self.layers["coverage"][row][col]
+                value = self.layers[layer_name][row][col]
 
-                if mode == "coverage":
-                    data.append(0 if value > 0.5 else -1)
+                if coverage <= 0.0:
+                    data.append(-1)
                 else:
-                    data.append(max(0, min(100, int(value * 100))))
+                    data.append(int(max(0.0, min(1.0, value)) * 100.0))
 
         grid.data = data
-        publisher.publish(grid)
+        return grid
 
 
 def main(args=None):
