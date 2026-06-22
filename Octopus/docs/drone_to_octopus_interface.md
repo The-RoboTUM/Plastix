@@ -33,3 +33,42 @@ Rules:
 - frame_id must say which coordinate frame is used
 - first prototype uses local test-field map frame
 - later replace JSON with custom ROS2 messages
+
+Real detector interface update
+
+The current detector does not publish this JSON format directly.
+
+Current detector output:
+
+/detector_node/detections     geometry_msgs/PoseArray
+/detector_node/confirmed      geometry_msgs/PoseArray
+
+The detector subscribes to:
+
+/camera/image_raw/compressed  sensor_msgs/CompressedImage
+
+Each pose contains only:
+
+x
+y
+z = 0
+
+The PoseArray header contains the image timestamp.
+
+Missing fields:
+
+class_name
+confidence
+source_id
+
+Therefore, the Octopus JSON format is the target interface after a bridge/transform node, not the raw detector output.
+
+Required bridge:
+
+PoseArray detections
+-> octopus_detector_bridge
+-> /octopus/detections_world JSON
+
+If AprilTags are configured, x/y can already be map/world coordinates.
+
+If no AprilTag CSV/config is provided, x/y are normalized image coordinates in [0,1] and must not be treated as map meters.

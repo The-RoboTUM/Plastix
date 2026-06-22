@@ -30,3 +30,25 @@ Later we need:
 - camera -> drone body
 - drone body -> map
 - PX4 local frame -> Octopus map
+
+Detector PoseArray coordinate warning
+
+The current detector publishes geometry_msgs/PoseArray.
+
+The meaning of pose.position.x/y depends on detector configuration:
+
+with AprilTags:
+  x,y = map/world coordinates
+
+without AprilTags:
+  x,y = normalized image coordinates in [0,1]
+
+Therefore, any bridge to /octopus/detections_world must know the coordinate mode.
+
+Normalized image coordinates must first be transformed:
+
+u,v
+-> homography or camera/Pixhawk transform
+-> map x,y
+
+Only map/world x,y should be sent to the map builder.

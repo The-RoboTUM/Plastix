@@ -21,3 +21,26 @@ Build order:
 5. PX4 pose integration
 6. ground robot map consumption
 7. outdoor scan test
+
+Detector adapter layer
+
+The real detector currently does not publish Octopus JSON directly.
+
+Actual detector output:
+
+/detector_node/detections
+/detector_node/confirmed
+
+Type:
+
+geometry_msgs/PoseArray
+
+Therefore the architecture needs an adapter:
+
+detection_pkg
+-> PoseArray
+-> octopus_detector_bridge
+-> /octopus/detections_world JSON
+-> octopus_mapping
+
+This keeps the detector independent from Octopus map/backend formats.
