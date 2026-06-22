@@ -93,9 +93,134 @@ async function loadMapPatch(){
   el.innerHTML = html;
 }
 
+function valueForLayer(cell, layer){
+  if(!cell){ return null; }
+
+  if(layer === "coverage"){
+    return cell.coverage ?? 0;
+  }
+
+  if(layer === "trash_probability"){
+    return cell.trash_probability ?? 0;
+  }
+
+  if(layer === "obstacle_probability"){
+    return cell.obstacle_probability ?? 0;
+  }
+
+  if(layer === "confidence"){
+    return cell.confidence ?? 0;
+  }
+
+  return 0;
+}
+
+function colorForValue(value, layer){
+  if(value === null){
+    return "#f8f9fa";
+  }
+
+  const v = Math.max(0, Math.min(1, Number(value)));
+
+  if(layer === "coverage"){
+    if(v <= 0){ return "#f8f9fa"; }
+    return `rgba(40, 120, 220, ${0.20 + 0.70 * v})`;
+  }
+
+  if(layer === "trash_probability"){
+    if(v <= 0){ return "#f8f9fa"; }
+    return `rgba(220, 50, 50, ${0.20 + 0.75 * v})`;
+  }
+
+  if(layer === "obstacle_probability"){
+    if(v <= 0){ return "#f8f9fa"; }
+    return `rgba(40, 40, 40, ${0.20 + 0.75 * v})`;
+  }
+
+  if(layer === "confidence"){
+    if(v <= 0){ return "#f8f9fa"; }
+    return `rgba(30, 160, 80, ${0.20 + 0.70 * v})`;
+  }
+
+  return "#f8f9fa";
+}
+
+function drawGridMap(mapData){
+  const canvas = document.getElementById("grid-map-canvas");
+  const info = document.getElementById("grid-map-info");
+  const selector = document.getElementById("grid-layer-select");
+
+  if(!canvas || !info || !selector){ return; }
+
+  const ctx = canvas.getContext("2d");
+
+  const rows = mapData.rows || 30;
+  const cols = mapData.cols || 50;
+  const cells = mapData.cells || {};
+  const layer = selector.value || "coverage";
+
+  const cellW = canvas.width / cols;
+  const cellH = canvas.height / rows;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#f8f9fa";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  Object.keys(cells).forEach(key => {
+    const cell = cells[key];
+    const row = Number(cell.row);
+    const col = Number(cell.col);
+
+    if(Number.isNaN(row) || Number.isNaN(col)){ return; }
+
+    const value = valueForLayer(cell, layer);
+    ctx.fillStyle = colorForValue(value, layer);
+
+    const x = col * cellW;
+    const y = canvas.height - (row + 1) * cellH;
+
+    ctx.fillRect(x, y, cellW, cellH);
+  });
+
+  ctx.strokeStyle = "rgba(0,0,0,0.15)";
+  ctx.lineWidth = 1;
+  ctx.strokeRect(0, 0, canvas.width, canvas.height);
+
+  const updatedCells = Object.keys(cells).length;
+  info.innerHTML = `
+    <small>
+      Frame: <strong>${mapData.frame_id || "map"}</strong> |
+      Size: ${cols} x ${rows} cells |
+      Updated cells: <strong>${updatedCells}</strong> |
+      Layer: <strong>${layer}</strong>
+    </small>
+  `;
+}
+
+async function loadGlobalMap(){
+  const canvas = document.getElementById("grid-map-canvas");
+  if(!canvas){ return; }
+
+  const res = await fetch('/api/global_map/latest');
+  const data = await res.json();
+
+  if(data.status !== "ok" || !data.map){
+    return;
+  }
+
+  drawGridMap(data.map);
+}
+
+const layerSelector = document.getElementById("grid-layer-select");
+if(layerSelector){
+  layerSelector.addEventListener("change", () => {
+    loadGlobalMap();
+  });
+}
+
 async function refreshAll(){
   try {
-    await Promise.all([loadTasks(), loadBattery(), loadStats(), loadMapPatch()]);
+    await Promise.all([loadTasks(), loadBattery(), loadStats(), loadMapPatch(), loadGlobalMap()]);
   } catch(e){
     console.error("API error", e);
   }

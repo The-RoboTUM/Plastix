@@ -88,6 +88,43 @@ def get_stats():
 # Later this can be moved into SQLite.
 MAP_PATCHES: List[Dict[str, Any]] = []
 
+# Accumulated local grid-map-style state for dashboard visualization.
+# This is still a lightweight prototype, not yet grid_map_msgs/GridMap.
+GLOBAL_MAP = {
+    "frame_id": "map",
+    "width_m": 5.0,
+    "height_m": 3.0,
+    "resolution": 0.10,
+    "rows": 30,
+    "cols": 50,
+    "cells": {},
+}
+
+
+def update_global_map_from_patch(patch: Dict[str, Any]):
+    """
+    Merge changed cells from a map patch into the accumulated dashboard map.
+    Cells are stored by "row,col".
+    """
+    GLOBAL_MAP["frame_id"] = patch.get("frame_id", GLOBAL_MAP["frame_id"])
+    GLOBAL_MAP["last_update"] = patch.get("timestamp", datetime.now().timestamp())
+
+    for cell in patch.get("updated_cells", []):
+        row = cell.get("row")
+        col = cell.get("col")
+
+        if row is None or col is None:
+            continue
+
+        key = f"{int(row)},{int(col)}"
+
+        previous = GLOBAL_MAP["cells"].get(key, {})
+        previous.update(cell)
+
+        GLOBAL_MAP["cells"][key] = previous
+
+
+
 
 @app.post("/api/map_patch")
 def post_map_patch(patch: Dict[str, Any]):
@@ -101,6 +138,7 @@ def post_map_patch(patch: Dict[str, Any]):
     patch["received_at"] = datetime.now().isoformat()
 
     MAP_PATCHES.append(patch)
+    update_global_map_from_patch(patch)
 
     if len(MAP_PATCHES) > 100:
         del MAP_PATCHES[:-100]
@@ -127,6 +165,18 @@ def get_latest_map_patch():
     return {
         "status": "ok",
         "patch": MAP_PATCHES[-1],
+    }
+
+
+
+@app.get("/api/global_map/latest")
+def get_latest_global_map():
+    """
+    Return the accumulated local grid-map-style state.
+    """
+    return {
+        "status": "ok",
+        "map": GLOBAL_MAP,
     }
 
 

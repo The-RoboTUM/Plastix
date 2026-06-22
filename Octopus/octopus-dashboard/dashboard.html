@@ -43,6 +43,19 @@
         <h5>🗺 Latest Map Patch</h5>
         <div id="map-patch-content">No map patch received yet.</div>
       </div>
+
+      <div id="local-grid-map" class="card">
+        <h5>🧭 Local Grid Map</h5>
+        <label for="grid-layer-select" class="form-label">Layer</label>
+        <select id="grid-layer-select" class="form-select form-select-sm mb-2">
+          <option value="coverage">Coverage</option>
+          <option value="trash_probability">Trash probability</option>
+          <option value="obstacle_probability">Obstacles</option>
+          <option value="confidence">Confidence</option>
+        </select>
+        <canvas id="grid-map-canvas" width="320" height="192" style="width:100%; border:1px solid #ddd; background:#fafafa;"></canvas>
+        <div id="grid-map-info" class="mt-2"><small>No grid map data yet.</small></div>
+      </div>
     </div>
   </div>
 
