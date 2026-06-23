@@ -1,65 +1,845 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <meta charset="utf-8"/>
-    <title>Octopus Dashboard</title>
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.2.2/dist/css/bootstrap.min.css" rel="stylesheet"/>
-    <style>
-        html,body { height:100%; margin:0; }
-        #container { display:flex; height:100vh; gap:10px; padding:10px; box-sizing:border-box; }
-        #left { flex: 1 1 70%; border-radius:8px; overflow:hidden; border:1px solid #ddd; }
-        #right { width: 360px; display:flex; flex-direction:column; gap:10px; }
-        .card { padding:10px; border-radius:8px; border:1px solid #ddd; background:#fff; box-shadow:0 1px 3px rgba(0,0,0,0.04); }
-        .card h5 { margin:0 0 8px 0; font-size:16px; }
-        iframe { width:100%; height:100%; border:0; }
-        ul.simple { padding-left:1rem; margin:0; }
-    </style>
+  <meta charset="utf-8" />
+  <title>Octopus Mission Control</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
+  <script src="vendor/leaflet/leaflet.js"></script>
+  <style>
+    :root {
+      --bg-main: #05080d;
+      --bg-panel: #0b111c;
+      --bg-panel-soft: #111827;
+      --bg-panel-raised: #131c2b;
+      --border-subtle: rgba(255, 255, 255, 0.10);
+      --border-blue: rgba(0, 101, 189, 0.65);
+      --text-main: #f5f7fb;
+      --text-muted: #9ca3af;
+      --text-soft: #cbd5e1;
+      --tum-blue: #0065bd;
+      --tum-blue-dark: #005293;
+      --tum-blue-light: #64a0c8;
+      --status-ok: #22c55e;
+      --status-warning: #f59e0b;
+      --status-error: #ef4444;
+      --status-muted: #64748b;
+      --trash-orange: #e37222;
+      --panel-radius: 14px;
+      --shadow-panel: 0 12px 30px rgba(0, 0, 0, 0.28);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body {
+      height: 100%;
+      margin: 0;
+      background: radial-gradient(circle at top left, rgba(0,101,189,0.20), transparent 28%), var(--bg-main);
+      color: var(--text-main);
+      font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      overflow: hidden;
+    }
+
+    body {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .topbar {
+      height: 64px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      background: rgba(5, 8, 13, 0.92);
+      border-bottom: 1px solid var(--border-blue);
+      backdrop-filter: blur(14px);
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      min-width: 260px;
+    }
+
+    .brand-mark {
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      background: linear-gradient(135deg, var(--tum-blue), var(--tum-blue-light));
+      box-shadow: 0 0 22px rgba(0,101,189,0.55);
+      display: grid;
+      place-items: center;
+      font-weight: 900;
+      color: white;
+      letter-spacing: -0.04em;
+    }
+
+    .brand-title {
+      display: flex;
+      flex-direction: column;
+      line-height: 1.1;
+    }
+
+    .brand-title strong {
+      font-size: 15px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+
+    .brand-title span {
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    .mission-strip {
+      flex: 1;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 12px;
+      min-width: 0;
+    }
+
+    .phase-box {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 8px 12px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 999px;
+      background: rgba(17, 24, 39, 0.86);
+    }
+
+    .phase-label {
+      color: var(--text-muted);
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .phase-select {
+      background: transparent;
+      color: var(--text-main);
+      border: 0;
+      font-weight: 800;
+      outline: none;
+      cursor: pointer;
+    }
+
+    .phase-select option {
+      color: #111827;
+    }
+
+    .top-status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 320px;
+      justify-content: flex-end;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 8px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      border: 1px solid var(--border-subtle);
+      background: rgba(17, 24, 39, 0.72);
+      white-space: nowrap;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 999px;
+      background: var(--status-muted);
+      box-shadow: 0 0 12px currentColor;
+    }
+
+    .ok .dot, .fresh .dot { background: var(--status-ok); color: var(--status-ok); }
+    .warning .dot, .stale .dot { background: var(--status-warning); color: var(--status-warning); }
+    .error .dot, .offline .dot { background: var(--status-error); color: var(--status-error); }
+    .muted .dot, .unknown .dot { background: var(--status-muted); color: var(--status-muted); }
+
+    .danger-button {
+      border: 1px solid rgba(239,68,68,0.6);
+      background: rgba(127, 29, 29, 0.35);
+      color: #fecaca;
+      border-radius: 999px;
+      font-weight: 800;
+      padding: 7px 10px;
+      cursor: not-allowed;
+    }
+
+    .dashboard {
+      height: calc(100vh - 64px);
+      display: grid;
+      grid-template-rows: 78px minmax(0, 1fr) 145px;
+      gap: 12px;
+      padding: 12px;
+      min-height: 0;
+    }
+
+    .kpi-row {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 12px;
+      min-height: 0;
+    }
+
+    .kpi {
+      border: 1px solid var(--border-subtle);
+      background: linear-gradient(180deg, rgba(17,24,39,0.95), rgba(11,17,28,0.95));
+      border-radius: var(--panel-radius);
+      padding: 12px;
+      box-shadow: var(--shadow-panel);
+      overflow: hidden;
+    }
+
+    .kpi .label {
+      color: var(--text-muted);
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+
+    .kpi .value {
+      font-size: 24px;
+      font-weight: 900;
+      line-height: 1;
+    }
+
+    .kpi .sub {
+      margin-top: 6px;
+      color: var(--text-muted);
+      font-size: 12px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr) 245px;
+      gap: 12px;
+      min-height: 0;
+    }
+
+    .panel {
+      min-height: 0;
+      border: 1px solid var(--border-subtle);
+      background: rgba(11, 17, 28, 0.92);
+      border-radius: var(--panel-radius);
+      box-shadow: var(--shadow-panel);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .panel.emphasis {
+      border-color: rgba(0,101,189,0.45);
+    }
+
+    .panel-header {
+      min-height: 44px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(17, 24, 39, 0.70);
+    }
+
+    .panel-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+    }
+
+    .panel-title strong {
+      font-size: 13px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+    }
+
+    .panel-title span {
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    .panel-body {
+      padding: 12px;
+      min-height: 0;
+      overflow: auto;
+      flex: 1;
+    }
+
+    .map-panel {
+      grid-column: 1;
+      grid-row: 1;
+    }
+
+    .grid-panel {
+      grid-column: 2;
+      grid-row: 1;
+    }
+
+    .middle-column {
+      grid-column: 1;
+      grid-row: 2;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      min-height: 0;
+    }
+
+    .side-column {
+      grid-column: 2;
+      grid-row: 2;
+      display: grid;
+      grid-template-columns: 0.9fr 1fr 1fr;
+      gap: 12px;
+      min-height: 0;
+    }
+
+    .mission-map-view {
+      width: 100%;
+      height: 100%;
+      background:
+        linear-gradient(rgba(100,160,200,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(100,160,200,0.04) 1px, transparent 1px),
+        #060a12;
+      background-size: 28px 28px;
+    }
+
+    .leaflet-container {
+      font-family: inherit;
+      background: #060a12;
+    }
+
+    .grid-only-map .leaflet-tile-pane {
+      opacity: 0;
+    }
+
+    .leaflet-tooltip {
+      background: rgba(5, 8, 13, 0.92);
+      color: #f8fafc;
+      border: 1px solid rgba(100,160,200,0.55);
+      box-shadow: 0 8px 20px rgba(0,0,0,0.3);
+      font-weight: 700;
+    }
+
+    .grid-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    select, button, .small-input {
+      background: #0f172a;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      border-radius: 8px;
+      padding: 7px 9px;
+      font-size: 12px;
+      outline: none;
+    }
+
+    button {
+      cursor: pointer;
+      font-weight: 700;
+    }
+
+    button.primary {
+      background: var(--tum-blue);
+      border-color: var(--tum-blue-light);
+      color: white;
+    }
+
+    button.ghost {
+      background: rgba(15, 23, 42, 0.5);
+    }
+
+    .grid-canvas-wrap {
+      position: relative;
+      height: 100%;
+      min-height: 220px;
+      border-radius: 12px;
+      border: 1px solid rgba(0,101,189,0.36);
+      background:
+        linear-gradient(rgba(100,160,200,0.04) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(100,160,200,0.04) 1px, transparent 1px),
+        #060a12;
+      background-size: 26px 26px;
+      overflow: hidden;
+    }
+
+    #grid-map-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      cursor: crosshair;
+    }
+
+    .grid-overlay-info {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      max-width: calc(100% - 24px);
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      pointer-events: none;
+    }
+
+    .mini-chip {
+      background: rgba(5, 8, 13, 0.78);
+      border: 1px solid var(--border-subtle);
+      border-radius: 999px;
+      color: var(--text-soft);
+      font-size: 11px;
+      padding: 4px 8px;
+      backdrop-filter: blur(8px);
+    }
+
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      min-height: 0;
+    }
+
+    .side-column {
+      min-height: 0;
+    }
+
+    .compact-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .item-card {
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 9px;
+      background: rgba(15, 23, 42, 0.60);
+    }
+
+    .item-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+
+    .item-title {
+      font-weight: 800;
+      font-size: 13px;
+    }
+
+    .item-meta {
+      color: var(--text-muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .progress {
+      height: 7px;
+      border-radius: 999px;
+      background: rgba(148, 163, 184, 0.18);
+      overflow: hidden;
+      margin-top: 8px;
+    }
+
+    .progress > span {
+      display: block;
+      height: 100%;
+      background: linear-gradient(90deg, var(--tum-blue), var(--tum-blue-light));
+      width: 0%;
+    }
+
+    .status-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    .status-table td {
+      border-bottom: 1px solid rgba(255,255,255,0.06);
+      padding: 7px 0;
+      vertical-align: top;
+    }
+
+    .status-table td:last-child {
+      text-align: right;
+      color: var(--text-muted);
+    }
+
+    .timeline-panel {
+      display: grid;
+      grid-template-columns: 1.4fr 1fr 1fr;
+      gap: 12px;
+      min-height: 0;
+    }
+
+    .timeline-list {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      font-size: 12px;
+    }
+
+    .timeline-event {
+      display: grid;
+      grid-template-columns: 58px 1fr;
+      gap: 8px;
+      color: var(--text-soft);
+    }
+
+    .timeline-event .time {
+      color: var(--tum-blue-light);
+      font-variant-numeric: tabular-nums;
+    }
+
+    .json-box {
+      height: 100%;
+      min-height: 75px;
+      margin: 0;
+      color: #cbd5e1;
+      background: #05080d;
+      border: 1px solid rgba(255,255,255,0.08);
+      border-radius: 10px;
+      padding: 9px;
+      overflow: auto;
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .muted-text { color: var(--text-muted); }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    .accent { color: var(--tum-blue-light); }
+    .warning-text { color: #fbbf24; }
+    .error-text { color: #fca5a5; }
+    .success-text { color: #86efac; }
+
+    @media (max-width: 1280px) {
+      .main-grid {
+        grid-template-columns: 1fr 340px;
+      }
+      .middle-column {
+        display: none;
+      }
+      .kpi-row {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 900px) {
+      html, body { overflow: auto; }
+      .topbar { height: auto; min-height: 64px; flex-wrap: wrap; gap: 10px; padding: 10px; }
+      .top-status, .brand { min-width: 0; }
+      .dashboard { height: auto; grid-template-rows: auto auto auto; overflow: visible; }
+      .kpi-row { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .main-grid { grid-template-columns: 1fr; grid-template-rows: 420px 420px auto; }
+      .side-column { grid-row: auto; }
+      .timeline-panel { grid-template-columns: 1fr; }
+    }
+
+
+    .map-control-group {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex-wrap: wrap;
+    }
+
+    .small-input.resolution-input {
+      width: 74px;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .area-active {
+      border-color: rgba(245,158,11,0.75) !important;
+      color: #fde68a !important;
+      box-shadow: 0 0 0 2px rgba(245,158,11,0.13);
+    }
+
+    .resolution-control {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 5px 7px;
+      border-radius: 9px;
+      border: 1px solid var(--border-subtle);
+      background: rgba(15, 23, 42, 0.55);
+      color: var(--text-muted);
+      font-size: 11px;
+      white-space: nowrap;
+    }
+
+    .resolution-control .small-input {
+      padding: 5px 6px;
+    }
+
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .draw-help-badge {
+      position: absolute;
+      left: 12px;
+      top: 12px;
+      z-index: 600;
+      max-width: 360px;
+      padding: 8px 10px;
+      border-radius: 999px;
+      background: rgba(5, 8, 13, 0.86);
+      color: #fde68a;
+      border: 1px solid rgba(245,158,11,0.55);
+      font-size: 12px;
+      font-weight: 800;
+      pointer-events: none;
+      box-shadow: 0 10px 24px rgba(0,0,0,0.35);
+    }
+
+    .mission-map-view.polygon-drawing {
+      cursor: crosshair;
+    }
+
+
+    .octopus-map-legend {
+      background: rgba(5, 8, 13, 0.86);
+      color: #f8fafc;
+      border: 1px solid rgba(100,160,200,0.52);
+      border-radius: 10px;
+      padding: 9px 10px;
+      box-shadow: 0 10px 28px rgba(0,0,0,0.35);
+      font-size: 11px;
+      line-height: 1.45;
+      backdrop-filter: blur(8px);
+    }
+
+    .octopus-map-legend .legend-title {
+      font-weight: 900;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 5px;
+      color: #ffffff;
+    }
+
+    .legend-swatch,
+    .legend-dot {
+      display: inline-block;
+      width: 10px;
+      height: 10px;
+      margin-right: 6px;
+      vertical-align: -1px;
+      border: 1px solid rgba(255,255,255,0.75);
+    }
+
+    .legend-dot { border-radius: 999px; }
+    .legend-swatch.coverage { background: rgba(100,160,200,0.78); }
+    .legend-swatch.trash { background: rgba(227,114,34,0.88); }
+    .legend-swatch.obstacle { background: rgba(239,68,68,0.88); }
+    .legend-swatch.water { background: rgba(59,130,246,0.78); }
+    .legend-swatch.building { background: rgba(168,85,247,0.78); }
+    .legend-swatch.ground { background: rgba(34,197,94,0.35); }
+    .legend-dot.drone { background: #0065bd; }
+    .legend-dot.robot { background: #22c55e; }
+    .legend-dot.task { background: #e37222; }
+    .legend-note { color: #9ca3af; margin-top: 5px; }
+
+    .grid-fixed-legend {
+      position: absolute;
+      right: 12px;
+      top: 12px;
+      z-index: 3;
+      background: rgba(5, 8, 13, 0.78);
+      border: 1px solid rgba(255,255,255,0.10);
+      border-radius: 10px;
+      padding: 8px 9px;
+      color: #cbd5e1;
+      font-size: 11px;
+      line-height: 1.45;
+      pointer-events: none;
+      backdrop-filter: blur(8px);
+    }
+
+    .grid-canvas-wrap { touch-action: none; }
+
+  </style>
 </head>
 <body>
-  <div id="container">
-    <div id="left" class="card">
-      <!-- map.html im iframe einbetten -->
-      <iframe id="mapframe" src="map.html"></iframe>
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-mark">O</div>
+      <div class="brand-title">
+        <strong>Octopus Mission Control</strong>
+        <span>PlastiX · RoboTUM/TUM style prototype</span>
+      </div>
     </div>
 
-    <div id="right">
-      <div id="tasks" class="card">
-        <h5>🗂 Aktuelle Tasks</h5>
-        <div id="tasks-content">Loading tasks...</div>
-      </div>
-
-      <div id="battery" class="card">
-        <h5>🔋 Batteriestatus</h5>
-        <div id="battery-content">Loading battery...</div>
-      </div>
-
-      <div id="stats" class="card">
-        <h5>📊 System-Statistiken</h5>
-        <div id="stats-content">Loading stats...</div>
-      </div>
-
-      <div id="map-patch" class="card">
-        <h5>🗺 Latest Map Patch</h5>
-        <div id="map-patch-content">No map patch received yet.</div>
-      </div>
-
-      <div id="local-grid-map" class="card">
-        <h5>🧭 Local Grid Map</h5>
-        <label for="grid-layer-select" class="form-label">Layer</label>
-        <select id="grid-layer-select" class="form-select form-select-sm mb-2">
-          <option value="coverage">Coverage</option>
-          <option value="trash_probability">Trash probability</option>
-          <option value="obstacle_probability">Obstacles</option>
-          <option value="confidence">Confidence</option>
+    <div class="mission-strip">
+      <div class="phase-box">
+        <span class="phase-label">Mission phase</span>
+        <select id="mission-phase-select" class="phase-select" aria-label="Mission phase">
+          <option value="idle">Idle</option>
+          <option value="setup">Setup</option>
+          <option value="preflight">Pre-flight Check</option>
+          <option value="ready">Ready</option>
+          <option value="scanning">Scanning</option>
+          <option value="mapping">Mapping</option>
+          <option value="verification">Trash Verification</option>
+          <option value="assignment">Task Assignment</option>
+          <option value="collection">Ground Collection</option>
+          <option value="return_home">Return Home</option>
+          <option value="complete">Mission Complete</option>
+          <option value="paused">Paused</option>
+          <option value="error">Error</option>
         </select>
-        <canvas id="grid-map-canvas" width="320" height="192" style="width:100%; border:1px solid #ddd; background:#fafafa;"></canvas>
-        <div id="grid-map-info" class="mt-2"><small>No grid map data yet.</small></div>
       </div>
+      <div id="mission-next-action" class="pill muted"><span class="dot"></span><span>Waiting for data</span></div>
     </div>
-  </div>
 
-  <!-- Beispiel-Daten JS (ersetzt später durch API-Aufrufe) -->
-  <script src="live_data.js"></script>
+    <div class="top-status">
+      <div id="backend-status-pill" class="pill unknown"><span class="dot"></span><span>Backend</span></div>
+      <div id="ros-status-pill" class="pill unknown"><span class="dot"></span><span>ROS bridge</span></div>
+      <div id="last-refresh-pill" class="pill muted"><span class="dot"></span><span>--:--:--</span></div>
+      <button class="danger-button" title="Placeholder only. Not connected to robot commands yet.">Abort</button>
+    </div>
+  </header>
+
+  <main class="dashboard">
+    <section class="kpi-row" id="kpi-row">
+      <div class="kpi"><div class="label">Coverage</div><div class="value" id="kpi-coverage">--</div><div class="sub" id="kpi-coverage-sub">Waiting for map</div></div>
+      <div class="kpi"><div class="label">Detections / Tasks</div><div class="value" id="kpi-detections">--</div><div class="sub" id="kpi-detections-sub">Waiting</div></div>
+      <div class="kpi"><div class="label">Confirmed trash</div><div class="value" id="kpi-confirmed">--</div><div class="sub">Collected / completed</div></div>
+      <div class="kpi"><div class="label">Fleet online</div><div class="value" id="kpi-fleet">--</div><div class="sub" id="kpi-fleet-sub">Drone + robots</div></div>
+      <div class="kpi"><div class="label">Map patch</div><div class="value" id="kpi-map-patch">--</div><div class="sub" id="kpi-map-patch-sub">No patch yet</div></div>
+      <div class="kpi"><div class="label">System health</div><div class="value" id="kpi-health">--</div><div class="sub" id="kpi-health-sub">Checking pipeline</div></div>
+    </section>
+
+    <section class="main-grid">
+      <section class="panel emphasis map-panel">
+        <div class="panel-header">
+          <div class="panel-title"><strong>Mission Map</strong><span>world/operator view</span></div>
+          <div class="grid-toolbar map-control-group">
+            <select id="mission-map-mode" aria-label="Mission map mode">
+              <option value="standard">Standard map</option>
+              <option value="grid_overlay">Map + grid overlay</option>
+              <option value="grid_only">Grid only</option>
+            </select>
+            <label class="resolution-control" title="Grid resolution in meters per cell. This changes the planning grid, not the physical size of already scanned patches.">
+              <span>Grid cell size</span>
+              <input id="grid-resolution-input" class="small-input resolution-input" type="number" value="0.10" min="0.02" max="2" step="0.05" />
+              <span id="grid-resolution-label">m/cell</span>
+            </label>
+            <button id="draw-polygon-button" class="ghost" title="Click points on the mission map to define a search polygon">Draw polygon</button>
+            <button id="finish-polygon-button" class="ghost" title="Submit the drawn polygon as search/grid area" disabled>Finish</button>
+            <button id="clear-area-button" class="ghost" title="Clear the custom search area">Clear</button>
+            <button id="use-view-area-button" class="ghost" title="Use the current visible map bounds as search area">Use view</button>
+            <button id="mission-fit-button" class="ghost">Fit</button>
+          </div>
+        </div>
+        <div class="panel-body" style="padding:0; overflow:hidden;">
+          <div id="mission-map" class="mission-map-view"></div>
+        </div>
+      </section>
+
+      <section class="panel emphasis grid-panel">
+        <div class="panel-header">
+          <div class="panel-title"><strong>Local Grid Map</strong><span>autonomy/internal map</span></div>
+          <div class="grid-toolbar">
+            <select id="grid-layer-select" aria-label="Grid layer">
+              <option value="overview" selected>Mission overview</option>
+              <option value="coverage">Coverage</option>
+              <option value="trash_probability">Trash probability</option>
+              <option value="obstacle_probability">Obstacles</option>
+              <option value="confidence">Confidence</option>
+            </select>
+            <button id="load-osm-priors-button" class="ghost" title="Load low-confidence semantic priors from OpenStreetMap/Overpass for the current search area">Load OSM priors</button>
+            <button id="grid-zoom-out-button" class="ghost">−</button>
+            <button id="grid-zoom-in-button" class="ghost">+</button>
+            <button id="fit-grid-button" class="ghost">Fit</button>
+          </div>
+        </div>
+        <div class="panel-body" style="padding:12px; overflow:hidden;">
+          <div class="grid-canvas-wrap">
+            <canvas id="grid-map-canvas"></canvas>
+            <div id="grid-map-info" class="grid-overlay-info">
+              <span class="mini-chip">No grid map data yet</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="stack middle-column">
+        <section class="panel" style="flex: 1;">
+          <div class="panel-header"><div class="panel-title"><strong>System Health</strong><span>freshness-aware</span></div></div>
+          <div class="panel-body" id="system-health-content">Checking system health...</div>
+        </section>
+
+        <section class="panel" style="flex: 1;">
+          <div class="panel-header"><div class="panel-title"><strong>Readiness Checklist</strong><span>pre-flight view</span></div></div>
+          <div class="panel-body" id="readiness-content">Waiting for state...</div>
+        </section>
+      </section>
+
+      <aside class="stack side-column">
+        <section class="panel" style="flex: 1.05;">
+          <div class="panel-header"><div class="panel-title"><strong>Selected Object</strong><span>click map/grid later</span></div></div>
+          <div class="panel-body" id="inspector-content">No object selected.</div>
+        </section>
+
+        <section class="panel" style="flex: 1;">
+          <div class="panel-header"><div class="panel-title"><strong>Fleet Status</strong><span>drone + robots</span></div></div>
+          <div class="panel-body" id="fleet-content">Loading fleet...</div>
+        </section>
+
+        <section class="panel" style="flex: 1;">
+          <div class="panel-header"><div class="panel-title"><strong>Detection + Task Queue</strong><span>latest targets</span></div></div>
+          <div class="panel-body" id="tasks-content">Loading tasks...</div>
+        </section>
+      </aside>
+    </section>
+
+    <section class="timeline-panel">
+      <section class="panel">
+        <div class="panel-header"><div class="panel-title"><strong>Mission Timeline</strong><span>events, warnings, map updates</span></div></div>
+        <div class="panel-body" id="timeline-content"></div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header"><div class="panel-title"><strong>Command Outbox</strong><span>safety placeholder</span></div></div>
+        <div class="panel-body" id="command-outbox-content">
+          <div class="item-card">
+            <div class="item-title">No pending commands</div>
+            <div class="item-meta">Later: start mission, assign target, pause, return home, abort. Critical commands should require confirmation.</div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header"><div class="panel-title"><strong>Latest Map Patch</strong><span>debug JSON</span></div></div>
+        <div class="panel-body" id="map-patch-content">No map patch received yet.</div>
+      </section>
+    </section>
+  </main>
+
+  <script src="live_data.js?v=semantic-overview-1"></script>
 </body>
 </html>
