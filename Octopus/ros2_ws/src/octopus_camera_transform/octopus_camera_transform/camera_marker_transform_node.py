@@ -8,6 +8,7 @@ import numpy as np
 
 import rclpy
 from rclpy.node import Node
+from rclpy.qos import QoSPresetProfiles
 from sensor_msgs.msg import CompressedImage
 from geometry_msgs.msg import PoseArray
 from std_msgs.msg import String
@@ -24,10 +25,11 @@ class CameraMarkerTransformNode(Node):
         self.declare_parameter("field_width_m", 5.0)
         self.declare_parameter("field_height_m", 3.0)
 
-        self.declare_parameter("marker_id_origin", 0)
-        self.declare_parameter("marker_id_x", 1)
-        self.declare_parameter("marker_id_xy", 2)
-        self.declare_parameter("marker_id_y", 3)
+        self.declare_parameter("marker_id_origin", 61)
+        self.declare_parameter("marker_id_x", 65)
+        self.declare_parameter("marker_id_xy", 57)
+        self.declare_parameter("marker_id_y", 11)
+        self.declare_parameter("marker_dictionary", "APRILTAG_36h11")
 
         self.declare_parameter("source_id", "camera_marker_transform")
         self.declare_parameter("default_class_name", "trash")
@@ -49,6 +51,7 @@ class CameraMarkerTransformNode(Node):
         self.marker_id_x = int(self.get_parameter("marker_id_x").value)
         self.marker_id_xy = int(self.get_parameter("marker_id_xy").value)
         self.marker_id_y = int(self.get_parameter("marker_id_y").value)
+        self.marker_dictionary = self.get_parameter("marker_dictionary").value
 
         self.source_id = self.get_parameter("source_id").value
         self.default_class_name = self.get_parameter("default_class_name").value
@@ -69,6 +72,7 @@ class CameraMarkerTransformNode(Node):
         self.image_width = None
         self.image_height = None
         self.last_coverage_publish_time = 0.0
+        self.last_marker_debug_time = 0.0
 
         self.publisher = self.create_publisher(
             String,
@@ -80,7 +84,7 @@ class CameraMarkerTransformNode(Node):
             CompressedImage,
             self.image_topic,
             self.image_callback,
-            10,
+            QoSPresetProfiles.SENSOR_DATA.value,
         )
 
         self.detector_sub = self.create_subscription(
@@ -92,9 +96,7 @@ class CameraMarkerTransformNode(Node):
 
         self.aruco_available = hasattr(cv2, "aruco")
         if self.aruco_available:
-            self.aruco_dict = cv2.aruco.getPredefinedDictionary(
-                cv2.aruco.DICT_4X4_50
-            )
+            self.aruco_dict = self.create_marker_dictionary(self.marker_dictionary)
 
             if hasattr(cv2.aruco, "ArucoDetector"):
                 self.aruco_params = cv2.aruco.DetectorParameters()
@@ -114,6 +116,7 @@ class CameraMarkerTransformNode(Node):
         self.get_logger().info(f"Image topic: {self.image_topic}")
         self.get_logger().info(f"Detector topic: {self.detector_topic}")
         self.get_logger().info(f"Output topic: {self.output_topic}")
+        self.get_logger().info(f"Marker dictionary: {self.marker_dictionary}")
         self.get_logger().info(
             "Expected marker IDs: "
             f"{self.marker_id_origin}=origin, "
@@ -121,6 +124,35 @@ class CameraMarkerTransformNode(Node):
             f"{self.marker_id_xy}=xy corner, "
             f"{self.marker_id_y}=y corner"
         )
+
+    def create_marker_dictionary(self, dictionary_name):
+        name = str(dictionary_name)
+
+        aliases = {
+            "tag36h11": "DICT_APRILTAG_36h11",
+            "TAG36H11": "DICT_APRILTAG_36h11",
+            "APRILTAG_36h11": "DICT_APRILTAG_36h11",
+            "APRILTAG_36H11": "DICT_APRILTAG_36h11",
+            "DICT_APRILTAG_36h11": "DICT_APRILTAG_36h11",
+            "aruco_4x4_50": "DICT_4X4_50",
+            "ARUCO_4X4_50": "DICT_4X4_50",
+            "DICT_4X4_50": "DICT_4X4_50",
+        }
+
+        attr_name = aliases.get(name, name)
+
+        if not hasattr(cv2.aruco, attr_name):
+            available = sorted(
+                dictionary for dictionary in dir(cv2.aruco)
+                if dictionary.startswith("DICT_")
+            )
+            raise RuntimeError(
+                f"OpenCV marker dictionary '{attr_name}' is not available. "
+                f"Available dictionaries: {available}"
+            )
+
+        self.get_logger().info(f"Using marker dictionary: {attr_name}")
+        return cv2.aruco.getPredefinedDictionary(getattr(cv2.aruco, attr_name))
 
     def image_callback(self, msg: CompressedImage):
         if not self.aruco_available:
@@ -133,6 +165,13 @@ class CameraMarkerTransformNode(Node):
         self.image_height, self.image_width = image.shape[:2]
 
         marker_centers = self.detect_marker_centers(image)
+
+        now = time.time()
+        if now - self.last_marker_debug_time >= 2.0:
+            detected_ids = sorted(marker_centers.keys())
+            self.get_logger().info(f"Detected marker IDs: {detected_ids}")
+            self.last_marker_debug_time = now
+
         ok = self.update_homography(marker_centers)
 
         if not ok:
