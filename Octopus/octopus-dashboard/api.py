@@ -1,4 +1,8 @@
 from fastapi import FastAPI
+
+
+
+
 from fastapi.staticfiles import StaticFiles
 import sqlite3
 from pydantic import BaseModel
@@ -8,6 +12,126 @@ from datetime import datetime
 
 DB_PATH = os.getenv("DB_PATH", "octopusfinal.db")
 app = FastAPI()
+
+
+# --- OCTOPUS EVE CAMERA ROUTES ---
+import subprocess
+from datetime import datetime
+
+
+EVE_SSH_TARGET = "eve-pi"
+
+
+def _octopus_run_eve_command(command: str, timeout: int = 10):
+    ssh_command = [
+        "ssh",
+        "-o", "BatchMode=yes",
+        "-o", "ConnectTimeout=4",
+        EVE_SSH_TARGET,
+        command,
+    ]
+
+    try:
+        result = subprocess.run(
+            ssh_command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+
+        return {
+            "ok": result.returncode == 0,
+            "returncode": result.returncode,
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "returncode": -1,
+            "stdout": "",
+            "stderr": "Command timed out",
+            "timestamp": datetime.now().isoformat(),
+        }
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "returncode": -1,
+            "stdout": "",
+            "stderr": str(exc),
+            "timestamp": datetime.now().isoformat(),
+        }
+
+
+@app.get("/api/eve/status")
+def octopus_eve_status():
+    result = _octopus_run_eve_command("~/octopus_camera_status.sh", timeout=8)
+
+    status = "offline"
+    if result["ok"]:
+        if "camera_running" in result["stdout"]:
+            status = "camera_running"
+        elif "camera_not_running" in result["stdout"]:
+            status = "online_camera_stopped"
+        else:
+            status = "online_unknown"
+
+    return {
+        "status": status,
+        "ssh": result,
+    }
+
+
+@app.post("/api/eve/start_camera")
+def octopus_eve_start_camera():
+    result = _octopus_run_eve_command("~/octopus_start_camera.sh", timeout=15)
+
+    status = (
+        "camera_started"
+        if result["ok"] and "camera_started" in result["stdout"]
+        else "camera_failed"
+    )
+
+    return {
+        "status": status,
+        "ssh": result,
+    }
+
+
+@app.post("/api/eve/stop_camera")
+def octopus_eve_stop_camera():
+    result = _octopus_run_eve_command("~/octopus_stop_camera.sh", timeout=10)
+
+    status = (
+        "camera_stopped"
+        if result["ok"] and (
+            "camera_stopped" in result["stdout"]
+            or "camera_not_running" in result["stdout"]
+        )
+        else "camera_stop_failed"
+    )
+
+    return {
+        "status": status,
+        "ssh": result,
+    }
+
+
+@app.get("/api/eve/camera_log")
+def octopus_eve_camera_log():
+    result = _octopus_run_eve_command("tail -80 /tmp/octopus_camera_node.log", timeout=8)
+
+    return {
+        "status": "ok" if result["ok"] else "failed",
+        "log": result["stdout"],
+        "ssh": result,
+    }
+# --- END OCTOPUS EVE CAMERA ROUTES ---
+
+
 
 # Store server start time
 SERVER_START_TIME = datetime.now()
@@ -194,3 +318,4 @@ def get_map_patches(limit: int = 20):
 
 # Mount static files - this serves HTML, CSS, JS from the current directory
 app.mount("/", StaticFiles(directory=".", html=True), name="static")
+

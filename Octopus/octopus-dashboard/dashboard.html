@@ -681,6 +681,46 @@
 
     .grid-canvas-wrap { touch-action: none; }
 
+  
+    /* OCTOPUS EVE CAMERA CONTROLS */
+    .eve-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 12px 0;
+    }
+
+    .eve-controls button {
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: rgba(15, 23, 42, 0.72);
+      color: var(--text-main);
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .eve-controls button:hover {
+      border-color: rgba(56, 189, 248, 0.65);
+      background: rgba(30, 41, 59, 0.9);
+    }
+
+    .eve-log-box {
+      display: none;
+      margin-top: 10px;
+      max-height: 180px;
+      overflow: auto;
+      white-space: pre-wrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      padding: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      border-radius: 10px;
+      background: rgba(2, 6, 23, 0.72);
+      color: #cbd5e1;
+    }
+
   </style>
 </head>
 <body>
@@ -718,6 +758,7 @@
     <div class="top-status">
       <div id="backend-status-pill" class="pill unknown"><span class="dot"></span><span>Backend</span></div>
       <div id="ros-status-pill" class="pill unknown"><span class="dot"></span><span>ROS bridge</span></div>
+      <div id="eve-camera-status-pill" class="pill unknown"><span class="dot"></span><span>Eve camera</span></div>
       <div id="last-refresh-pill" class="pill muted"><span class="dot"></span><span>--:--:--</span></div>
       <button class="danger-button" title="Placeholder only. Not connected to robot commands yet.">Abort</button>
     </div>
@@ -790,6 +831,15 @@
       <section class="stack middle-column">
         <section class="panel" style="flex: 1;">
           <div class="panel-header"><div class="panel-title"><strong>System Health</strong><span>freshness-aware</span></div></div>
+          <div class="eve-controls">
+            <button id="eve-start-camera-btn" type="button">Connect Eve Camera</button>
+            <button id="eve-stop-camera-btn" type="button">Stop Camera</button>
+            <button id="eve-refresh-status-btn" type="button">Refresh Status</button>
+            <button id="eve-show-log-btn" type="button">Show Log</button>
+          </div>
+          <div id="eve-camera-summary" class="muted">Eve camera status: unknown</div>
+          <pre id="eve-camera-log" class="eve-log-box"></pre>
+
           <div class="panel-body" id="system-health-content">Checking system health...</div>
         </section>
 

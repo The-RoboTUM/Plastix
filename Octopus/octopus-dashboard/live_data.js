@@ -2068,3 +2068,128 @@ renderMissionPhase();
 renderTimeline();
 refreshAll();
 setInterval(refreshAll, 5000);
+
+
+// --- OCTOPUS EVE CAMERA FRONTEND ---
+async function eveFetchJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.detail || `HTTP ${response.status}`);
+  }
+  return data;
+}
+
+function setEveCameraUi(status, detail = "") {
+  const pill = document.getElementById("eve-camera-status-pill");
+  const summary = document.getElementById("eve-camera-summary");
+
+  let label = "Eve camera";
+  let cls = "unknown";
+
+  if (status === "camera_running") {
+    label = "Eve camera running";
+    cls = "ok";
+  } else if (status === "camera_started") {
+    label = "Eve camera started";
+    cls = "ok";
+  } else if (status === "online_camera_stopped") {
+    label = "Eve online, camera stopped";
+    cls = "warning";
+  } else if (status === "camera_stopped") {
+    label = "Eve camera stopped";
+    cls = "warning";
+  } else if (status === "offline") {
+    label = "Eve offline";
+    cls = "offline";
+  } else if (status === "camera_failed" || status === "camera_stop_failed") {
+    label = "Eve camera error";
+    cls = "error";
+  }
+
+  if (pill) {
+    pill.className = `pill ${cls}`;
+    const span = pill.querySelector("span:last-child");
+    if (span) span.textContent = label;
+  }
+
+  if (summary) {
+    summary.textContent = detail ? `${label}: ${detail}` : label;
+  }
+}
+
+async function refreshEveCameraStatus() {
+  try {
+    const data = await eveFetchJson("/api/eve/status");
+    setEveCameraUi(data.status, data.ssh?.stdout || "");
+    return data;
+  } catch (error) {
+    setEveCameraUi("offline", error.message);
+    return null;
+  }
+}
+
+async function startEveCamera() {
+  setEveCameraUi("unknown", "starting camera...");
+  try {
+    const data = await eveFetchJson("/api/eve/start_camera", { method: "POST" });
+    setEveCameraUi(data.status, data.ssh?.stdout || "");
+    if (typeof addTimeline === "function") {
+      addTimeline("Eve camera start command executed.", data.status === "camera_started" ? "success" : "warning");
+    }
+  } catch (error) {
+    setEveCameraUi("camera_failed", error.message);
+    if (typeof addTimeline === "function") addTimeline(`Eve camera start failed: ${error.message}`, "error");
+  }
+}
+
+async function stopEveCamera() {
+  setEveCameraUi("unknown", "stopping camera...");
+  try {
+    const data = await eveFetchJson("/api/eve/stop_camera", { method: "POST" });
+    setEveCameraUi(data.status, data.ssh?.stdout || "");
+    if (typeof addTimeline === "function") {
+      addTimeline("Eve camera stop command executed.", data.status === "camera_stopped" ? "success" : "warning");
+    }
+  } catch (error) {
+    setEveCameraUi("camera_stop_failed", error.message);
+    if (typeof addTimeline === "function") addTimeline(`Eve camera stop failed: ${error.message}`, "error");
+  }
+}
+
+async function showEveCameraLog() {
+  const logEl = document.getElementById("eve-camera-log");
+  if (!logEl) return;
+
+  logEl.style.display = "block";
+  logEl.textContent = "Loading Eve camera log...";
+
+  try {
+    const data = await eveFetchJson("/api/eve/camera_log");
+    logEl.textContent = data.log || "(empty log)";
+  } catch (error) {
+    logEl.textContent = `Failed to load log: ${error.message}`;
+  }
+}
+
+function initEveCameraControls() {
+  const startBtn = document.getElementById("eve-start-camera-btn");
+  const stopBtn = document.getElementById("eve-stop-camera-btn");
+  const refreshBtn = document.getElementById("eve-refresh-status-btn");
+  const logBtn = document.getElementById("eve-show-log-btn");
+
+  if (startBtn) startBtn.addEventListener("click", startEveCamera);
+  if (stopBtn) stopBtn.addEventListener("click", stopEveCamera);
+  if (refreshBtn) refreshBtn.addEventListener("click", refreshEveCameraStatus);
+  if (logBtn) logBtn.addEventListener("click", showEveCameraLog);
+
+  refreshEveCameraStatus();
+  setInterval(refreshEveCameraStatus, 8000);
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initEveCameraControls);
+} else {
+  initEveCameraControls();
+}
+// --- END OCTOPUS EVE CAMERA FRONTEND ---
