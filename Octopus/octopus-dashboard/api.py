@@ -317,5 +317,145 @@ def get_map_patches(limit: int = 20):
 
 
 # Mount static files - this serves HTML, CSS, JS from the current directory
+
+
+# --- OCTOPUS CAMERA GRID PIPELINE ROUTES ---
+import subprocess as _octopus_pipeline_subprocess
+from datetime import datetime as _octopus_pipeline_datetime
+
+
+OCTOPUS_ROOT = "/home/dominik/projects/PlastiX/Octopus"
+
+
+def _octopus_run_local_pipeline_command(command: str, timeout: int = 15):
+    try:
+        result = _octopus_pipeline_subprocess.run(
+            command,
+            shell=True,
+            cwd=OCTOPUS_ROOT,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            executable="/bin/bash",
+        )
+
+        return {
+            "ok": result.returncode == 0,
+            "returncode": result.returncode,
+            "stdout": result.stdout.strip(),
+            "stderr": result.stderr.strip(),
+            "timestamp": _octopus_pipeline_datetime.now().isoformat(),
+        }
+
+    except _octopus_pipeline_subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "returncode": -1,
+            "stdout": "",
+            "stderr": "Command timed out",
+            "timestamp": _octopus_pipeline_datetime.now().isoformat(),
+        }
+
+    except Exception as exc:
+        return {
+            "ok": False,
+            "returncode": -1,
+            "stdout": "",
+            "stderr": str(exc),
+            "timestamp": _octopus_pipeline_datetime.now().isoformat(),
+        }
+
+
+@app.get("/api/pipeline/status")
+def octopus_pipeline_status():
+    result = _octopus_run_local_pipeline_command(
+        "./scripts/octopus_camera_grid_pipeline_status.sh",
+        timeout=8,
+    )
+
+    stdout = result.get("stdout", "")
+
+    all_running = (
+        "grid_map_builder=running" in stdout
+        and "map_patch_backend_bridge=running" in stdout
+        and "camera_marker_transform=running" in stdout
+    )
+
+    any_running = "=running" in stdout
+
+    if all_running:
+        status = "pipeline_running"
+    elif any_running:
+        status = "pipeline_partial"
+    else:
+        status = "pipeline_stopped"
+
+    return {
+        "status": status,
+        "local": result,
+    }
+
+
+@app.post("/api/pipeline/start")
+def octopus_pipeline_start():
+    result = _octopus_run_local_pipeline_command(
+        "./scripts/octopus_start_camera_grid_pipeline.sh",
+        timeout=25,
+    )
+
+    status = (
+        "pipeline_started"
+        if result["ok"] and "camera_grid_pipeline_started" in result["stdout"]
+        else "pipeline_failed"
+    )
+
+    return {
+        "status": status,
+        "local": result,
+    }
+
+
+@app.post("/api/pipeline/stop")
+def octopus_pipeline_stop():
+    result = _octopus_run_local_pipeline_command(
+        "./scripts/octopus_stop_camera_grid_pipeline.sh",
+        timeout=15,
+    )
+
+    status = (
+        "pipeline_stopped"
+        if result["ok"] and "camera_grid_pipeline_stopped" in result["stdout"]
+        else "pipeline_stop_failed"
+    )
+
+    return {
+        "status": status,
+        "local": result,
+    }
+
+
+@app.get("/api/pipeline/logs")
+def octopus_pipeline_logs():
+    command = """
+    echo '--- grid_map_builder ---'
+    tail -50 /tmp/octopus_grid_map_builder.log 2>/dev/null || true
+    echo
+    echo '--- map_patch_backend_bridge ---'
+    tail -50 /tmp/octopus_map_patch_backend_bridge.log 2>/dev/null || true
+    echo
+    echo '--- camera_marker_transform ---'
+    tail -80 /tmp/octopus_camera_marker_transform.log 2>/dev/null || true
+    """
+
+    result = _octopus_run_local_pipeline_command(command, timeout=8)
+
+    return {
+        "status": "ok" if result["ok"] else "failed",
+        "logs": result["stdout"],
+        "local": result,
+    }
+# --- END OCTOPUS CAMERA GRID PIPELINE ROUTES ---
+
+
 app.mount("/", StaticFiles(directory=".", html=True), name="static")
 

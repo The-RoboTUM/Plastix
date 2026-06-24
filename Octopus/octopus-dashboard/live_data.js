@@ -2649,3 +2649,209 @@ if (document.readyState === "loading") {
   initEveCameraControls();
 }
 // --- END OCTOPUS EVE CAMERA FRONTEND ---
+
+
+// --- OCTOPUS CAMERA-TO-GRID PIPELINE FRONTEND ---
+async function pipelineFetchJson(url, options = {}) {
+  const response = await fetch(url, options);
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(data.detail || `HTTP ${response.status}`);
+  }
+  return data;
+}
+
+function setPipelineUi(status, detail = "") {
+  const pill = document.getElementById("pipeline-status-pill");
+  const summary = document.getElementById("pipeline-summary");
+
+  let label = "Pipeline";
+  let cls = "unknown";
+
+  if (status === "pipeline_running" || status === "pipeline_started") {
+    label = "Pipeline running";
+    cls = "ok";
+  } else if (status === "pipeline_partial") {
+    label = "Pipeline partial";
+    cls = "warning";
+  } else if (status === "pipeline_stopped") {
+    label = "Pipeline stopped";
+    cls = "muted";
+  } else if (status === "pipeline_failed" || status === "pipeline_stop_failed") {
+    label = "Pipeline error";
+    cls = "error";
+  } else if (status === "offline") {
+    label = "Pipeline offline";
+    cls = "offline";
+  }
+
+  if (pill) {
+    pill.className = `pill ${cls}`;
+    const labelEl = pill.querySelector("span:last-child");
+    if (labelEl) labelEl.textContent = label;
+  }
+
+  if (summary) {
+    summary.textContent = detail ? `${label}: ${detail}` : label;
+  }
+}
+
+async function refreshPipelineStatus() {
+  try {
+    const data = await pipelineFetchJson("/api/pipeline/status");
+    setPipelineUi(data.status, data.local?.stdout || "");
+    return data;
+  } catch (error) {
+    setPipelineUi("offline", error.message);
+    return null;
+  }
+}
+
+async function startCameraGridPipeline() {
+  setPipelineUi("unknown", "starting local ROS2 pipeline...");
+  try {
+    const data = await pipelineFetchJson("/api/pipeline/start", { method: "POST" });
+    setPipelineUi(data.status, data.local?.stdout || "");
+    if (typeof addTimeline === "function") {
+      addTimeline(
+        "Camera-to-grid pipeline start command executed.",
+        data.status === "pipeline_started" ? "success" : "warning"
+      );
+    }
+  } catch (error) {
+    setPipelineUi("pipeline_failed", error.message);
+    if (typeof addTimeline === "function") {
+      addTimeline(`Camera-to-grid pipeline start failed: ${error.message}`, "error");
+    }
+  }
+}
+
+async function stopCameraGridPipeline() {
+  setPipelineUi("unknown", "stopping local ROS2 pipeline...");
+  try {
+    const data = await pipelineFetchJson("/api/pipeline/stop", { method: "POST" });
+    setPipelineUi(data.status, data.local?.stdout || "");
+    if (typeof addTimeline === "function") {
+      addTimeline(
+        "Camera-to-grid pipeline stop command executed.",
+        data.status === "pipeline_stopped" ? "success" : "warning"
+      );
+    }
+  } catch (error) {
+    setPipelineUi("pipeline_stop_failed", error.message);
+    if (typeof addTimeline === "function") {
+      addTimeline(`Camera-to-grid pipeline stop failed: ${error.message}`, "error");
+    }
+  }
+}
+
+async function showCameraGridPipelineLogs() {
+  const logEl = document.getElementById("pipeline-log");
+  if (!logEl) return;
+
+  logEl.style.display = "block";
+  logEl.textContent = "Loading pipeline logs...";
+
+  try {
+    const data = await pipelineFetchJson("/api/pipeline/logs");
+    logEl.textContent = data.logs || "(empty logs)";
+  } catch (error) {
+    logEl.textContent = `Failed to load pipeline logs: ${error.message}`;
+  }
+}
+
+function initCameraGridPipelineControls() {
+  const startBtn = document.getElementById("pipeline-start-btn");
+  const stopBtn = document.getElementById("pipeline-stop-btn");
+  const refreshBtn = document.getElementById("pipeline-refresh-btn");
+  const logBtn = document.getElementById("pipeline-log-btn");
+
+  if (startBtn) startBtn.addEventListener("click", startCameraGridPipeline);
+  if (stopBtn) stopBtn.addEventListener("click", stopCameraGridPipeline);
+  if (refreshBtn) refreshBtn.addEventListener("click", refreshPipelineStatus);
+  if (logBtn) logBtn.addEventListener("click", showCameraGridPipelineLogs);
+
+  refreshPipelineStatus();
+  setInterval(refreshPipelineStatus, 8000);
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initCameraGridPipelineControls);
+} else {
+  initCameraGridPipelineControls();
+}
+// --- END OCTOPUS CAMERA-TO-GRID PIPELINE FRONTEND ---
+
+
+// --- OCTOPUS FORCE PIPELINE CONTROLS IN SYSTEM DEBUG ---
+function octopusEnsurePipelineControlsVisible() {
+  if (document.getElementById("pipeline-start-btn")) {
+    return;
+  }
+
+  const eveSummary = document.getElementById("eve-camera-summary");
+
+  let target = eveSummary;
+
+  if (!target) {
+    const panels = Array.from(document.querySelectorAll(".panel, section, div"));
+    const systemPanel = panels.find((el) => {
+      const text = el.textContent || "";
+      return text.includes("System Health") && text.includes("Connect Eve Camera");
+    });
+
+    if (systemPanel) {
+      target = systemPanel;
+    }
+  }
+
+  if (!target) {
+    return;
+  }
+
+  const wrapper = document.createElement("div");
+  wrapper.className = "pipeline-control-block";
+  wrapper.innerHTML = `
+    <div class="pipeline-control-title">
+      <strong>Camera-to-Grid Pipeline</strong>
+      <span>starts local ROS2 mapping, backend bridge, and camera-marker transform nodes</span>
+    </div>
+    <div class="pipeline-controls">
+      <button id="pipeline-start-btn" type="button">Start Camera-to-Grid Pipeline</button>
+      <button id="pipeline-stop-btn" type="button">Stop Pipeline</button>
+      <button id="pipeline-refresh-btn" type="button">Refresh Pipeline Status</button>
+      <button id="pipeline-log-btn" type="button">Show Pipeline Logs</button>
+    </div>
+    <div id="pipeline-summary" class="muted">Pipeline status: unknown</div>
+    <pre id="pipeline-log" class="pipeline-log-box"></pre>
+  `;
+
+  if (eveSummary && eveSummary.parentNode) {
+    eveSummary.insertAdjacentElement("afterend", wrapper);
+  } else {
+    target.appendChild(wrapper);
+  }
+}
+
+function octopusBindPipelineControlsAgain() {
+  octopusEnsurePipelineControlsVisible();
+
+  const startBtn = document.getElementById("pipeline-start-btn");
+  const stopBtn = document.getElementById("pipeline-stop-btn");
+  const refreshBtn = document.getElementById("pipeline-refresh-btn");
+  const logBtn = document.getElementById("pipeline-log-btn");
+
+  if (startBtn) startBtn.onclick = startCameraGridPipeline;
+  if (stopBtn) stopBtn.onclick = stopCameraGridPipeline;
+  if (refreshBtn) refreshBtn.onclick = refreshPipelineStatus;
+  if (logBtn) logBtn.onclick = showCameraGridPipelineLogs;
+}
+
+setInterval(octopusBindPipelineControlsAgain, 1000);
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", octopusBindPipelineControlsAgain);
+} else {
+  octopusBindPipelineControlsAgain();
+}
+// --- END OCTOPUS FORCE PIPELINE CONTROLS IN SYSTEM DEBUG ---

@@ -964,7 +964,7 @@
 
     .grid-canvas-wrap { touch-action: none; }
 
-  
+
     /* OCTOPUS EVE CAMERA CONTROLS */
     .eve-controls {
       display: flex;
@@ -1002,6 +1002,103 @@
       border-radius: 10px;
       background: rgba(2, 6, 23, 0.72);
       color: #cbd5e1;
+    }
+
+
+    /* OCTOPUS CAMERA-TO-GRID PIPELINE CONTROLS */
+    .pipeline-control-block {
+      margin-top: 14px;
+      padding-top: 12px;
+      border-top: 1px solid rgba(148, 163, 184, 0.18);
+    }
+
+    .pipeline-control-title {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      margin-bottom: 10px;
+    }
+
+    .pipeline-control-title strong {
+      font-size: 13px;
+    }
+
+    .pipeline-control-title span {
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    .pipeline-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 10px 0;
+    }
+
+    .pipeline-controls button {
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: rgba(15, 23, 42, 0.72);
+      color: var(--text-main);
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .pipeline-controls button:hover {
+      border-color: rgba(56, 189, 248, 0.65);
+      background: rgba(30, 41, 59, 0.9);
+    }
+
+    .pipeline-log-box {
+      display: none;
+      margin-top: 10px;
+      max-height: 220px;
+      overflow: auto;
+      white-space: pre-wrap;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      font-size: 11px;
+      line-height: 1.45;
+      padding: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      border-radius: 10px;
+      background: rgba(2, 6, 23, 0.72);
+      color: #cbd5e1;
+    }
+
+
+    /* Make pipeline controls visible inside System / Debug */
+    .panel:has(#pipeline-start-btn) {
+      min-height: 260px !important;
+      overflow: visible !important;
+    }
+
+    .pipeline-control-block {
+      display: block !important;
+      position: relative;
+      z-index: 20;
+      margin-top: 18px !important;
+    }
+
+    #pipeline-start-btn,
+    #pipeline-stop-btn,
+    #pipeline-refresh-btn,
+    #pipeline-log-btn {
+      display: inline-block !important;
+      visibility: visible !important;
+    }
+
+
+    /* Make long Eve / pipeline status readable */
+    #eve-camera-summary,
+    #pipeline-summary {
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+      line-height: 1.35;
+      font-size: 12px;
+      max-height: 80px;
+      overflow-y: auto;
+      padding-right: 6px;
     }
 
   </style>
@@ -1052,6 +1149,7 @@
       <div id="backend-status-pill" class="pill unknown"><span class="dot"></span><span>Backend</span></div>
       <div id="ros-status-pill" class="pill unknown"><span class="dot"></span><span>ROS bridge</span></div>
       <div id="eve-camera-status-pill" class="pill unknown"><span class="dot"></span><span>Eve camera</span></div>
+      <div id="pipeline-status-pill" class="pill unknown"><span class="dot"></span><span>Pipeline</span></div>
       <div id="last-refresh-pill" class="pill muted"><span class="dot"></span><span>--:--:--</span></div>
       <button class="danger-button" title="Placeholder only. Not connected to robot commands yet.">Abort</button>
     </div>
@@ -1161,6 +1259,22 @@
           </div>
           <div id="eve-camera-summary" class="muted">Eve camera status: unknown</div>
           <pre id="eve-camera-log" class="eve-log-box"></pre>
+
+          <div class="pipeline-control-block">
+            <div class="pipeline-control-title">
+              <strong>Camera-to-Grid Pipeline</strong>
+              <span>starts local ROS2 mapping, backend bridge, and camera-marker transform nodes</span>
+            </div>
+            <div class="pipeline-controls">
+              <button id="pipeline-start-btn" type="button">Start Camera-to-Grid Pipeline</button>
+              <button id="pipeline-stop-btn" type="button">Stop Pipeline</button>
+              <button id="pipeline-refresh-btn" type="button">Refresh Pipeline Status</button>
+              <button id="pipeline-log-btn" type="button">Show Pipeline Logs</button>
+            </div>
+            <div id="pipeline-summary" class="muted">Pipeline status: unknown</div>
+            <pre id="pipeline-log" class="pipeline-log-box"></pre>
+          </div>
+
 
           <div class="panel-body" id="system-health-content">Checking system health...</div>
         </section>
