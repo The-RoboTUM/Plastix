@@ -1150,6 +1150,7 @@
       <div id="ros-status-pill" class="pill unknown"><span class="dot"></span><span>ROS bridge</span></div>
       <div id="eve-camera-status-pill" class="pill unknown"><span class="dot"></span><span>Eve camera</span></div>
       <div id="pipeline-status-pill" class="pill unknown"><span class="dot"></span><span>Pipeline</span></div>
+      <div id="camera-transform-status-pill" class="pill unknown"><span class="dot"></span><span>Transform</span></div>
       <div id="last-refresh-pill" class="pill muted"><span class="dot"></span><span>--:--:--</span></div>
       <button class="danger-button" title="Placeholder only. Not connected to robot commands yet.">Abort</button>
     </div>
@@ -1273,6 +1274,24 @@
             </div>
             <div id="pipeline-summary" class="muted">Pipeline status: unknown</div>
             <pre id="pipeline-log" class="pipeline-log-box"></pre>
+
+            <div class="pipeline-control-block">
+              <div class="pipeline-control-title">
+                <strong>Camera Transform</strong>
+                <span>AprilTag homography status from /octopus/camera_transform/status</span>
+              </div>
+              <div id="camera-transform-summary" class="muted">Camera transform status: unknown</div>
+              <table class="status-table">
+                <tbody>
+                  <tr><td>State</td><td id="camera-transform-state">unknown</td></tr>
+                  <tr><td>Markers</td><td id="camera-transform-markers">0/4</td></tr>
+                  <tr><td>Missing markers</td><td id="camera-transform-missing">unknown</td></tr>
+                  <tr><td>Homography age</td><td id="camera-transform-age">unknown</td></tr>
+                  <tr><td>Transform allowed</td><td id="camera-transform-allowed">unknown</td></tr>
+                  <tr><td>Detections</td><td id="camera-transform-detections">0 in / 0 out</td></tr>
+                </tbody>
+              </table>
+            </div>
           </div>
 
 

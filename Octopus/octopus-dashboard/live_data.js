@@ -2855,3 +2855,101 @@ if (document.readyState === "loading") {
   octopusBindPipelineControlsAgain();
 }
 // --- END OCTOPUS FORCE PIPELINE CONTROLS IN SYSTEM DEBUG ---
+
+
+// --- Camera transform status UI ---
+function cameraTransformUiState(state, transformAllowed) {
+  const value = String(state || "unknown").toLowerCase();
+
+  if (value === "ok" && transformAllowed) return "fresh";
+  if (value === "stale_warning") return "warning";
+  if (value === "stale_drop") return "error";
+  if (value === "not_ready") return "warning";
+  if (value === "unknown") return "unknown";
+
+  return transformAllowed ? "fresh" : "warning";
+}
+
+function cameraTransformLabel(state) {
+  const value = String(state || "unknown").toLowerCase();
+
+  if (value === "ok") return "Transform OK";
+  if (value === "not_ready") return "Transform not ready";
+  if (value === "stale_warning") return "Transform stale";
+  if (value === "stale_drop") return "Transform blocked";
+  return "Transform unknown";
+}
+
+function cameraTransformAgeText(age) {
+  if (age === null || age === undefined || !Number.isFinite(Number(age))) return "none";
+  const seconds = Number(age);
+  if (seconds < 1) return `${seconds.toFixed(2)} s`;
+  if (seconds < 60) return `${seconds.toFixed(1)} s`;
+  return `${Math.round(seconds / 60)} min`;
+}
+
+function setCameraTransformText(id, value) {
+  const el = document.getElementById(id);
+  if (el) el.textContent = value;
+}
+
+function setCameraTransformUi(status, errorMessage = "") {
+  const state = status?.state || "unknown";
+  const transformAllowed = Boolean(status?.is_transform_allowed);
+  const detected = Array.isArray(status?.detected_marker_ids) ? status.detected_marker_ids : [];
+  const missing = Array.isArray(status?.missing_marker_ids) ? status.missing_marker_ids : [];
+  const required = Array.isArray(status?.required_marker_ids) ? status.required_marker_ids : [61, 65, 57, 11];
+
+  const uiState = errorMessage ? "offline" : cameraTransformUiState(state, transformAllowed);
+  const label = errorMessage ? "Transform offline" : cameraTransformLabel(state);
+
+  const pill = document.getElementById("camera-transform-status-pill");
+  if (pill) {
+    pill.className = `pill ${uiState}`;
+    pill.innerHTML = `<span class="dot"></span><span>${label}</span>`;
+  }
+
+  const summary = document.getElementById("camera-transform-summary");
+  if (summary) {
+    const markerText = `${detected.length}/${required.length} markers`;
+    const missingText = missing.length ? `missing ${missing.join(", ")}` : "all required markers visible";
+    const allowedText = transformAllowed ? "transform allowed" : "transform blocked";
+    summary.textContent = errorMessage
+      ? `Camera transform status: ${errorMessage}`
+      : `Camera transform status: ${state} · ${markerText} · ${missingText} · ${allowedText}`;
+  }
+
+  setCameraTransformText("camera-transform-state", state);
+  setCameraTransformText("camera-transform-markers", `${detected.length}/${required.length} visible`);
+  setCameraTransformText("camera-transform-missing", missing.length ? missing.join(", ") : "none");
+  setCameraTransformText("camera-transform-age", cameraTransformAgeText(status?.homography_age_sec));
+  setCameraTransformText("camera-transform-allowed", transformAllowed ? "yes" : "no");
+  setCameraTransformText(
+    "camera-transform-detections",
+    `${status?.last_input_detection_count ?? 0} in / ${status?.last_transformed_detection_count ?? 0} out`
+  );
+}
+
+async function refreshCameraTransformStatus() {
+  try {
+    const response = await fetch("/api/camera_transform/status", { cache: "no-store" });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+
+    const data = await response.json();
+    setCameraTransformUi(data.camera_transform_status || {});
+  } catch (error) {
+    setCameraTransformUi({}, error.message);
+  }
+}
+
+function initCameraTransformStatusUi() {
+  refreshCameraTransformStatus();
+  setInterval(refreshCameraTransformStatus, 2000);
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initCameraTransformStatusUi);
+} else {
+  initCameraTransformStatusUi();
+}
+
