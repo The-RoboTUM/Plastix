@@ -24,7 +24,17 @@
       --status-warning: #f59e0b;
       --status-error: #ef4444;
       --status-muted: #64748b;
-      --trash-orange: #e37222;
+      --trash-orange: #fb923c;
+      --color-ground-real: #2ee86f;
+      --color-ground-prior: #166534;
+      --color-water-real: #38bdf8;
+      --color-water-prior: #0e7490;
+      --color-obstacle-real: #f87171;
+      --color-obstacle-prior: #7f1d1d;
+      --color-trash: #fb923c;
+      --color-unknown: #475569;
+      --color-robot: #34d399;
+      --color-home: #a78bfa;
       --panel-radius: 14px;
       --shadow-panel: 0 12px 30px rgba(0, 0, 0, 0.28);
     }
@@ -534,6 +544,278 @@
     .error-text { color: #fca5a5; }
     .success-text { color: #86efac; }
 
+
+    /* Professional mission-control polish */
+    button, select, input { transition: border-color 140ms ease, background 140ms ease, transform 140ms ease, box-shadow 140ms ease; }
+    button:hover:not(:disabled), select:hover, input:hover {
+      border-color: rgba(100, 160, 200, 0.68);
+      background: rgba(30, 41, 59, 0.90);
+    }
+    button:active:not(:disabled) { transform: translateY(1px); }
+    button:focus-visible, select:focus-visible, input:focus-visible, summary:focus-visible, #grid-map-canvas:focus-visible {
+      outline: 2px solid var(--tum-blue-light);
+      outline-offset: 2px;
+      box-shadow: 0 0 0 4px rgba(100,160,200,0.18);
+    }
+
+    .panel.emphasis {
+      background:
+        linear-gradient(180deg, rgba(15,23,42,0.98), rgba(8,13,23,0.96)),
+        radial-gradient(circle at 15% 0%, rgba(0,101,189,0.16), transparent 30%);
+    }
+
+    .kpi {
+      position: relative;
+      isolation: isolate;
+    }
+    .kpi::after {
+      content: "";
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background: linear-gradient(90deg, rgba(100,160,200,0.10), transparent 42%);
+      opacity: 0.55;
+      z-index: -1;
+    }
+
+    .display-menu {
+      position: relative;
+      z-index: 10;
+    }
+    .display-menu summary {
+      list-style: none;
+      cursor: pointer;
+      user-select: none;
+      background: #0f172a;
+      border: 1px solid var(--border-subtle);
+      color: var(--text-main);
+      border-radius: 8px;
+      padding: 7px 9px;
+      font-size: 12px;
+      font-weight: 800;
+    }
+    .display-menu summary::-webkit-details-marker { display: none; }
+    .display-menu[open] summary {
+      border-color: rgba(100, 160, 200, 0.72);
+      box-shadow: 0 0 0 3px rgba(100, 160, 200, 0.12);
+    }
+    .display-menu-panel {
+      position: absolute;
+      right: 0;
+      top: calc(100% + 8px);
+      width: 250px;
+      padding: 10px;
+      border: 1px solid rgba(100,160,200,0.35);
+      border-radius: 12px;
+      background: rgba(5, 8, 13, 0.96);
+      box-shadow: 0 18px 38px rgba(0,0,0,0.45);
+      backdrop-filter: blur(12px);
+    }
+    .display-menu-title {
+      color: var(--text-muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin: 2px 4px 8px;
+    }
+    .display-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-height: 30px;
+      padding: 4px;
+      border-radius: 8px;
+      color: var(--text-soft);
+      font-size: 12px;
+    }
+    .display-option:hover { background: rgba(100, 160, 200, 0.10); }
+    .display-option input { accent-color: var(--tum-blue-light); }
+
+    .grid-legend {
+      position: absolute;
+      right: 12px;
+      top: 12px;
+      z-index: 4;
+      min-width: 218px;
+      max-width: 280px;
+      background: rgba(5, 8, 13, 0.82);
+      border: 1px solid rgba(100,160,200,0.34);
+      border-radius: 12px;
+      padding: 10px;
+      color: var(--text-soft);
+      font-size: 11px;
+      line-height: 1.45;
+      pointer-events: none;
+      backdrop-filter: blur(10px);
+      box-shadow: 0 16px 34px rgba(0,0,0,0.36);
+    }
+    .grid-legend-title {
+      font-weight: 900;
+      color: #ffffff;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      margin-bottom: 6px;
+    }
+    .legend-row {
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      margin: 3px 0;
+    }
+    .legend-row small { color: var(--text-muted); }
+    .legend-swatch.real-ground { background: var(--color-ground-real); }
+    .legend-swatch.prior-ground { background: rgba(22,101,52,0.55); }
+    .legend-swatch.real-water { background: var(--color-water-real); }
+    .legend-swatch.prior-water { background: rgba(14,116,144,0.55); }
+    .legend-swatch.real-obstacle { background: var(--color-obstacle-real); background-image: repeating-linear-gradient(135deg, transparent 0 3px, rgba(255,255,255,0.35) 3px 5px); }
+    .legend-swatch.prior-building { background: rgba(127,29,29,0.68); background-image: repeating-linear-gradient(135deg, transparent 0 3px, rgba(255,255,255,0.18) 3px 5px); }
+    .legend-swatch.unknown { background: rgba(71,85,105,0.55); }
+    .legend-dot.home { background: var(--color-home); }
+
+    .grid-overlay-info { right: 12px; padding-right: 250px; }
+
+
+
+    /* View modes: keep one HTML file, but change information architecture by mode. */
+    .view-box { min-width: 220px; }
+    .view-select { min-width: 155px; }
+    body:not([data-view="debug"]) .debug-only { display: none !important; }
+
+    .robot-div-icon {
+      width: 34px !important;
+      height: 34px !important;
+      border-radius: 999px;
+      display: grid !important;
+      place-items: center;
+      border: 2px solid rgba(255,255,255,0.92);
+      background: rgba(5, 8, 13, 0.88);
+      box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.18), 0 10px 24px rgba(0,0,0,0.38);
+      font-size: 18px;
+      line-height: 1;
+    }
+    .robot-div-icon.drone { box-shadow: 0 0 0 3px rgba(56,189,248,0.26), 0 10px 24px rgba(0,0,0,0.38); }
+    .robot-div-icon.land { box-shadow: 0 0 0 3px rgba(52,211,153,0.23), 0 10px 24px rgba(0,0,0,0.38); }
+    .robot-div-icon.water { box-shadow: 0 0 0 3px rgba(14,165,233,0.25), 0 10px 24px rgba(0,0,0,0.38); }
+    .robot-div-icon.offline { opacity: 0.58; filter: grayscale(0.45); }
+
+    .robot-card {
+      border: 1px solid rgba(100,160,200,0.20);
+      background: linear-gradient(180deg, rgba(15,23,42,0.86), rgba(2,6,23,0.66));
+    }
+    .robot-card.is-primary { border-color: rgba(56,189,248,0.38); }
+    .robot-topline { display: flex; align-items: center; gap: 10px; }
+    .robot-icon {
+      width: 32px;
+      height: 32px;
+      display: grid;
+      place-items: center;
+      border-radius: 10px;
+      background: rgba(100,160,200,0.10);
+      border: 1px solid rgba(255,255,255,0.10);
+      font-size: 18px;
+      flex: 0 0 auto;
+    }
+    .robot-name { font-weight: 900; font-size: 13px; }
+    .robot-role { color: var(--text-muted); font-size: 11px; margin-top: 2px; }
+    .capability-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+    .capability-tag {
+      border-radius: 999px;
+      border: 1px solid rgba(255,255,255,0.10);
+      background: rgba(15,23,42,0.72);
+      color: var(--text-soft);
+      padding: 3px 7px;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+    }
+    .capability-tag.land { color: #bbf7d0; border-color: rgba(34,197,94,0.28); }
+    .capability-tag.water { color: #bae6fd; border-color: rgba(56,189,248,0.28); }
+    .capability-tag.scan { color: #e0f2fe; border-color: rgba(56,189,248,0.30); }
+    .capability-tag.warn { color: #fde68a; border-color: rgba(245,158,11,0.30); }
+
+    body[data-view="overview"] .main-grid {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr) 235px;
+    }
+    body[data-view="overview"] .side-column {
+      grid-column: 1 / -1;
+      grid-row: 2;
+      display: grid;
+      grid-template-columns: 0.85fr 1fr 1fr;
+    }
+    body[data-view="overview"] .middle-column { display: none !important; }
+    body[data-view="overview"] .timeline-panel { grid-template-columns: 1fr; }
+
+    body[data-view="planning"] .main-grid {
+      grid-template-columns: minmax(0, 1.55fr) minmax(360px, 0.75fr);
+      grid-template-rows: minmax(0, 1fr) 235px;
+    }
+    body[data-view="planning"] .map-panel { grid-column: 1; grid-row: 1 / span 2; }
+    body[data-view="planning"] .grid-panel { grid-column: 2; grid-row: 1; }
+    body[data-view="planning"] .middle-column {
+      grid-column: 2;
+      grid-row: 2;
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+    body[data-view="planning"] .side-column { display: none !important; }
+    body[data-view="planning"] .timeline-panel { grid-template-columns: 1fr; }
+
+    body[data-view="mapping"] .main-grid {
+      grid-template-columns: minmax(330px, 0.72fr) minmax(0, 1.5fr);
+      grid-template-rows: minmax(0, 1fr) 235px;
+    }
+    body[data-view="mapping"] .grid-panel { grid-column: 2; grid-row: 1 / span 2; }
+    body[data-view="mapping"] .map-panel { grid-column: 1; grid-row: 1; }
+    body[data-view="mapping"] .middle-column { display: none !important; }
+    body[data-view="mapping"] .side-column {
+      grid-column: 1;
+      grid-row: 2;
+      display: grid;
+      grid-template-columns: 1fr;
+    }
+    body[data-view="mapping"] .side-column .selected-panel,
+    body[data-view="mapping"] .side-column .fleet-panel { display: none !important; }
+    body[data-view="mapping"] .timeline-panel { grid-template-columns: 1fr; }
+
+    body[data-view="fleet"] .main-grid {
+      grid-template-columns: minmax(0, 1.55fr) minmax(390px, 0.85fr);
+      grid-template-rows: minmax(0, 1fr);
+    }
+    body[data-view="fleet"] .map-panel { grid-column: 1; grid-row: 1; }
+    body[data-view="fleet"] .grid-panel { display: none !important; }
+    body[data-view="fleet"] .middle-column { display: none !important; }
+    body[data-view="fleet"] .side-column {
+      grid-column: 2;
+      grid-row: 1;
+      display: grid;
+      grid-template-columns: 1fr;
+      grid-template-rows: auto minmax(0, 1fr) auto;
+    }
+    body[data-view="fleet"] .fleet-panel { min-height: 0; }
+    body[data-view="fleet"] .timeline-panel { grid-template-columns: 1fr; }
+
+    body[data-view="debug"] .main-grid {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr) 245px;
+    }
+    body[data-view="debug"] .timeline-panel { grid-template-columns: 1.4fr 1fr 1fr; }
+
+    @media (max-width: 1100px) {
+      body[data-view] .main-grid { grid-template-columns: 1fr; grid-template-rows: 420px 420px auto !important; }
+      body[data-view] .map-panel,
+      body[data-view] .grid-panel,
+      body[data-view] .middle-column,
+      body[data-view] .side-column { grid-column: 1 !important; grid-row: auto !important; display: flex; }
+      body[data-view="fleet"] .grid-panel { display: none !important; }
+      body[data-view] .side-column { display: grid !important; grid-template-columns: 1fr !important; }
+    }
+
+    @media (max-width: 1500px) {
+      .grid-legend { display: none; }
+      .grid-overlay-info { padding-right: 0; }
+    }
+
     @media (max-width: 1280px) {
       .main-grid {
         grid-template-columns: 1fr 340px;
@@ -653,14 +935,15 @@
 
     .legend-dot { border-radius: 999px; }
     .legend-swatch.coverage { background: rgba(100,160,200,0.78); }
-    .legend-swatch.trash { background: rgba(227,114,34,0.88); }
-    .legend-swatch.obstacle { background: rgba(239,68,68,0.88); }
-    .legend-swatch.water { background: rgba(59,130,246,0.78); }
-    .legend-swatch.building { background: rgba(168,85,247,0.78); }
-    .legend-swatch.ground { background: rgba(34,197,94,0.35); }
-    .legend-dot.drone { background: #0065bd; }
-    .legend-dot.robot { background: #22c55e; }
-    .legend-dot.task { background: #e37222; }
+    .legend-swatch.trash { background: var(--color-trash); }
+    .legend-swatch.obstacle { background: var(--color-obstacle-real); background-image: repeating-linear-gradient(135deg, transparent 0 3px, rgba(255,255,255,0.35) 3px 5px); }
+    .legend-swatch.water { background: var(--color-water-real); }
+    .legend-swatch.building { background: rgba(127,29,29,0.68); background-image: repeating-linear-gradient(135deg, transparent 0 3px, rgba(255,255,255,0.18) 3px 5px); }
+    .legend-swatch.ground { background: var(--color-ground-real); }
+    .legend-dot.drone { background: #38bdf8; }
+    .legend-dot.robot { background: var(--color-robot); }
+    .legend-dot.home { background: var(--color-home); }
+    .legend-dot.task { background: var(--color-trash); }
     .legend-note { color: #9ca3af; margin-top: 5px; }
 
     .grid-fixed-legend {
@@ -723,7 +1006,7 @@
 
   </style>
 </head>
-<body>
+<body data-view="overview">
   <header class="topbar">
     <div class="brand">
       <div class="brand-mark">O</div>
@@ -750,6 +1033,16 @@
           <option value="complete">Mission Complete</option>
           <option value="paused">Paused</option>
           <option value="error">Error</option>
+        </select>
+      </div>
+      <div class="phase-box view-box">
+        <span class="phase-label">View</span>
+        <select id="dashboard-view-select" class="phase-select view-select" aria-label="Dashboard view mode">
+          <option value="overview">Mission Overview</option>
+          <option value="planning">Mission Planning</option>
+          <option value="mapping">Mapping / Detections</option>
+          <option value="fleet">Robots / Fleet</option>
+          <option value="debug">System / Debug</option>
         </select>
       </div>
       <div id="mission-next-action" class="pill muted"><span class="dot"></span><span>Waiting for data</span></div>
@@ -805,22 +1098,51 @@
         <div class="panel-header">
           <div class="panel-title"><strong>Local Grid Map</strong><span>autonomy/internal map</span></div>
           <div class="grid-toolbar">
-            <select id="grid-layer-select" aria-label="Grid layer">
+            <select id="grid-layer-select" aria-label="Grid preset">
               <option value="overview" selected>Mission overview</option>
               <option value="coverage">Coverage</option>
-              <option value="trash_probability">Trash probability</option>
-              <option value="obstacle_probability">Obstacles</option>
-              <option value="confidence">Confidence</option>
+              <option value="trash_focus">Trash focus</option>
+              <option value="obstacle_focus">Obstacle focus</option>
+              <option value="osm_priors">OSM priors</option>
+              <option value="debug">Debug layers</option>
             </select>
+            <details class="display-menu" id="grid-display-menu">
+              <summary aria-label="Open display layer controls">Display ▾</summary>
+              <div class="display-menu-panel" role="group" aria-label="Grid display options">
+                <div class="display-menu-title">Show on local grid</div>
+                <label class="display-option"><input type="checkbox" data-grid-display="priors" checked /> OSM priors</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="detections" checked /> real detections</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="ground" checked /> ground</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="water" checked /> water</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="obstacles" checked /> obstacles/buildings</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="trash" checked /> trash/tasks</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="fleet" checked /> robots + drone</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="home" checked /> home station</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="coverage" checked /> coverage overlay</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="confidence" checked /> confidence shading</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="unknown" checked /> unknown cells</label>
+              </div>
+            </details>
             <button id="load-osm-priors-button" class="ghost" title="Load low-confidence semantic priors from OpenStreetMap/Overpass for the current search area">Load OSM priors</button>
-            <button id="grid-zoom-out-button" class="ghost">−</button>
-            <button id="grid-zoom-in-button" class="ghost">+</button>
-            <button id="fit-grid-button" class="ghost">Fit</button>
+            <button id="grid-zoom-out-button" class="ghost" title="Zoom out local grid">−</button>
+            <button id="grid-zoom-in-button" class="ghost" title="Zoom in local grid">+</button>
+            <button id="fit-grid-button" class="ghost" title="Fit local grid to panel">Fit</button>
           </div>
         </div>
         <div class="panel-body" style="padding:12px; overflow:hidden;">
           <div class="grid-canvas-wrap">
-            <canvas id="grid-map-canvas"></canvas>
+            <canvas id="grid-map-canvas" tabindex="0" role="img" aria-label="Local grid map. Use mouse wheel to zoom, drag to pan, arrow keys to pan, plus and minus to zoom, and F to fit."></canvas>
+            <div class="grid-legend" aria-hidden="true">
+              <div class="grid-legend-title">Layer meaning</div>
+              <div class="legend-row"><span class="legend-swatch real-ground"></span> Scanned ground</div>
+              <div class="legend-row"><span class="legend-swatch prior-ground"></span> Ground prior <small>OSM</small></div>
+              <div class="legend-row"><span class="legend-swatch real-water"></span> Scanned water</div>
+              <div class="legend-row"><span class="legend-swatch prior-water"></span> Water prior <small>OSM</small></div>
+              <div class="legend-row"><span class="legend-swatch real-obstacle"></span> Real obstacle</div>
+              <div class="legend-row"><span class="legend-swatch prior-building"></span> Building prior</div>
+              <div class="legend-row"><span class="legend-swatch trash"></span> Trash / target</div>
+              <div class="legend-row"><span class="legend-dot robot"></span> Robot/drone <span class="legend-dot home"></span> Home</div>
+            </div>
             <div id="grid-map-info" class="grid-overlay-info">
               <span class="mini-chip">No grid map data yet</span>
             </div>
@@ -829,7 +1151,7 @@
       </section>
 
       <section class="stack middle-column">
-        <section class="panel" style="flex: 1;">
+        <section class="panel debug-only system-health-panel" style="flex: 1;">
           <div class="panel-header"><div class="panel-title"><strong>System Health</strong><span>freshness-aware</span></div></div>
           <div class="eve-controls">
             <button id="eve-start-camera-btn" type="button">Connect Eve Camera</button>
@@ -843,24 +1165,24 @@
           <div class="panel-body" id="system-health-content">Checking system health...</div>
         </section>
 
-        <section class="panel" style="flex: 1;">
+        <section class="panel planning-panel" style="flex: 1;">
           <div class="panel-header"><div class="panel-title"><strong>Readiness Checklist</strong><span>pre-flight view</span></div></div>
           <div class="panel-body" id="readiness-content">Waiting for state...</div>
         </section>
       </section>
 
       <aside class="stack side-column">
-        <section class="panel" style="flex: 1.05;">
+        <section class="panel selected-panel" style="flex: 1.05;">
           <div class="panel-header"><div class="panel-title"><strong>Selected Object</strong><span>click map/grid later</span></div></div>
           <div class="panel-body" id="inspector-content">No object selected.</div>
         </section>
 
-        <section class="panel" style="flex: 1;">
+        <section class="panel fleet-panel" style="flex: 1;">
           <div class="panel-header"><div class="panel-title"><strong>Fleet Status</strong><span>drone + robots</span></div></div>
           <div class="panel-body" id="fleet-content">Loading fleet...</div>
         </section>
 
-        <section class="panel" style="flex: 1;">
+        <section class="panel task-panel" style="flex: 1;">
           <div class="panel-header"><div class="panel-title"><strong>Detection + Task Queue</strong><span>latest targets</span></div></div>
           <div class="panel-body" id="tasks-content">Loading tasks...</div>
         </section>
@@ -868,12 +1190,12 @@
     </section>
 
     <section class="timeline-panel">
-      <section class="panel">
+      <section class="panel timeline-main-panel">
         <div class="panel-header"><div class="panel-title"><strong>Mission Timeline</strong><span>events, warnings, map updates</span></div></div>
         <div class="panel-body" id="timeline-content"></div>
       </section>
 
-      <section class="panel">
+      <section class="panel debug-only command-panel">
         <div class="panel-header"><div class="panel-title"><strong>Command Outbox</strong><span>safety placeholder</span></div></div>
         <div class="panel-body" id="command-outbox-content">
           <div class="item-card">
@@ -883,13 +1205,13 @@
         </div>
       </section>
 
-      <section class="panel">
+      <section class="panel debug-only map-patch-panel">
         <div class="panel-header"><div class="panel-title"><strong>Latest Map Patch</strong><span>debug JSON</span></div></div>
         <div class="panel-body" id="map-patch-content">No map patch received yet.</div>
       </section>
     </section>
   </main>
 
-  <script src="live_data.js?v=semantic-overview-1"></script>
+  <script src="live_data.js?v=mission-modes-fleet-1"></script>
 </body>
 </html>

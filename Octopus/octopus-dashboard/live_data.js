@@ -1,5 +1,31 @@
+const GRID_DISPLAY_DEFAULTS = {
+  priors: true,
+  detections: true,
+  ground: true,
+  water: true,
+  obstacles: true,
+  trash: true,
+  fleet: true,
+  home: true,
+  coverage: true,
+  confidence: true,
+  unknown: true,
+};
+
+const GRID_COLORS = {
+  detectedGround: { r: 46, g: 232, b: 111 },
+  priorGround: { r: 22, g: 101, b: 52 },
+  detectedWater: { r: 56, g: 189, b: 248 },
+  priorWater: { r: 14, g: 116, b: 144 },
+  detectedObstacle: { r: 248, g: 113, b: 113 },
+  priorBuilding: { r: 127, g: 29, b: 29 },
+  trash: { r: 251, g: 146, b: 60 },
+  unknown: { r: 71, g: 85, b: 105 },
+};
+
 const OCTOPUS = {
-  missionPhase: localStorage.getItem("octopusMissionPhase") || "idle",
+  missionPhase: localStorage.getItem("octopusMissionPhase") || "preflight",
+  dashboardView: localStorage.getItem("octopusDashboardView") || "overview",
   lastRefresh: null,
   backendOk: false,
   lastError: null,
@@ -29,6 +55,7 @@ const OCTOPUS = {
   },
   missionArea: JSON.parse(localStorage.getItem("octopusMissionArea") || "null"),
   osmPriors: JSON.parse(localStorage.getItem("octopusOsmPriors") || "null"),
+  gridDisplay: { ...GRID_DISPLAY_DEFAULTS, ...(JSON.parse(localStorage.getItem("octopusGridDisplay") || "{}")) },
   gridView: { scale: 1, offsetX: 0, offsetY: 0, isPanning: false, lastX: 0, lastY: 0, moved: false },
 };
 
@@ -114,6 +141,97 @@ const PHASE_INFO = {
     decision: "Inspect failing subsystem before continuing.",
     status: "error",
   },
+ };
+
+const DASHBOARD_VIEWS = {
+  overview: {
+    label: "Mission Overview",
+    action: "Operator overview",
+    preset: "overview",
+  },
+  planning: {
+    label: "Mission Planning",
+    action: "Define area, priors, grid and home station",
+    preset: "osm_priors",
+  },
+  mapping: {
+    label: "Mapping / Detections",
+    action: "Inspect coverage, trash, obstacles and priors",
+    preset: "overview",
+  },
+  fleet: {
+    label: "Robots / Fleet",
+    action: "Monitor Eve, Robby, GripperX and SharX",
+    preset: "overview",
+  },
+  debug: {
+    label: "System / Debug",
+    action: "Inspect ROS/backend/raw data",
+    preset: "debug",
+  },
+};
+
+const ROBOT_FLEET_PROFILES = {
+  eve: {
+    key: "eve",
+    name: "Eve",
+    icon: "🚁",
+    mapLabel: "E",
+    type: "drone",
+    terrain: "air",
+    role: "Drone / scan / detect",
+    purpose: "Aerial detection and mission scanning",
+    capability: "Detects trash and updates the map. Does not collect trash.",
+    taskRule: "Detection/scanning only",
+    tags: ["scan", "detect", "camera", "map update"],
+    aliases: ["eve", "drone", "drone_1", "uav"],
+    fallback: { x: 2.8, y: 2.4, state: "scanning", battery: 87 },
+  },
+  robby: {
+    key: "robby",
+    name: "Robby",
+    icon: "🤖",
+    mapLabel: "R",
+    type: "land",
+    terrain: "ground",
+    role: "Land robot / collect land trash",
+    purpose: "Wheeled ground robot for reachable land trash",
+    capability: "Collects trash on ground cells classified as reachable land.",
+    taskRule: "Land trash only",
+    tags: ["land", "wheeled", "collect"],
+    aliases: ["robby", "robot_1", "ground_robot", "land_robot"],
+    fallback: { x: 0.7, y: 0.5, state: "idle", battery: 72 },
+  },
+  gripperx: {
+    key: "gripperx",
+    name: "GripperX",
+    icon: "🦾",
+    mapLabel: "G",
+    type: "land",
+    terrain: "ground",
+    role: "Land robot / gripper or suction collection",
+    purpose: "Second wheeled collection robot with gripper/suction mechanism",
+    capability: "Collects reachable land trash with arm, gripper or suction.",
+    taskRule: "Land trash only",
+    tags: ["land", "gripper", "suction", "collect"],
+    aliases: ["gripperx", "gripper", "robot_2", "vacuum", "suction"],
+    fallback: { x: 1.0, y: 0.45, state: "idle", battery: 66 },
+  },
+  sharx: {
+    key: "sharx",
+    name: "SharX",
+    icon: "⛵",
+    mapLabel: "S",
+    type: "water",
+    terrain: "water",
+    role: "Boat / collect water trash",
+    purpose: "Water robot for floating or water-based trash",
+    capability: "Collects trash classified as water/floating. Should not take land tasks.",
+    taskRule: "Water trash only",
+    tags: ["water", "boat", "floating trash", "collect"],
+    aliases: ["sharx", "boat", "boat_1", "water_robot", "surface"],
+    fallback: { x: 3.3, y: 1.0, state: "idle", battery: 79 },
+  },
 };
 
 function $(id) {
@@ -127,6 +245,21 @@ function clamp(value, min, max) {
 function safeNumber(value, fallback = 0) {
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
+}
+
+function rgbToken(name) {
+  return GRID_COLORS[name] || GRID_COLORS.unknown;
+}
+
+function rgbaToken(name, alpha = 1) {
+  const c = rgbToken(name);
+  return `rgba(${c.r}, ${c.g}, ${c.b}, ${clamp(alpha, 0, 1)})`;
+}
+
+function hexToken(name) {
+  const c = rgbToken(name);
+  const part = (v) => v.toString(16).padStart(2, "0");
+  return `#${part(c.r)}${part(c.g)}${part(c.b)}`;
 }
 
 function formatPercent(value) {
@@ -329,11 +462,13 @@ function getActiveGridMeta(mapData = null) {
 }
 
 function fleetType(item) {
+  const profile = profileForDeviceRecord(item);
+  if (profile) return profile.type === "water" ? "boat" : profile.type === "land" ? "robot" : profile.type;
   const explicit = String(item.type || item.device_type || "").toLowerCase();
   if (explicit) return explicit;
   const id = String(item.id || item.device_id || "").toLowerCase();
   if (id.includes("drone") || id.includes("eve")) return "drone";
-  if (id.includes("laptop")) return "base";
+  if (id.includes("laptop") || id.includes("home")) return "base";
   return "robot";
 }
 
@@ -341,13 +476,141 @@ function batteryForDevice(deviceId) {
   return (OCTOPUS.latest.battery || []).find((b) => String(b.id || b.device_id) === String(deviceId));
 }
 
+function profileForIdentifier(value, fallbackType = "") {
+  const needle = String(value || "").toLowerCase();
+  for (const profile of Object.values(ROBOT_FLEET_PROFILES)) {
+    if (profile.aliases.some((alias) => needle.includes(alias))) return profile;
+  }
+  if (String(fallbackType).toLowerCase().includes("drone")) return ROBOT_FLEET_PROFILES.eve;
+  if (String(fallbackType).toLowerCase().includes("boat") || String(fallbackType).toLowerCase().includes("water")) return ROBOT_FLEET_PROFILES.sharx;
+  return null;
+}
+
+function profileForDeviceRecord(record = {}) {
+  return profileForIdentifier(record.id || record.device_id || record.origin_id || record.name, record.type || record.device_type);
+}
+
+function matchBatteryForProfile(profile) {
+  return (OCTOPUS.latest.battery || []).find((b) => {
+    const id = String(b.id || b.device_id || "").toLowerCase();
+    return profile.aliases.some((alias) => id.includes(alias));
+  });
+}
+
+function matchLocationForProfile(profile) {
+  return (OCTOPUS.latest.locations || []).find((loc) => {
+    const id = String(loc.id || loc.origin_id || loc.device_id || loc.name || "").toLowerCase();
+    return profile.aliases.some((alias) => id.includes(alias));
+  });
+}
+
+function fallbackLocationForProfile(profile) {
+  const p = profile.fallback || { x: 0, y: 0 };
+  const [lat, lon] = localToLatLng(p.x, p.y);
+  return {
+    id: profile.name,
+    lat,
+    lon,
+    ts: new Date().toISOString(),
+    state: p.state,
+    is_demo: true,
+  };
+}
+
+function homeStation() {
+  const [lat, lon] = localToLatLng(0.25, 0.25);
+  return { id: "Home station", lat, lon, x: 0.25, y: 0.25, type: "home" };
+}
+
+function robotStatusFromState(state, age) {
+  const value = String(state || "").toLowerCase();
+  if (value.includes("error") || value.includes("fail")) return "error";
+  if (value.includes("offline")) return "offline";
+  if (age !== null && age > 60 && !value.includes("idle")) return "stale";
+  if (value.includes("return") || value.includes("assigned") || value.includes("driving") || value.includes("navigating")) return "warning";
+  if (value.includes("scan") || value.includes("collect") || value.includes("online") || value.includes("idle")) return "fresh";
+  return "unknown";
+}
+
+function getFleetSnapshot() {
+  return Object.values(ROBOT_FLEET_PROFILES).map((profile) => {
+    const battery = matchBatteryForProfile(profile) || { percent: profile.fallback?.battery, state: profile.fallback?.state, ts: null, is_demo: true };
+    const location = matchLocationForProfile(profile) || fallbackLocationForProfile(profile);
+    const age = ageSeconds(location.ts || battery.ts);
+    const state = battery.state || location.state || profile.fallback?.state || "unknown";
+    const demo = Boolean(location.is_demo || battery.is_demo);
+    const status = demo ? "unknown" : robotStatusFromState(state, age);
+    const local = latLngToLocal(safeNumber(location.lat, NaN), safeNumber(location.lon, NaN));
+    const currentTask = findCurrentTaskForRobot(profile);
+    return {
+      ...profile,
+      id: profile.name,
+      battery,
+      location,
+      local,
+      state: demo ? "configured / no live data" : state,
+      status,
+      age,
+      online: !demo && status !== "offline" && status !== "error" && (age === null || age < 120),
+      currentTask,
+      demo,
+    };
+  });
+}
+
+function findCurrentTaskForRobot(profile) {
+  const robotName = profile.name.toLowerCase();
+  return (OCTOPUS.latest.tasks || []).find((task) => {
+    const assigned = String(task.assigned || task.assigned_to || "").toLowerCase();
+    return assigned.includes(robotName) || profile.aliases.some((alias) => assigned.includes(alias));
+  }) || null;
+}
+
+function taskTerrain(task = {}) {
+  const raw = String(task.terrain || task.surface || task.semantic_class || task.land_class || task.class_name || "").toLowerCase();
+  if (raw.includes("water") || raw.includes("floating") || raw.includes("river") || raw.includes("lake")) return "water";
+  if (raw.includes("ground") || raw.includes("land") || raw.includes("grass") || raw.includes("road") || raw.includes("park")) return "ground";
+  const assigned = String(task.assigned || task.assigned_to || "").toLowerCase();
+  if (assigned.includes("sharx") || assigned.includes("boat")) return "water";
+  if (assigned.includes("robby") || assigned.includes("gripper")) return "ground";
+  return "unknown";
+}
+
+function suitableRobotNamesForTask(task = {}) {
+  const terrain = taskTerrain(task);
+  if (terrain === "water") return ["SharX"];
+  if (terrain === "ground") return ["Robby", "GripperX"];
+  return ["Confirm terrain first"];
+}
+
+function terrainStatusForTask(task = {}) {
+  const terrain = taskTerrain(task);
+  if (terrain === "water") return { label: "water trash → SharX", state: "fresh" };
+  if (terrain === "ground") return { label: "land trash → Robby/GripperX", state: "fresh" };
+  return { label: "unknown terrain → confirm before assignment", state: "warning" };
+}
+
+
 function deviceStyle(type, state = "") {
   const stateLower = String(state).toLowerCase();
-  if (stateLower.includes("error") || stateLower.includes("offline")) return { color: "#ef4444", fillColor: "#ef4444" };
-  if (type === "drone") return { color: "#ffffff", fillColor: "#0065bd" };
-  if (type === "base") return { color: "#cbd5e1", fillColor: "#64748b" };
-  if (stateLower.includes("collect")) return { color: "#ffffff", fillColor: "#e37222" };
-  return { color: "#ffffff", fillColor: "#22c55e" };
+  if (stateLower.includes("error") || stateLower.includes("offline")) return { color: "#fecaca", fillColor: "#ef4444" };
+  if (type === "drone") return { color: "#ffffff", fillColor: "#38bdf8" };
+  if (type === "boat") return { color: "#ffffff", fillColor: "#0ea5e9" };
+  if (type === "base") return { color: "#ffffff", fillColor: "#a78bfa" };
+  if (stateLower.includes("collect")) return { color: "#ffffff", fillColor: "#fb923c" };
+  return { color: "#ffffff", fillColor: "#34d399" };
+}
+
+function missionRobotIcon(robot) {
+  if (typeof L === "undefined") return null;
+  const terrainClass = robot.type === "drone" ? "drone" : robot.type === "water" ? "water" : "land";
+  const offline = robot.status === "offline" || robot.status === "error" ? " offline" : "";
+  return L.divIcon({
+    className: `robot-div-icon ${terrainClass}${offline}`,
+    html: `<span aria-hidden="true">${robot.icon}</span>`,
+    iconSize: [34, 34],
+    iconAnchor: [17, 17],
+  });
 }
 
 function initMissionMap() {
@@ -382,15 +645,16 @@ function initMissionMap() {
     const div = L.DomUtil.create("div", "octopus-map-legend");
     div.innerHTML = `
       <div class="legend-title">Octopus map</div>
-      <div><span class="legend-swatch ground"></span> bright green = detected ground</div>
-      <div><span class="legend-swatch water"></span> bright blue = detected/semantic water</div>
-      <div><span class="legend-swatch trash"></span> bright orange = detected trash</div>
-      <div><span class="legend-swatch obstacle"></span> bright red = detected obstacle</div>
-      <div><span class="legend-swatch coverage"></span> faint colors = OSM priors</div>
-      <div><span class="legend-swatch building"></span> faint red/purple = building prior</div>
+      <div><span class="legend-swatch ground"></span> scanned ground</div>
+      <div><span class="legend-swatch water"></span> water / shoreline</div>
+      <div><span class="legend-swatch trash"></span> trash or task target</div>
+      <div><span class="legend-swatch obstacle"></span> real obstacle</div>
+      <div><span class="legend-swatch building"></span> building / obstacle prior</div>
+      <div><span class="legend-swatch coverage"></span> soft overlay = OSM prior</div>
       <div><span class="legend-dot drone"></span> drone</div>
-      <div><span class="legend-dot robot"></span> robot/base</div>
-      <div><span class="legend-dot task"></span> task / trash target</div>
+      <div><span class="legend-dot robot"></span> robot</div>
+      <div><span class="legend-dot home"></span> home/base</div>
+      <div><span class="legend-dot task"></span> task</div>
       <div class="legend-note" id="mission-area-legend-note">Search area: default 5 m × 3 m</div>
     `;
     L.DomEvent.disableClickPropagation(div);
@@ -630,6 +894,40 @@ function overviewClass(cell) {
   return "prior_unknown";
 }
 
+function cellDisplayCategory(cell) {
+  const cls = overviewClass(cell);
+  if (cls.includes("trash")) return "trash";
+  if (cls.includes("obstacle") || cls.includes("building")) return "obstacles";
+  if (cls.includes("water")) return "water";
+  if (cls.includes("ground")) return "ground";
+  return "unknown";
+}
+
+function cellPassesDisplayFilters(cell) {
+  const scanned = isScannedCell(cell);
+  const display = OCTOPUS.gridDisplay || GRID_DISPLAY_DEFAULTS;
+  if (scanned && !display.detections) return false;
+  if (!scanned && !display.priors) return false;
+  const category = cellDisplayCategory(cell);
+  if (category === "trash") return display.trash;
+  if (category === "obstacles") return display.obstacles;
+  if (category === "water") return display.water;
+  if (category === "ground") return display.ground;
+  if (category === "unknown") return display.unknown;
+  return true;
+}
+
+function saveGridDisplaySettings() {
+  localStorage.setItem("octopusGridDisplay", JSON.stringify(OCTOPUS.gridDisplay));
+}
+
+function syncGridDisplayControls() {
+  document.querySelectorAll("[data-grid-display]").forEach((input) => {
+    const key = input.dataset.gridDisplay;
+    input.checked = Boolean(OCTOPUS.gridDisplay?.[key]);
+  });
+}
+
 function overviewBaseColor(cell) {
   const cls = overviewClass(cell);
   const semConf = clamp(safeNumber(cell?.semantic_confidence, 0.25), 0.10, 0.85);
@@ -638,16 +936,16 @@ function overviewBaseColor(cell) {
   const realObstacle = clamp(realObstacleProbability(cell), 0, 1);
 
   // Bright colors = observed/scanned grid evidence.
-  if (cls === "detected_trash") return `rgba(227, 114, 34, ${0.55 + 0.38 * trash})`;
-  if (cls === "detected_obstacle") return `rgba(239, 68, 68, ${0.55 + 0.38 * realObstacle})`;
-  if (cls === "detected_water") return `rgba(59, 130, 246, ${0.58 + 0.28 * Math.max(coverage, semConf)})`;
-  if (cls === "detected_ground") return `rgba(34, 197, 94, ${0.38 + 0.35 * Math.max(coverage, 0.35)})`;
+  if (cls === "detected_trash") return rgbaToken("trash", 0.62 + 0.35 * trash);
+  if (cls === "detected_obstacle") return rgbaToken("detectedObstacle", 0.58 + 0.35 * realObstacle);
+  if (cls === "detected_water") return rgbaToken("detectedWater", 0.60 + 0.28 * Math.max(coverage, semConf));
+  if (cls === "detected_ground") return rgbaToken("detectedGround", 0.42 + 0.35 * Math.max(coverage, 0.35));
 
-  // Faint colors = priors from OSM/default map assumptions.
-  if (cls === "prior_water") return `rgba(59, 130, 246, ${0.20 + semConf * 0.26})`;
-  if (cls === "prior_building") return `rgba(239, 68, 68, ${0.16 + semConf * 0.28})`;
-  if (cls === "prior_ground") return `rgba(34, 197, 94, ${0.13 + semConf * 0.20})`;
-  return "rgba(100, 116, 139, 0.18)";
+  // Soft colors = semantic priors from OSM. They should never visually overpower real evidence.
+  if (cls === "prior_water") return rgbaToken("priorWater", 0.18 + semConf * 0.24);
+  if (cls === "prior_building") return rgbaToken("priorBuilding", 0.18 + semConf * 0.25);
+  if (cls === "prior_ground") return rgbaToken("priorGround", 0.16 + semConf * 0.22);
+  return rgbaToken("unknown", 0.18);
 }
 
 function overviewLeafletColor(cell) {
@@ -655,15 +953,15 @@ function overviewLeafletColor(cell) {
   const trash = clamp(safeNumber(cell?.trash_probability, 0), 0, 1);
   const realObstacle = clamp(realObstacleProbability(cell), 0, 1);
 
-  if (cls === "detected_trash") return { color: "#e37222", fillColor: "#e37222", fillOpacity: 0.70 + 0.20 * trash };
-  if (cls === "detected_obstacle") return { color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.62 + 0.24 * realObstacle };
-  if (cls === "detected_water") return { color: "#3b82f6", fillColor: "#3b82f6", fillOpacity: 0.58 };
-  if (cls === "detected_ground") return { color: "#22c55e", fillColor: "#22c55e", fillOpacity: 0.48 };
+  if (cls === "detected_trash") return { color: hexToken("trash"), fillColor: hexToken("trash"), fillOpacity: 0.72 + 0.20 * trash };
+  if (cls === "detected_obstacle") return { color: hexToken("detectedObstacle"), fillColor: hexToken("detectedObstacle"), fillOpacity: 0.64 + 0.22 * realObstacle };
+  if (cls === "detected_water") return { color: hexToken("detectedWater"), fillColor: hexToken("detectedWater"), fillOpacity: 0.58 };
+  if (cls === "detected_ground") return { color: hexToken("detectedGround"), fillColor: hexToken("detectedGround"), fillOpacity: 0.48 };
 
-  if (cls === "prior_water") return { color: "#3b82f6", fillColor: "#3b82f6", fillOpacity: 0.24 };
-  if (cls === "prior_building") return { color: "#ef4444", fillColor: "#ef4444", fillOpacity: 0.24 };
-  if (cls === "prior_ground") return { color: "#22c55e", fillColor: "#22c55e", fillOpacity: 0.16 };
-  return { color: "#64748b", fillColor: "#64748b", fillOpacity: 0.10 };
+  if (cls === "prior_water") return { color: hexToken("priorWater"), fillColor: hexToken("priorWater"), fillOpacity: 0.28 };
+  if (cls === "prior_building") return { color: hexToken("priorBuilding"), fillColor: hexToken("priorBuilding"), fillOpacity: 0.28 };
+  if (cls === "prior_ground") return { color: hexToken("priorGround"), fillColor: hexToken("priorGround"), fillOpacity: 0.20 };
+  return { color: hexToken("unknown"), fillColor: hexToken("unknown"), fillOpacity: 0.12 };
 }
 
 function drawOverviewCell(ctx, cell, x, y, w, h) {
@@ -684,8 +982,8 @@ function drawOverviewCell(ctx, cell, x, y, w, h) {
     ctx.save();
     const strength = shouldHatchDetected ? realObstacle : priorObstacle;
     ctx.strokeStyle = shouldHatchDetected
-      ? `rgba(248, 113, 113, ${0.50 + 0.45 * strength})`
-      : `rgba(248, 113, 113, ${0.16 + 0.22 * strength})`;
+      ? rgbaToken("detectedObstacle", 0.50 + 0.45 * strength)
+      : rgbaToken("detectedObstacle", 0.18 + 0.22 * strength);
     ctx.lineWidth = Math.max(1, dpr);
     ctx.beginPath();
     const step = Math.max(4 * dpr, Math.min(w, h) * 0.55);
@@ -700,7 +998,7 @@ function drawOverviewCell(ctx, cell, x, y, w, h) {
   if (trash >= 0.30 && Math.max(w, h) >= 3) {
     ctx.beginPath();
     ctx.arc(x + w / 2, y + h / 2, Math.max(1.5 * dpr, Math.min(w, h) * (0.18 + 0.20 * trash)), 0, Math.PI * 2);
-    ctx.fillStyle = `rgba(255, 148, 65, ${0.55 + 0.42 * trash})`;
+    ctx.fillStyle = rgbaToken("trash", 0.58 + 0.40 * trash);
     ctx.fill();
   }
 }
@@ -942,6 +1240,8 @@ function renderMissionGridOverlay() {
   const cells = mapData.cells || {};
 
   Object.values(cells).forEach((cell) => {
+    if (!cellPassesDisplayFilters(cell)) return;
+    if (layerName === "osm_priors" && isScannedCell(cell)) return;
     const row = safeNumber(cell.row, NaN);
     const col = safeNumber(cell.col, NaN);
     if (!Number.isFinite(row) || !Number.isFinite(col)) return;
@@ -989,37 +1289,47 @@ function renderMissionMap() {
   renderMissionGridOverlay();
 
   const bounds = [];
-  const locations = OCTOPUS.latest.locations || [];
   const tasks = OCTOPUS.latest.tasks || [];
 
-  locations.forEach((loc) => {
-    const lat = safeNumber(loc.lat, NaN);
-    const lon = safeNumber(loc.lon, NaN);
+  // Fleet markers use configured robot roles first, then live backend data when available.
+  getFleetSnapshot().forEach((robot) => {
+    const lat = safeNumber(robot.location.lat, NaN);
+    const lon = safeNumber(robot.location.lon, NaN);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    const icon = missionRobotIcon(robot);
+    const style = deviceStyle(robot.type === "water" ? "boat" : robot.type, robot.state);
+    const marker = icon
+      ? L.marker([lat, lon], { icon })
+      : L.circleMarker([lat, lon], { radius: 8, color: style.color, weight: 2, fillColor: style.fillColor, fillOpacity: 0.92 });
 
-    const id = loc.id || loc.origin_id || loc.device_id || "unknown";
-    const b = batteryForDevice(id) || {};
-    const type = fleetType({ ...loc, ...b, id });
-    const style = deviceStyle(type, b.state || loc.state);
-    const radius = type === "drone" ? 9 : type === "base" ? 7 : 7;
-
-    const marker = L.circleMarker([lat, lon], {
-      radius,
-      color: style.color,
-      weight: 2,
-      fillColor: style.fillColor,
-      fillOpacity: 0.92,
-    }).bindTooltip(`${id} (${type})`, { permanent: false, direction: "top" });
+    marker.bindTooltip(`${robot.icon} ${robot.name} · ${robot.role}<br>${robot.state || "unknown"} · ${robot.capability}`, {
+      permanent: false,
+      direction: "top",
+    });
 
     marker.on("click", () => {
-      const local = latLngToLocal(lat, lon);
-      OCTOPUS.selected = { type: "fleet", id, device_type: type, location: loc, battery: b, local };
+      OCTOPUS.selected = { type: "fleet", id: robot.name, device_type: robot.type, robot };
       renderInspector();
     });
 
     marker.addTo(state.markerLayer);
     bounds.push([lat, lon]);
   });
+
+  const home = homeStation();
+  const homeMarker = L.circleMarker([home.lat, home.lon], {
+    radius: 8,
+    color: "#ffffff",
+    weight: 2,
+    fillColor: "#a78bfa",
+    fillOpacity: 0.92,
+  }).bindTooltip("⌂ Home station", { direction: "top" });
+  homeMarker.on("click", () => {
+    OCTOPUS.selected = { type: "home", home };
+    renderInspector();
+  });
+  homeMarker.addTo(state.markerLayer);
+  bounds.push([home.lat, home.lon]);
 
   tasks.forEach((task) => {
     const lat = safeNumber(task.lat, NaN);
@@ -1061,9 +1371,10 @@ function fitMissionMap() {
 function valueForLayer(cell, layer) {
   if (!cell) return null;
   if (layer === "coverage") return safeNumber(cell.coverage, 0);
-  if (layer === "trash_probability") return safeNumber(cell.trash_probability ?? cell.semantic_trash_probability, 0);
-  if (layer === "obstacle_probability") return Math.max(realObstacleProbability(cell), priorObstacleProbability(cell));
-  if (layer === "confidence") return safeNumber(cell.confidence || cell.semantic_confidence, 0);
+  if (layer === "trash_probability" || layer === "trash_focus") return safeNumber(cell.trash_probability ?? cell.semantic_trash_probability, 0);
+  if (layer === "obstacle_probability" || layer === "obstacle_focus") return Math.max(realObstacleProbability(cell), priorObstacleProbability(cell));
+  if (layer === "confidence" || layer === "debug") return safeNumber(cell.confidence || cell.semantic_confidence, 0);
+  if (layer === "osm_priors") return safeNumber(cell.semantic_confidence, 0);
   if (layer === "overview") return Math.max(safeNumber(cell.coverage, 0), safeNumber(cell.trash_probability, 0), realObstacleProbability(cell), safeNumber(cell.semantic_confidence, 0));
   return 0;
 }
@@ -1084,22 +1395,26 @@ function colorForCell(cell, layer) {
   if (value <= 0) return scanned ? "rgba(15, 23, 42, 0.82)" : overviewBaseColor(cell);
 
   if (layer === "coverage") {
-    return `rgba(100, 160, 200, ${alpha})`;
+    return rgbaToken("detectedWater", alpha);
   }
 
-  if (layer === "trash_probability") {
-    return `rgba(227, 114, 34, ${alpha})`;
+  if (layer === "trash_probability" || layer === "trash_focus") {
+    return rgbaToken("trash", alpha);
   }
 
-  if (layer === "obstacle_probability") {
-    return `rgba(239, 68, 68, ${alpha})`;
+  if (layer === "obstacle_probability" || layer === "obstacle_focus") {
+    return rgbaToken("detectedObstacle", alpha);
   }
 
-  if (layer === "confidence") {
-    return `rgba(34, 197, 94, ${alpha})`;
+  if (layer === "osm_priors") {
+    return overviewBaseColor(cell);
   }
 
-  return `rgba(100, 160, 200, ${alpha})`;
+  if (layer === "confidence" || layer === "debug") {
+    return rgbaToken("detectedGround", alpha);
+  }
+
+  return rgbaToken("detectedWater", alpha);
 }
 
 function resizeGridCanvas() {
@@ -1190,7 +1505,8 @@ function drawGridMarker(ctx, xPx, yPx, label, style) {
 }
 
 function drawFleetAndTasksOnGrid(ctx, mapData, geom) {
-  (OCTOPUS.latest.tasks || []).forEach((task) => {
+  const display = OCTOPUS.gridDisplay || GRID_DISPLAY_DEFAULTS;
+  if (display.trash) (OCTOPUS.latest.tasks || []).forEach((task) => {
     const lat = safeNumber(task.lat, NaN);
     const lon = safeNumber(task.lon, NaN);
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
@@ -1201,19 +1517,23 @@ function drawFleetAndTasksOnGrid(ctx, mapData, geom) {
     drawGridMarker(ctx, p.x, p.y, `T${task.id}`, { color: "#ffffff", fillColor: "#e37222" });
   });
 
-  (OCTOPUS.latest.locations || []).forEach((loc) => {
-    const lat = safeNumber(loc.lat, NaN);
-    const lon = safeNumber(loc.lon, NaN);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-    const id = loc.id || loc.origin_id || loc.device_id || "?";
-    const b = batteryForDevice(id) || {};
-    const type = fleetType({ ...loc, ...b, id });
-    const local = latLngToLocal(lat, lon);
+  if (!display.fleet && !display.home) return;
+
+  if (display.home) {
+    const home = homeStation();
+    const hp = localMetersToCanvas(geom, home.x, home.y);
+    if (hp.x >= -20 && hp.x <= geom.canvas.width + 20 && hp.y >= -20 && hp.y <= geom.canvas.height + 20) {
+      drawGridMarker(ctx, hp.x, hp.y, "H", { color: "#ffffff", fillColor: "#a78bfa" });
+    }
+  }
+
+  if (!display.fleet) return;
+  getFleetSnapshot().forEach((robot) => {
+    const local = robot.local || {};
     if (local.x < 0 || local.x > geom.width_m || local.y < 0 || local.y > geom.height_m) return;
     const p = localMetersToCanvas(geom, local.x, local.y);
     if (p.x < -20 || p.x > geom.canvas.width + 20 || p.y < -20 || p.y > geom.canvas.height + 20) return;
-    const label = type === "drone" ? "D" : type === "base" ? "B" : String(id).replace("octopus_", "R").replace("robot_", "R").replace("home_", "H");
-    drawGridMarker(ctx, p.x, p.y, label, deviceStyle(type, b.state || loc.state));
+    drawGridMarker(ctx, p.x, p.y, robot.mapLabel, deviceStyle(robot.type === "water" ? "boat" : robot.type, robot.state));
   });
 }
 
@@ -1272,6 +1592,8 @@ function drawGridMap(mapData) {
   drawGridLines(ctx, geom);
 
   Object.entries(cells).forEach(([key, cell]) => {
+    if (!cellPassesDisplayFilters(cell)) return;
+    if (layer === "osm_priors" && isScannedCell(cell)) return;
     const row = safeNumber(cell.row, NaN);
     const col = safeNumber(cell.col, NaN);
     if (!Number.isFinite(row) || !Number.isFinite(col)) return;
@@ -1301,10 +1623,10 @@ function drawGridMap(mapData) {
     }
 
     const trash = safeNumber(cell.trash_probability ?? cell.semantic_trash_probability, 0);
-    if (trash >= 0.65 && layer !== "trash_probability" && Math.max(w, h) >= 3) {
+    if (OCTOPUS.gridDisplay.trash && trash >= 0.65 && layer !== "trash_probability" && layer !== "trash_focus" && Math.max(w, h) >= 3) {
       ctx.beginPath();
       ctx.arc(x + w / 2, y + h / 2, Math.max(2, Math.min(w, h) * 0.28), 0, Math.PI * 2);
-      ctx.fillStyle = "rgba(227, 114, 34, 0.9)";
+      ctx.fillStyle = rgbaToken("trash", 0.92);
       ctx.fill();
     }
 
@@ -1331,6 +1653,7 @@ function drawGridMap(mapData) {
     <span class="mini-chip">Grid cell: ${geom.resolution.toFixed(2)} m</span>
     <span class="mini-chip">Layer: <strong>${escapeHtml(layer)}</strong></span>
     <span class="mini-chip">OSM priors: <strong>${osmPriorCells}</strong></span>
+    <span class="mini-chip">Visible layers: <strong>${Object.entries(OCTOPUS.gridDisplay).filter(([,v]) => v).length}/${Object.keys(GRID_DISPLAY_DEFAULTS).length}</strong></span>
     <span class="mini-chip">Coverage: <strong>${formatPercent(coverageStats.coverageRatio)}</strong></span>
     <span class="mini-chip">Updated: <strong>${updatedCells}</strong></span>
     <span class="mini-chip ${patchFreshness.state}">Patch: ${patchFreshness.label}</span>
@@ -1422,6 +1745,30 @@ function healthSummary(items) {
   return { state: "unknown", label: "Waiting" };
 }
 
+function applyDashboardView(view = OCTOPUS.dashboardView, announce = false) {
+  const safeView = DASHBOARD_VIEWS[view] ? view : "overview";
+  OCTOPUS.dashboardView = safeView;
+  localStorage.setItem("octopusDashboardView", safeView);
+  document.body.dataset.view = safeView;
+  const select = $("dashboard-view-select");
+  if (select) select.value = safeView;
+
+  // Set sensible grid presets per mode, but do not destroy layer checkbox preferences.
+  const gridSelect = $("grid-layer-select");
+  if (gridSelect && announce) {
+    const preset = DASHBOARD_VIEWS[safeView].preset;
+    if (preset && gridSelect.value !== preset) gridSelect.value = preset;
+  }
+
+  if (announce) addTimeline(`Dashboard view changed to ${DASHBOARD_VIEWS[safeView].label}`, "info");
+  setTimeout(() => {
+    if (OCTOPUS.missionMap.map) OCTOPUS.missionMap.map.invalidateSize();
+    if (OCTOPUS.latest.globalMap || OCTOPUS.osmPriors) drawGridMap(OCTOPUS.latest.globalMap || {});
+  }, 80);
+  renderFleet();
+  renderTasks();
+}
+
 function renderMissionPhase() {
   const select = $("mission-phase-select");
   const actionEl = $("mission-next-action");
@@ -1474,9 +1821,10 @@ function renderKpis() {
 
   $("kpi-confirmed").textContent = safeNumber(stats.trash_collected, 0);
 
-  const onlineFleet = battery.length;
-  $("kpi-fleet").textContent = onlineFleet;
-  $("kpi-fleet-sub").textContent = `${safeNumber(stats.drones, 0)} drones · ${safeNumber(stats.robots, 0)} robots in DB`;
+  const fleetSnapshot = getFleetSnapshot();
+  const onlineFleet = fleetSnapshot.filter((r) => r.online).length;
+  $("kpi-fleet").textContent = `${onlineFleet}/${fleetSnapshot.length}`;
+  $("kpi-fleet-sub").textContent = "Eve · Robby · GripperX · SharX";
 
   const patchCells = patch?.updated_cells?.length ?? 0;
   $("kpi-map-patch").textContent = patchCells || "--";
@@ -1491,28 +1839,48 @@ function renderFleet() {
   const el = $("fleet-content");
   if (!el) return;
 
-  const battery = OCTOPUS.latest.battery || [];
-  if (!battery.length) {
-    el.innerHTML = `<div class="item-card"><div class="item-title">No fleet data</div><div class="item-meta">Waiting for /api/battery data.</div></div>`;
-    return;
-  }
-
-  el.innerHTML = `<div class="compact-list">${battery.map((b) => {
-    const age = ageSeconds(b.ts);
-    const fresh = freshnessFromAge(age, 5, 30);
-    const percent = clamp(safeNumber(b.percent, 0), 0, 100);
-    const typeGuess = String(b.id || "").toLowerCase().includes("drone") ? "Drone" : "Robot";
+  const detailed = OCTOPUS.dashboardView === "fleet";
+  const robots = getFleetSnapshot();
+  el.innerHTML = `<div class="compact-list">${robots.map((robot) => {
+    const percent = clamp(safeNumber(robot.battery.percent, 0), 0, 100);
+    const fresh = freshnessFromAge(robot.age, 5, 45);
+    const status = robot.status === "unknown" ? fresh.state : robot.status;
+    const currentTask = robot.currentTask ? `Task #${escapeHtml(robot.currentTask.id)}` : "none";
+    const tags = robot.tags.map((tag) => {
+      const cls = tag.includes("water") || tag.includes("boat") || tag.includes("floating") ? "water" : tag.includes("land") ? "land" : tag.includes("scan") || tag.includes("detect") || tag.includes("camera") ? "scan" : "";
+      return `<span class="capability-tag ${cls}">${escapeHtml(tag)}</span>`;
+    }).join("");
     return `
-      <div class="item-card" data-device-id="${escapeHtml(b.id)}">
+      <button class="item-card robot-card ${robot.key === "eve" ? "is-primary" : ""}" data-device-id="${escapeHtml(robot.name)}" type="button" style="text-align:left; width:100%;" aria-label="Select ${escapeHtml(robot.name)}">
         <div class="item-top">
-          <div class="item-title">${escapeHtml(b.id || "unknown")}</div>
-          ${statusPill(fresh.label, fresh.state)}
+          <div class="robot-topline">
+            <span class="robot-icon" aria-hidden="true">${robot.icon}</span>
+            <div>
+              <div class="robot-name">${escapeHtml(robot.name)}</div>
+              <div class="robot-role">${escapeHtml(robot.role)}</div>
+            </div>
+          </div>
+          ${statusPill(escapeHtml(robot.state || "unknown"), status)}
         </div>
-        <div class="item-meta">${typeGuess} · state: ${escapeHtml(b.state || "unknown")} · battery: ${percent}%</div>
+        <div class="item-meta">
+          ${escapeHtml(robot.capability)}<br />
+          Battery: <span class="accent">${percent.toFixed(0)}%</span> · Last update: ${robot.demo ? "demo/fallback" : escapeHtml(fresh.label)}
+          ${detailed ? `<br />Position: ${safeNumber(robot.location.lat, 0).toFixed(6)}, ${safeNumber(robot.location.lon, 0).toFixed(6)}<br />Current task: ${currentTask}<br />Assignment rule: ${escapeHtml(robot.taskRule)}` : ""}
+        </div>
         <div class="progress"><span style="width:${percent}%"></span></div>
-      </div>
+        ${detailed ? `<div class="capability-tags">${tags}</div>` : ""}
+      </button>
     `;
   }).join("")}</div>`;
+
+  el.querySelectorAll("[data-device-id]").forEach((card) => {
+    card.addEventListener("click", () => {
+      const robot = robots.find((r) => r.name === card.dataset.deviceId);
+      if (!robot) return;
+      OCTOPUS.selected = { type: "fleet", id: robot.name, device_type: robot.type, robot };
+      renderInspector();
+    });
+  });
 }
 
 function renderTasks() {
@@ -1521,28 +1889,41 @@ function renderTasks() {
 
   const tasks = OCTOPUS.latest.tasks || [];
   if (!tasks.length) {
-    el.innerHTML = `<div class="item-card"><div class="item-title">No tasks</div><div class="item-meta">Later this becomes the detection and trash assignment queue.</div></div>`;
+    el.innerHTML = `<div class="item-card"><div class="item-title">No tasks</div><div class="item-meta">Detection queue is empty. Eve should create trash candidates from camera detections.</div></div>`;
     return;
   }
 
-  el.innerHTML = `<div class="compact-list">${tasks.slice(0, 8).map((t) => {
+  el.innerHTML = `<div class="compact-list">${tasks.slice(0, OCTOPUS.dashboardView === "mapping" ? 12 : 8).map((t) => {
     const age = ageSeconds(t.ts);
     const fresh = freshnessFromAge(age, 30, 180);
     const assigned = t.assigned || t.assigned_to || "unassigned";
+    const terrain = terrainStatusForTask(t);
+    const suggestions = suitableRobotNamesForTask(t).join(" / ");
     return `
-      <div class="item-card">
+      <button class="item-card" type="button" data-task-id="${escapeHtml(t.id)}" style="text-align:left; width:100%;">
         <div class="item-top">
-          <div class="item-title">Task #${escapeHtml(t.id)}</div>
+          <div class="item-title">Trash task #${escapeHtml(t.id)}</div>
           ${statusPill(escapeHtml(t.status || "unknown"), taskStateToStatus(t.status))}
         </div>
         <div class="item-meta">
+          ${statusPill(terrain.label, terrain.state)}<br />
+          Suggested robot: <span class="accent">${escapeHtml(suggestions)}</span><br />
           Assigned: <span class="accent">${escapeHtml(assigned)}</span><br />
-          Position: ${safeNumber(t.lat, 0).toFixed(5)}, ${safeNumber(t.lon, 0).toFixed(5)}<br />
-          Data: ${fresh.label}
+          Position: ${safeNumber(t.lat, 0).toFixed(5)}, ${safeNumber(t.lon, 0).toFixed(5)} · Data: ${fresh.label}
         </div>
-      </div>
+      </button>
     `;
   }).join("")}</div>`;
+
+  el.querySelectorAll("[data-task-id]").forEach((card) => {
+    card.addEventListener("click", () => {
+      const task = tasks.find((t) => String(t.id) === String(card.dataset.taskId));
+      if (!task) return;
+      const local = latLngToLocal(safeNumber(task.lat, 0), safeNumber(task.lon, 0));
+      OCTOPUS.selected = { type: "task", task, local };
+      renderInspector();
+    });
+  });
 }
 
 function taskStateToStatus(status) {
@@ -1576,9 +1957,10 @@ function renderReadiness() {
   const el = $("readiness-content");
   if (!el) return;
 
-  const battery = OCTOPUS.latest.battery || [];
-  const hasDrone = battery.some((b) => String(b.id || "").toLowerCase().includes("drone"));
-  const hasRobot = battery.some((b) => String(b.id || "").toLowerCase().includes("robot"));
+  const fleet = getFleetSnapshot();
+  const eve = fleet.find((r) => r.key === "eve");
+  const landReady = fleet.some((r) => r.terrain === "ground" && r.online);
+  const waterReady = fleet.some((r) => r.terrain === "water" && r.online);
   const patchFresh = freshnessFromAge(ageSeconds(OCTOPUS.latest.patch?.received_at), 2, 10);
   const mapCells = Object.keys(OCTOPUS.latest.globalMap?.cells || {}).length;
 
@@ -1588,8 +1970,9 @@ function renderReadiness() {
     ["Backend API", OCTOPUS.backendOk ? "fresh" : "offline", OCTOPUS.backendOk ? "OK" : "offline"],
     ["ROS map patch bridge", patchFresh.state, patchFresh.label],
     ["Local grid map", mapCells > 0 ? "fresh" : "warning", mapCells > 0 ? `${mapCells} cells` : "empty"],
-    ["Drone available", hasDrone ? "fresh" : "warning", hasDrone ? "seen in fleet" : "waiting"],
-    ["Ground robot available", hasRobot ? "fresh" : "warning", hasRobot ? "seen in fleet" : "waiting"],
+    ["Eve drone available", eve?.online ? "fresh" : "warning", eve?.online ? "scan/detect role configured" : "waiting"],
+    ["Land collection available", landReady ? "fresh" : "warning", landReady ? "Robby/GripperX ready" : "waiting"],
+    ["Water collection available", waterReady ? "fresh" : "warning", waterReady ? "SharX ready" : "waiting"],
     ["Emergency action configured", "unknown", "placeholder only"],
   ];
 
@@ -1649,26 +2032,49 @@ function renderInspector() {
   }
 
   if (selected.type === "fleet") {
-    const loc = selected.location || {};
-    const b = selected.battery || {};
-    const local = selected.local || {};
+    const robot = selected.robot || getFleetSnapshot().find((r) => r.name === selected.id) || {};
+    const percent = clamp(safeNumber(robot.battery?.percent, 0), 0, 100);
+    const fresh = freshnessFromAge(robot.age, 5, 45);
     el.innerHTML = `
-      <div class="item-card">
+      <div class="item-card robot-card">
         <div class="item-top">
-          <div class="item-title">${escapeHtml(selected.id)}</div>
-          ${statusPill(escapeHtml(selected.device_type || "device"), selected.device_type === "drone" ? "fresh" : "ok")}
+          <div class="robot-topline">
+            <span class="robot-icon" aria-hidden="true">${robot.icon || "●"}</span>
+            <div>
+              <div class="robot-name">${escapeHtml(robot.name || selected.id)}</div>
+              <div class="robot-role">${escapeHtml(robot.role || selected.device_type || "robot")}</div>
+            </div>
+          </div>
+          ${statusPill(escapeHtml(robot.state || "unknown"), robot.status || fresh.state)}
         </div>
         <table class="status-table">
           <tbody>
-            <tr><td>state</td><td>${escapeHtml(b.state || loc.state || "unknown")}</td></tr>
-            <tr><td>battery</td><td>${b.percent !== undefined ? `${safeNumber(b.percent, 0).toFixed(0)}%` : "unknown"}</td></tr>
-            <tr><td>lat/lon</td><td>${safeNumber(loc.lat, 0).toFixed(6)}, ${safeNumber(loc.lon, 0).toFixed(6)}</td></tr>
-            <tr><td>local x/y</td><td>${safeNumber(local.x, 0).toFixed(2)}, ${safeNumber(local.y, 0).toFixed(2)} m</td></tr>
-            <tr><td>last seen</td><td>${formatAge(ageSeconds(loc.ts || b.ts))}</td></tr>
+            <tr><td>purpose</td><td>${escapeHtml(robot.purpose || "unknown")}</td></tr>
+            <tr><td>capability</td><td>${escapeHtml(robot.capability || "unknown")}</td></tr>
+            <tr><td>assignment rule</td><td>${escapeHtml(robot.taskRule || "unknown")}</td></tr>
+            <tr><td>battery</td><td>${percent.toFixed(0)}%</td></tr>
+            <tr><td>lat/lon</td><td>${safeNumber(robot.location?.lat, 0).toFixed(6)}, ${safeNumber(robot.location?.lon, 0).toFixed(6)}</td></tr>
+            <tr><td>local x/y</td><td>${safeNumber(robot.local?.x, 0).toFixed(2)}, ${safeNumber(robot.local?.y, 0).toFixed(2)} m</td></tr>
+            <tr><td>current task</td><td>${robot.currentTask ? `Task #${escapeHtml(robot.currentTask.id)}` : "none"}</td></tr>
+            <tr><td>last update</td><td>${robot.demo ? "demo/fallback position" : escapeHtml(fresh.label)}</td></tr>
           </tbody>
         </table>
       </div>
     `;
+    return;
+  }
+
+  if (selected.type === "home") {
+    const home = selected.home || homeStation();
+    el.innerHTML = `
+      <div class="item-card">
+        <div class="item-top"><div class="item-title">Home station</div>${statusPill("base", "fresh")}</div>
+        <table class="status-table"><tbody>
+          <tr><td>role</td><td>Start/return location for robots</td></tr>
+          <tr><td>lat/lon</td><td>${safeNumber(home.lat, 0).toFixed(6)}, ${safeNumber(home.lon, 0).toFixed(6)}</td></tr>
+          <tr><td>local x/y</td><td>${safeNumber(home.x, 0).toFixed(2)}, ${safeNumber(home.y, 0).toFixed(2)} m</td></tr>
+        </tbody></table>
+      </div>`;
     return;
   }
 
@@ -1683,6 +2089,8 @@ function renderInspector() {
         </div>
         <table class="status-table">
           <tbody>
+            <tr><td>terrain</td><td>${escapeHtml(taskTerrain(t))}</td></tr>
+            <tr><td>suitable robot</td><td>${escapeHtml(suitableRobotNamesForTask(t).join(" / "))}</td></tr>
             <tr><td>assigned</td><td>${escapeHtml(t.assigned || t.assigned_to || "unassigned")}</td></tr>
             <tr><td>lat/lon</td><td>${safeNumber(t.lat, 0).toFixed(6)}, ${safeNumber(t.lon, 0).toFixed(6)}</td></tr>
             <tr><td>local x/y</td><td>${safeNumber(local.x, 0).toFixed(2)}, ${safeNumber(local.y, 0).toFixed(2)} m</td></tr>
@@ -1947,6 +2355,27 @@ function fitLocalGrid() {
   if (OCTOPUS.latest.globalMap) drawGridMap(OCTOPUS.latest.globalMap);
 }
 
+
+function onGridKeyDown(event) {
+  const key = event.key.toLowerCase();
+  const step = 32 * (window.devicePixelRatio || 1);
+  if (["arrowleft", "arrowright", "arrowup", "arrowdown", "+", "=", "-", "f"].includes(key)) {
+    event.preventDefault();
+  } else {
+    return;
+  }
+
+  if (key === "arrowleft") OCTOPUS.gridView.offsetX += step;
+  if (key === "arrowright") OCTOPUS.gridView.offsetX -= step;
+  if (key === "arrowup") OCTOPUS.gridView.offsetY += step;
+  if (key === "arrowdown") OCTOPUS.gridView.offsetY -= step;
+  if (key === "+" || key === "=") zoomGridBy(1.2);
+  if (key === "-") zoomGridBy(1 / 1.2);
+  if (key === "f") fitLocalGrid();
+
+  drawGridMap(OCTOPUS.latest.globalMap || {});
+}
+
 function setupEventListeners() {
   const phaseSelect = $("mission-phase-select");
   if (phaseSelect) {
@@ -1955,6 +2384,14 @@ function setupEventListeners() {
       localStorage.setItem("octopusMissionPhase", OCTOPUS.missionPhase);
       addTimeline(`Mission phase changed to ${PHASE_INFO[OCTOPUS.missionPhase]?.title || OCTOPUS.missionPhase}`, "info");
       renderMissionPhase();
+    });
+  }
+
+  const viewSelect = $("dashboard-view-select");
+  if (viewSelect) {
+    viewSelect.addEventListener("change", () => {
+      applyDashboardView(viewSelect.value, true);
+      renderAll();
     });
   }
 
@@ -2034,8 +2471,26 @@ function setupEventListeners() {
     });
   }
 
+  syncGridDisplayControls();
+  document.querySelectorAll("[data-grid-display]").forEach((input) => {
+    input.addEventListener("change", () => {
+      const key = input.dataset.gridDisplay;
+      OCTOPUS.gridDisplay[key] = input.checked;
+      saveGridDisplaySettings();
+      drawGridMap(OCTOPUS.latest.globalMap || {});
+      renderMissionGridOverlay();
+      addTimeline(`Display layer ${key} ${input.checked ? "enabled" : "hidden"}.`, "info");
+    });
+  });
+
+  document.addEventListener("click", (event) => {
+    const menu = $("grid-display-menu");
+    if (menu && menu.open && !menu.contains(event.target)) menu.open = false;
+  });
+
   const canvas = $("grid-map-canvas");
   if (canvas) {
+    canvas.addEventListener("keydown", onGridKeyDown);
     canvas.addEventListener("click", onGridClick);
     canvas.addEventListener("wheel", onGridWheel, { passive: false });
     canvas.addEventListener("pointerdown", onGridPointerDown);
@@ -2063,6 +2518,7 @@ function setupEventListeners() {
 
 initMissionMap();
 updateResolutionLabel();
+applyDashboardView(OCTOPUS.dashboardView, false);
 setupEventListeners();
 renderMissionPhase();
 renderTimeline();
