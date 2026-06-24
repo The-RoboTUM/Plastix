@@ -65,4 +65,10 @@ start_node \
     "ros2 run octopus_camera_transform camera_marker_transform_node --ros-args -p log_period_sec:=$CAMERA_TRANSFORM_LOG_PERIOD_SEC -p homography_stale_warn_sec:=$CAMERA_TRANSFORM_STALE_WARN_SEC -p homography_stale_drop_sec:=$CAMERA_TRANSFORM_STALE_DROP_SEC -p publish_debug_image:=$CAMERA_TRANSFORM_PUBLISH_DEBUG_IMAGE -p debug_image_jpeg_quality:=$CAMERA_TRANSFORM_DEBUG_IMAGE_JPEG_QUALITY" \
     "/tmp/octopus_camera_marker_transform.log"
 
+start_node \
+    "camera_transform_status_backend_bridge" \
+    "camera_transform_status_backend_bridge_node" \
+    "ros2 run octopus_backend_bridge camera_transform_status_backend_bridge_node" \
+    "/tmp/octopus_camera_transform_status_backend_bridge.log"
+
 echo "camera_grid_pipeline_started"

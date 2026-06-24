@@ -322,6 +322,7 @@ def get_map_patches(limit: int = 20):
 # --- OCTOPUS CAMERA GRID PIPELINE ROUTES ---
 import subprocess as _octopus_pipeline_subprocess
 from datetime import datetime as _octopus_pipeline_datetime
+import time
 
 
 OCTOPUS_ROOT = "/home/dominik/projects/PlastiX/Octopus"
@@ -457,5 +458,39 @@ def octopus_pipeline_logs():
 # --- END OCTOPUS CAMERA GRID PIPELINE ROUTES ---
 
 
-app.mount("/", StaticFiles(directory=".", html=True), name="static")
+CAMERA_TRANSFORM_STATUS = {
+    "mode": "apriltag_field_homography",
+    "state": "unknown",
+    "has_homography": False,
+    "is_stale": False,
+    "is_transform_allowed": False,
+    "homography_age_sec": None,
+    "detected_marker_ids": [],
+    "missing_marker_ids": [],
+    "required_marker_ids": [61, 65, 57, 11],
+    "backend_received_at": None,
+}
 
+
+@app.post("/api/camera_transform/status")
+def post_camera_transform_status(payload: Dict[str, Any]):
+    global CAMERA_TRANSFORM_STATUS
+
+    CAMERA_TRANSFORM_STATUS = dict(payload)
+    CAMERA_TRANSFORM_STATUS["backend_received_at"] = time.time()
+
+    return {
+        "status": "ok",
+        "camera_transform_status": CAMERA_TRANSFORM_STATUS,
+    }
+
+
+@app.get("/api/camera_transform/status")
+def get_camera_transform_status():
+    return {
+        "status": "ok",
+        "camera_transform_status": CAMERA_TRANSFORM_STATUS,
+    }
+
+
+app.mount("/", StaticFiles(directory=".", html=True), name="static")
