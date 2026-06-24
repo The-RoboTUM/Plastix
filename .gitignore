@@ -70,3 +70,8 @@ tmp/
 # Package-specific ignores
 # local.yml
 # params/local.yaml
+# Eve detector local runtime/data files
+eve/Software/detect-and-localize/.venv/
+eve/Software/detect-and-localize/data/
+eve/Software/detect-and-localize/**/*.pyc
+eve/Software/detect-and-localize/**/__pycache__/

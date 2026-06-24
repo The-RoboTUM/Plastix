@@ -1,0 +1,6 @@
+
+model: "data/models/fotogenic_11s.pt"
+source: "data/footage/sim_4.mkv"
+thresh: 0.6
+tags: "data/tags/tags_blendersim.csv"
+yolo_frameskip: 0
