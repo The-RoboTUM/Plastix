@@ -801,6 +801,53 @@
     }
     body[data-view="debug"] .timeline-panel { grid-template-columns: 1.4fr 1fr 1fr; }
 
+
+    body.octopus-view-debug .main-grid {
+      display: flex !important;
+      flex-wrap: wrap;
+      align-content: stretch;
+      align-items: stretch;
+      gap: 12px;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    body.octopus-view-debug .main-grid > .panel {
+      grid-column: auto !important;
+      grid-row: auto !important;
+      min-height: 0;
+      min-width: 0;
+    }
+
+    body.octopus-view-debug .main-grid > .panel:nth-child(1),
+    body.octopus-view-debug .main-grid > .panel:nth-child(2),
+    body.octopus-view-debug .panel:has(#mission-map),
+    body.octopus-view-debug .panel:has(#local-grid-canvas) {
+      display: none !important;
+    }
+
+    body.octopus-view-debug .panel:has(#pipeline-start-btn) {
+      order: 1;
+      flex: 0 0 calc(54% - 6px);
+      height: 100%;
+      overflow: auto;
+    }
+
+    body.octopus-view-debug .main-grid > .panel:not(:has(#pipeline-start-btn)) {
+      order: 2;
+      flex: 0 0 calc(46% - 6px);
+      height: calc((100% - 24px) / 3);
+      overflow: hidden;
+    }
+
+    body.octopus-view-debug .pipeline-log-box {
+      max-height: 120px;
+    }
+
+    body.octopus-view-debug .camera-transform-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     @media (max-width: 1100px) {
       body[data-view] .main-grid { grid-template-columns: 1fr; grid-template-rows: 420px 420px auto !important; }
       body[data-view] .map-panel,
@@ -1067,6 +1114,28 @@
     }
 
 
+
+    .camera-transform-compact {
+      margin-top: 10px;
+      padding-top: 10px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .camera-transform-grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px 12px;
+      margin-top: 8px;
+      color: var(--text-muted);
+      font-size: 12px;
+      line-height: 1.25;
+    }
+
+    .camera-transform-grid strong {
+      color: var(--text-main);
+      font-weight: 800;
+    }
+
     /* Make pipeline controls visible inside System / Debug */
     .panel:has(#pipeline-start-btn) {
       min-height: 260px !important;
@@ -1275,23 +1344,6 @@
             <div id="pipeline-summary" class="muted">Pipeline status: unknown</div>
             <pre id="pipeline-log" class="pipeline-log-box"></pre>
 
-            <div class="pipeline-control-block">
-              <div class="pipeline-control-title">
-                <strong>Camera Transform</strong>
-                <span>AprilTag homography status from /octopus/camera_transform/status</span>
-              </div>
-              <div id="camera-transform-summary" class="muted">Camera transform status: unknown</div>
-              <table class="status-table">
-                <tbody>
-                  <tr><td>State</td><td id="camera-transform-state">unknown</td></tr>
-                  <tr><td>Markers</td><td id="camera-transform-markers">0/4</td></tr>
-                  <tr><td>Missing markers</td><td id="camera-transform-missing">unknown</td></tr>
-                  <tr><td>Homography age</td><td id="camera-transform-age">unknown</td></tr>
-                  <tr><td>Transform allowed</td><td id="camera-transform-allowed">unknown</td></tr>
-                  <tr><td>Detections</td><td id="camera-transform-detections">0 in / 0 out</td></tr>
-                </tbody>
-              </table>
-            </div>
           </div>
 
 

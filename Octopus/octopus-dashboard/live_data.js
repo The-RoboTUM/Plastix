@@ -36,6 +36,7 @@ const OCTOPUS = {
     stats: null,
     patch: null,
     globalMap: null,
+    cameraTransformStatus: null,
   },
   selected: null,
   selectedCellKey: null,
@@ -1692,6 +1693,17 @@ function computeHealthItems() {
     ? Math.min(...OCTOPUS.latest.battery.map((b) => ageSeconds(b.ts)).filter((x) => x !== null))
     : null;
 
+  const transform = OCTOPUS.latest.cameraTransformStatus || {};
+  const transformStateRaw = String(transform.state || "unknown").toLowerCase();
+  const transformAllowed = Boolean(transform.is_transform_allowed);
+  const transformDetected = Array.isArray(transform.detected_marker_ids) ? transform.detected_marker_ids : [];
+  const transformMissing = Array.isArray(transform.missing_marker_ids) ? transform.missing_marker_ids : [];
+  const transformRequired = Array.isArray(transform.required_marker_ids) ? transform.required_marker_ids : [61, 65, 57, 11];
+  const transformUiState = cameraTransformUiState(transformStateRaw, transformAllowed);
+  const transformDetail = transform.error
+    ? transform.error
+    : `${transformStateRaw} · ${transformDetected.length}/${transformRequired.length} markers · ${transformAllowed ? "allowed" : "blocked"}`;
+
   return [
     {
       name: "Backend API",
@@ -1707,6 +1719,16 @@ function computeHealthItems() {
       name: "Global map state",
       ...freshnessFromAge(mapAge, 3, 15),
       detail: OCTOPUS.latest.globalMap ? "accumulated grid available" : "waiting for map",
+    },
+    {
+      name: "Camera transform",
+      state: transformUiState,
+      detail: transformDetail,
+    },
+    {
+      name: "AprilTags",
+      state: transformDetected.length === transformRequired.length && transformRequired.length > 0 ? "fresh" : "warning",
+      detail: transformMissing.length ? `missing ${transformMissing.join(", ")}` : "all required markers visible",
     },
     {
       name: "Fleet telemetry",
@@ -1964,11 +1986,22 @@ function renderReadiness() {
   const patchFresh = freshnessFromAge(ageSeconds(OCTOPUS.latest.patch?.received_at), 2, 10);
   const mapCells = Object.keys(OCTOPUS.latest.globalMap?.cells || {}).length;
 
+  const transform = OCTOPUS.latest.cameraTransformStatus || {};
+  const transformStateRaw = String(transform.state || "unknown").toLowerCase();
+  const transformAllowed = Boolean(transform.is_transform_allowed);
+  const transformDetected = Array.isArray(transform.detected_marker_ids) ? transform.detected_marker_ids : [];
+  const transformMissing = Array.isArray(transform.missing_marker_ids) ? transform.missing_marker_ids : [];
+  const transformRequired = Array.isArray(transform.required_marker_ids) ? transform.required_marker_ids : [61, 65, 57, 11];
+  const transformState = cameraTransformUiState(transformStateRaw, transformAllowed);
+  const markerState = transformDetected.length === transformRequired.length && transformRequired.length > 0 ? "fresh" : "warning";
+
   const rows = [
     ["Mission polygon defined", "unknown", "planning tool later"],
     ["Home position set", "unknown", "planning tool later"],
     ["Backend API", OCTOPUS.backendOk ? "fresh" : "offline", OCTOPUS.backendOk ? "OK" : "offline"],
     ["ROS map patch bridge", patchFresh.state, patchFresh.label],
+    ["Camera transform", transformState, `${transformStateRaw} · ${transformAllowed ? "transform allowed" : "transform blocked"}`],
+    ["AprilTags visible", markerState, transformMissing.length ? `${transformDetected.length}/${transformRequired.length} visible · missing ${transformMissing.join(", ")}` : `${transformDetected.length}/${transformRequired.length} visible`],
     ["Local grid map", mapCells > 0 ? "fresh" : "warning", mapCells > 0 ? `${mapCells} cells` : "empty"],
     ["Eve drone available", eve?.online ? "fresh" : "warning", eve?.online ? "scan/detect role configured" : "waiting"],
     ["Land collection available", landReady ? "fresh" : "warning", landReady ? "Robby/GripperX ready" : "waiting"],
@@ -2894,11 +2927,25 @@ function setCameraTransformText(id, value) {
 }
 
 function setCameraTransformUi(status, errorMessage = "") {
-  const state = status?.state || "unknown";
-  const transformAllowed = Boolean(status?.is_transform_allowed);
-  const detected = Array.isArray(status?.detected_marker_ids) ? status.detected_marker_ids : [];
-  const missing = Array.isArray(status?.missing_marker_ids) ? status.missing_marker_ids : [];
-  const required = Array.isArray(status?.required_marker_ids) ? status.required_marker_ids : [61, 65, 57, 11];
+  const currentStatus = errorMessage
+    ? {
+        state: "offline",
+        has_homography: false,
+        is_transform_allowed: false,
+        detected_marker_ids: [],
+        missing_marker_ids: [],
+        required_marker_ids: [61, 65, 57, 11],
+        error: errorMessage,
+      }
+    : (status || {});
+
+  OCTOPUS.latest.cameraTransformStatus = currentStatus;
+
+  const state = currentStatus?.state || "unknown";
+  const transformAllowed = Boolean(currentStatus?.is_transform_allowed);
+  const detected = Array.isArray(currentStatus?.detected_marker_ids) ? currentStatus.detected_marker_ids : [];
+  const missing = Array.isArray(currentStatus?.missing_marker_ids) ? currentStatus.missing_marker_ids : [];
+  const required = Array.isArray(currentStatus?.required_marker_ids) ? currentStatus.required_marker_ids : [61, 65, 57, 11];
 
   const uiState = errorMessage ? "offline" : cameraTransformUiState(state, transformAllowed);
   const label = errorMessage ? "Transform offline" : cameraTransformLabel(state);
@@ -2926,8 +2973,12 @@ function setCameraTransformUi(status, errorMessage = "") {
   setCameraTransformText("camera-transform-allowed", transformAllowed ? "yes" : "no");
   setCameraTransformText(
     "camera-transform-detections",
-    `${status?.last_input_detection_count ?? 0} in / ${status?.last_transformed_detection_count ?? 0} out`
+    `${currentStatus?.last_input_detection_count ?? 0} in / ${currentStatus?.last_transformed_detection_count ?? 0} out`
   );
+
+  if (typeof renderReadiness === "function") renderReadiness();
+  if (typeof renderSystemHealth === "function") renderSystemHealth();
+  if (typeof renderKpis === "function") renderKpis();
 }
 
 async function refreshCameraTransformStatus() {
@@ -2951,5 +3002,32 @@ if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", initCameraTransformStatusUi);
 } else {
   initCameraTransformStatusUi();
+}
+
+
+// --- View-specific layout mode ---
+function syncDashboardViewClass() {
+  const viewSelect = document.getElementById("view-select");
+  const view = viewSelect?.value || OCTOPUS?.dashboardView || localStorage.getItem("octopusDashboardView") || "overview";
+  document.body.classList.toggle("octopus-view-debug", view === "debug");
+}
+
+function initDashboardViewClassSync() {
+  syncDashboardViewClass();
+
+  const viewSelect = document.getElementById("view-select");
+  if (viewSelect) {
+    viewSelect.addEventListener("change", () => {
+      window.setTimeout(syncDashboardViewClass, 0);
+    });
+  }
+
+  window.setInterval(syncDashboardViewClass, 1000);
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initDashboardViewClassSync);
+} else {
+  initDashboardViewClassSync();
 }
 
