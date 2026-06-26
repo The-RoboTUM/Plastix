@@ -97,7 +97,13 @@ class FlightCameraTransformNode(Node):
         # Must be calibrated for the real mount.
         self.declare_parameter("camera_to_body_roll_rad", 0.0)
         self.declare_parameter("camera_to_body_pitch_rad", 0.0)
-        self.declare_parameter("camera_to_body_yaw_rad", 0.0)
+        self.declare_parameter("camera_to_body_yaw_rad", 1.5707963267948966)
+
+        # Camera optical center relative to PX4 body origin in FRD body frame.
+        # x forward, y right, z down.
+        self.declare_parameter("camera_x_body_m", 0.113)
+        self.declare_parameter("camera_y_body_m", 0.0)
+        self.declare_parameter("camera_z_body_m", 0.022)
 
         # NED ground plane. PX4 local z is down. If drone is above start plane,
         # z is usually negative and ground_z_ned is often 0.
@@ -343,7 +349,19 @@ class FlightCameraTransformNode(Node):
         ray_ned = r_ned_body @ r_body_cam @ ray_cam
         ray_ned = ray_ned / np.linalg.norm(ray_ned)
 
-        p_ned = np.array([float(v) for v in self.last_odometry.position], dtype=float)
+        p_body_ned = np.array([float(v) for v in self.last_odometry.position], dtype=float)
+
+        p_cam_body = np.array(
+            [
+                float(self.get_parameter("camera_x_body_m").value),
+                float(self.get_parameter("camera_y_body_m").value),
+                float(self.get_parameter("camera_z_body_m").value),
+            ],
+            dtype=float,
+        )
+
+        # Camera optical center in NED frame.
+        p_cam_ned = p_body_ned + r_ned_body @ p_cam_body
 
         ground_z_ned = float(self.get_parameter("ground_z_ned").value)
 
@@ -356,19 +374,19 @@ class FlightCameraTransformNode(Node):
             and bool(local.dist_bottom_valid)
             and math.isfinite(float(local.dist_bottom))
         ):
-            ground_z_ned = p_ned[2] + float(local.dist_bottom)
+            ground_z_ned = p_cam_ned[2] + float(local.dist_bottom)
 
         if abs(ray_ned[2]) < 1e-6:
             raise ValueError("Camera ray is nearly parallel to ground plane")
 
-        t = (ground_z_ned - p_ned[2]) / ray_ned[2]
+        t = (ground_z_ned - p_cam_ned[2]) / ray_ned[2]
 
         if t <= 0.0:
             raise ValueError(
                 f"Ground intersection is behind camera: t={t:.3f}, ray_ned_z={ray_ned[2]:.3f}"
             )
 
-        hit_ned = p_ned + t * ray_ned
+        hit_ned = p_cam_ned + t * ray_ned
         return hit_ned
 
     def detection_callback(self, msg: PoseArray):
@@ -452,6 +470,11 @@ class FlightCameraTransformNode(Node):
                     float(self.get_parameter("camera_to_body_roll_rad").value),
                     float(self.get_parameter("camera_to_body_pitch_rad").value),
                     float(self.get_parameter("camera_to_body_yaw_rad").value),
+                ],
+                "camera_translation_body_m": [
+                    float(self.get_parameter("camera_x_body_m").value),
+                    float(self.get_parameter("camera_y_body_m").value),
+                    float(self.get_parameter("camera_z_body_m").value),
                 ],
                 "ground_z_ned": float(self.get_parameter("ground_z_ned").value),
                 "use_dist_bottom_if_valid": bool(self.get_parameter("use_dist_bottom_if_valid").value),
