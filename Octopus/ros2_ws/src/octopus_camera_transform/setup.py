@@ -21,6 +21,7 @@ setup(
     entry_points={
         'console_scripts': [
             'camera_marker_transform_node = octopus_camera_transform.camera_marker_transform_node:main',
+            'flight_camera_transform_node = octopus_camera_transform.flight_camera_transform_node:main',
         ],
     },
 )
