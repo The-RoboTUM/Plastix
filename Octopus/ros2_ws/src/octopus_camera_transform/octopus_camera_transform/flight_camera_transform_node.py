@@ -5,6 +5,7 @@ import math
 import time
 from typing import List, Optional
 
+import cv2
 import numpy as np
 import rclpy
 from geometry_msgs.msg import Pose, PoseArray
@@ -80,10 +81,17 @@ class FlightCameraTransformNode(Node):
         # Camera intrinsics placeholder. Replace with calibration values later.
         self.declare_parameter("image_width", 640.0)
         self.declare_parameter("image_height", 480.0)
-        self.declare_parameter("fx", 600.0)
-        self.declare_parameter("fy", 600.0)
-        self.declare_parameter("cx", 320.0)
-        self.declare_parameter("cy", 240.0)
+        self.declare_parameter("fx", 359.3292231592479)
+        self.declare_parameter("fy", 359.2290038414162)
+        self.declare_parameter("cx", 312.8204647201454)
+        self.declare_parameter("cy", 237.947360594595)
+
+        # OpenCV plumb_bob distortion coefficients from calibration.
+        self.declare_parameter("k1", -0.057128411511179616)
+        self.declare_parameter("k2", 0.0028040539388385884)
+        self.declare_parameter("p1", 0.00015933624483912515)
+        self.declare_parameter("p2", -0.001408459710522939)
+        self.declare_parameter("k3", 0.0)
 
         # Rotation from camera optical frame to drone body FRD frame.
         # Must be calibrated for the real mount.
@@ -298,14 +306,31 @@ class FlightCameraTransformNode(Node):
 
         px, py = self.normalized_to_pixel(u_norm, v_norm)
 
-        ray_cam = np.array(
+        k1 = float(self.get_parameter("k1").value)
+        k2 = float(self.get_parameter("k2").value)
+        p1 = float(self.get_parameter("p1").value)
+        p2 = float(self.get_parameter("p2").value)
+        k3 = float(self.get_parameter("k3").value)
+
+        camera_matrix = np.array(
             [
-                (px - cx) / fx,
-                (py - cy) / fy,
-                1.0,
+                [fx, 0.0, cx],
+                [0.0, fy, cy],
+                [0.0, 0.0, 1.0],
             ],
-            dtype=float,
+            dtype=np.float64,
         )
+        distortion = np.array([k1, k2, p1, p2, k3], dtype=np.float64)
+
+        pixel = np.array([[[px, py]]], dtype=np.float64)
+
+        # OpenCV returns normalized undistorted optical coordinates.
+        # x = right, y = down, z = forward in camera optical frame.
+        undistorted = cv2.undistortPoints(pixel, camera_matrix, distortion)
+        x_cam = float(undistorted[0, 0, 0])
+        y_cam = float(undistorted[0, 0, 1])
+
+        ray_cam = np.array([x_cam, y_cam, 1.0], dtype=float)
         ray_cam = ray_cam / np.linalg.norm(ray_cam)
 
         roll = float(self.get_parameter("camera_to_body_roll_rad").value)
@@ -416,6 +441,13 @@ class FlightCameraTransformNode(Node):
                 "fy": float(self.get_parameter("fy").value),
                 "cx": float(self.get_parameter("cx").value),
                 "cy": float(self.get_parameter("cy").value),
+                "distortion_coefficients": {
+                    "k1": float(self.get_parameter("k1").value),
+                    "k2": float(self.get_parameter("k2").value),
+                    "p1": float(self.get_parameter("p1").value),
+                    "p2": float(self.get_parameter("p2").value),
+                    "k3": float(self.get_parameter("k3").value),
+                },
                 "camera_to_body_rpy_rad": [
                     float(self.get_parameter("camera_to_body_roll_rad").value),
                     float(self.get_parameter("camera_to_body_pitch_rad").value),
