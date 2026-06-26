@@ -55,6 +55,8 @@ const OCTOPUS = {
     polygonPreviewLayer: null,
   },
   missionArea: JSON.parse(localStorage.getItem("octopusMissionArea") || "null"),
+  gridMode: localStorage.getItem("octopusGridMode") || "fixed_camera_footprint",
+  cameraFootprint: JSON.parse(localStorage.getItem("octopusCameraFootprint") || '{"height_m":2.5,"resolution":0.10}'),
   osmPriors: JSON.parse(localStorage.getItem("octopusOsmPriors") || "null"),
   gridDisplay: { ...GRID_DISPLAY_DEFAULTS, ...(JSON.parse(localStorage.getItem("octopusGridDisplay") || "{}")) },
   gridView: { scale: 1, offsetX: 0, offsetY: 0, isPanning: false, lastX: 0, lastY: 0, moved: false },
@@ -3030,4 +3032,311 @@ if (document.readyState === "loading") {
 } else {
   initDashboardViewClassSync();
 }
+
+
+// -----------------------------------------------------------------------------
+// Grid mode extension: fixed camera footprint / manual / expanding / rolling
+// -----------------------------------------------------------------------------
+
+const OCTOPUS_HBVCAM_640X480 = {
+  image_width: 640.0,
+  image_height: 480.0,
+  fx: 359.3292231592479,
+  fy: 359.2290038414162,
+  cx: 312.8204647201454,
+  cy: 237.947360594595,
+};
+
+const OCTOPUS_GRID_MODE_LABELS = {
+  fixed_camera_footprint: "Fixed camera footprint",
+  manual_mission_area: "Manual mission area",
+  expanding_global_map: "Expanding global map",
+  rolling_local_map: "Rolling local map",
+};
+
+function octopusGridMode() {
+  return OCTOPUS.gridMode || localStorage.getItem("octopusGridMode") || "fixed_camera_footprint";
+}
+
+function octopusCameraFootprintSettings() {
+  const stored = OCTOPUS.cameraFootprint || {};
+  const heightInput = $("camera-footprint-height-input");
+  const resolutionInput = $("grid-resolution-input");
+
+  const heightM = clamp(
+    safeNumber(heightInput?.value, safeNumber(stored.height_m, 2.5)),
+    0.20,
+    50.0
+  );
+
+  const resolution = clamp(
+    safeNumber(resolutionInput?.value, safeNumber(stored.resolution, 0.10)),
+    0.02,
+    2.0
+  );
+
+  return { height_m: heightM, resolution };
+}
+
+function octopusComputeCameraFootprintMeta() {
+  const settings = octopusCameraFootprintSettings();
+  const cam = OCTOPUS_HBVCAM_640X480;
+  const h = settings.height_m;
+  const resolution = settings.resolution;
+
+  // Ground-plane footprint for a downward-looking pinhole camera.
+  // Left/right/top/bottom are asymmetric because cx/cy are not exactly centered.
+  const leftM = h * cam.cx / cam.fx;
+  const rightM = h * (cam.image_width - cam.cx) / cam.fx;
+  const topM = h * cam.cy / cam.fy;
+  const bottomM = h * (cam.image_height - cam.cy) / cam.fy;
+
+  const widthM = leftM + rightM;
+  const heightM = topM + bottomM;
+
+  const cols = Math.max(1, Math.ceil(widthM / resolution));
+  const rows = Math.max(1, Math.ceil(heightM / resolution));
+
+  return {
+    cols,
+    rows,
+    width_m: widthM,
+    height_m: heightM,
+    resolution,
+    source: "fixed camera footprint",
+    mode: "fixed_camera_footprint",
+    camera_height_m: h,
+    camera_model: cam,
+    footprint: {
+      left_m: leftM,
+      right_m: rightM,
+      top_m: topM,
+      bottom_m: bottomM,
+    },
+  };
+}
+
+function octopusRollingLocalMapMeta() {
+  const resolution = octopusCameraFootprintSettings().resolution;
+  const widthM = 10.0;
+  const heightM = 10.0;
+
+  return {
+    cols: Math.max(1, Math.ceil(widthM / resolution)),
+    rows: Math.max(1, Math.ceil(heightM / resolution)),
+    width_m: widthM,
+    height_m: heightM,
+    resolution,
+    source: "rolling local map placeholder",
+    mode: "rolling_local_map",
+  };
+}
+
+const OCTOPUS_ORIGINAL_GET_ACTIVE_GRID_META = typeof getActiveGridMeta === "function" ? getActiveGridMeta : null;
+
+getActiveGridMeta = function patchedGetActiveGridMeta(mapData = {}) {
+  const mode = octopusGridMode();
+
+  if (mode === "fixed_camera_footprint") {
+    return octopusComputeCameraFootprintMeta();
+  }
+
+  if (mode === "rolling_local_map") {
+    return octopusRollingLocalMapMeta();
+  }
+
+  if (mode === "expanding_global_map") {
+    const backendMeta = typeof mapMetaFromBackend === "function"
+      ? mapMetaFromBackend(mapData || {})
+      : { cols: 50, rows: 30, width_m: 5.0, height_m: 3.0, resolution: 0.10, source: "backend fallback" };
+
+    return {
+      ...backendMeta,
+      mode: "expanding_global_map",
+      source: "backend / expanding global map",
+    };
+  }
+
+  // Manual mission area keeps the old dashboard behavior.
+  if (OCTOPUS_ORIGINAL_GET_ACTIVE_GRID_META) {
+    const oldMeta = OCTOPUS_ORIGINAL_GET_ACTIVE_GRID_META(mapData);
+    return {
+      ...oldMeta,
+      mode: "manual_mission_area",
+      source: oldMeta.source || "manual mission area",
+    };
+  }
+
+  return octopusComputeCameraFootprintMeta();
+};
+
+function octopusUpdateCameraFootprintSummary() {
+  const summary = $("camera-footprint-summary");
+  const heightControl = $("camera-footprint-height-control");
+  const modeSelect = $("grid-mode-select");
+  const mode = octopusGridMode();
+
+  if (modeSelect && modeSelect.value !== mode) modeSelect.value = mode;
+
+  if (heightControl) {
+    heightControl.style.display = mode === "fixed_camera_footprint" ? "" : "none";
+  }
+
+  if (!summary) return;
+
+  let meta;
+  if (mode === "fixed_camera_footprint") {
+    meta = octopusComputeCameraFootprintMeta();
+    summary.textContent =
+      `Camera footprint: ${meta.width_m.toFixed(2)} m × ${meta.height_m.toFixed(2)} m · ` +
+      `${meta.cols}×${meta.rows} cells · h=${meta.camera_height_m.toFixed(2)} m`;
+    summary.title =
+      `HBVCAM 640x480, fx=${meta.camera_model.fx.toFixed(1)}, fy=${meta.camera_model.fy.toFixed(1)}, ` +
+      `cx=${meta.camera_model.cx.toFixed(1)}, cy=${meta.camera_model.cy.toFixed(1)}`;
+    return;
+  }
+
+  if (mode === "rolling_local_map") {
+    meta = octopusRollingLocalMapMeta();
+    summary.textContent = `Rolling local map: ${meta.width_m.toFixed(1)} m × ${meta.height_m.toFixed(1)} m · ${meta.cols}×${meta.rows} cells`;
+    summary.title = "Placeholder rolling map size. Later this should follow the drone pose.";
+    return;
+  }
+
+  if (mode === "expanding_global_map") {
+    summary.textContent = "Expanding global map: using backend map bounds";
+    summary.title = "Later this should expand automatically when detections/coverage leave current bounds.";
+    return;
+  }
+
+  summary.textContent = "Manual mission area: using drawn/search polygon bounds";
+  summary.title = "Uses the current mission/search area dimensions.";
+}
+
+function octopusPersistCameraFootprintSettings() {
+  const settings = octopusCameraFootprintSettings();
+  OCTOPUS.cameraFootprint = settings;
+  localStorage.setItem("octopusCameraFootprint", JSON.stringify(settings));
+}
+
+function octopusRefreshGridModeView(announce = false) {
+  octopusPersistCameraFootprintSettings();
+  octopusUpdateCameraFootprintSummary();
+
+  if (OCTOPUS.latest.globalMap || OCTOPUS.osmPriors) {
+    drawGridMap(OCTOPUS.latest.globalMap || {});
+  }
+
+  if (typeof renderKpis === "function") renderKpis();
+
+  if (announce && typeof addTimeline === "function") {
+    const mode = octopusGridMode();
+    const meta = getActiveGridMeta(OCTOPUS.latest.globalMap || {});
+    addTimeline(
+      `Grid mode: ${OCTOPUS_GRID_MODE_LABELS[mode] || mode} · ` +
+      `${meta.width_m.toFixed(2)} m × ${meta.height_m.toFixed(2)} m · ` +
+      `${meta.cols}×${meta.rows} cells at ${meta.resolution.toFixed(2)} m/cell`,
+      "info"
+    );
+  }
+}
+
+function octopusSetupGridModeControls() {
+  const modeSelect = $("grid-mode-select");
+  const heightInput = $("camera-footprint-height-input");
+  const resolutionInput = $("grid-resolution-input");
+
+  if (modeSelect) {
+    modeSelect.value = octopusGridMode();
+    modeSelect.addEventListener("change", () => {
+      OCTOPUS.gridMode = modeSelect.value;
+      localStorage.setItem("octopusGridMode", OCTOPUS.gridMode);
+      OCTOPUS.gridView = { ...OCTOPUS.gridView, scale: 1, offsetX: 0, offsetY: 0 };
+      octopusRefreshGridModeView(true);
+    });
+  }
+
+  if (heightInput) {
+    heightInput.value = safeNumber(OCTOPUS.cameraFootprint?.height_m, 2.5).toFixed(2);
+    heightInput.addEventListener("input", () => {
+      octopusRefreshGridModeView(false);
+    });
+    heightInput.addEventListener("change", () => {
+      octopusRefreshGridModeView(true);
+    });
+  }
+
+  if (resolutionInput) {
+    resolutionInput.value = safeNumber(OCTOPUS.cameraFootprint?.resolution, safeNumber(resolutionInput.value, 0.10)).toFixed(2);
+    resolutionInput.addEventListener("input", () => {
+      if (octopusGridMode() === "fixed_camera_footprint") {
+        octopusRefreshGridModeView(false);
+      }
+    });
+  }
+
+  octopusRefreshGridModeView(false);
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", octopusSetupGridModeControls);
+} else {
+  octopusSetupGridModeControls();
+}
+
+
+// -----------------------------------------------------------------------------
+// Fixed camera footprint marker override
+// In fixed camera footprint mode:
+// - Eve/drone is shown at the center of the camera footprint.
+// - Home station is shown at x=center, y=0.
+// -----------------------------------------------------------------------------
+
+const OCTOPUS_ORIGINAL_DRAW_FLEET_AND_TASKS_ON_GRID =
+  typeof drawFleetAndTasksOnGrid === "function" ? drawFleetAndTasksOnGrid : null;
+
+function octopusMetricToCanvasPoint(geom, xMeters, yMeters) {
+  if (typeof metricToCanvas === "function") {
+    return metricToCanvas(geom, xMeters, yMeters);
+  }
+
+  return {
+    x: geom.originX + (xMeters / geom.resolution) * geom.cellSize,
+    y: geom.originY + geom.gridH - (yMeters / geom.resolution) * geom.cellSize,
+  };
+}
+
+function octopusDrawFixedCameraFootprintMarkers(ctx, mapData, geom) {
+  const display = OCTOPUS.gridDisplay || GRID_DISPLAY_DEFAULTS || {};
+
+  const centerX = geom.width_m / 2.0;
+  const centerY = geom.height_m / 2.0;
+
+  if (display.home !== false) {
+    const home = octopusMetricToCanvasPoint(geom, centerX, 0.0);
+    drawGridMarker(ctx, home.x, home.y, "H", {
+      color: "#ffffff",
+      fillColor: "#a78bfa",
+    });
+  }
+
+  if (display.robots !== false) {
+    const drone = octopusMetricToCanvasPoint(geom, centerX, centerY);
+    drawGridMarker(ctx, drone.x, drone.y, "E", {
+      color: "#ffffff",
+      fillColor: "#38bdf8",
+    });
+  }
+}
+
+drawFleetAndTasksOnGrid = function patchedDrawFleetAndTasksOnGrid(ctx, mapData, geom) {
+  if (typeof octopusGridMode === "function" && octopusGridMode() === "fixed_camera_footprint") {
+    octopusDrawFixedCameraFootprintMarkers(ctx, mapData, geom);
+    return;
+  }
+
+  if (OCTOPUS_ORIGINAL_DRAW_FLEET_AND_TASKS_ON_GRID) {
+    OCTOPUS_ORIGINAL_DRAW_FLEET_AND_TASKS_ON_GRID(ctx, mapData, geom);
+  }
+};
 
