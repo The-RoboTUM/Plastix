@@ -22,6 +22,7 @@ setup(
         'console_scripts': [
             'camera_marker_transform_node = octopus_camera_transform.camera_marker_transform_node:main',
             'flight_camera_transform_node = octopus_camera_transform.flight_camera_transform_node:main',
+            'world_posearray_to_json_bridge_node = octopus_camera_transform.world_posearray_to_json_bridge_node:main',
         ],
     },
 )

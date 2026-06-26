@@ -919,6 +919,17 @@
       white-space: nowrap;
     }
 
+
+    .grid-mode-input {
+      min-width: 170px;
+    }
+
+    .camera-footprint-summary {
+      max-width: 360px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
     .resolution-control .small-input {
       padding: 5px 6px;
     }
@@ -1250,6 +1261,21 @@
               <input id="grid-resolution-input" class="small-input resolution-input" type="number" value="0.10" min="0.02" max="2" step="0.05" />
               <span id="grid-resolution-label">m/cell</span>
             </label>
+            <label class="resolution-control" title="Choose how the local grid dimensions are defined.">
+              <span>Grid mode</span>
+              <select id="grid-mode-select" class="small-input grid-mode-input">
+                <option value="fixed_camera_footprint">Fixed camera footprint</option>
+                <option value="manual_mission_area">Manual mission area</option>
+                <option value="expanding_global_map">Expanding global map</option>
+                <option value="rolling_local_map">Rolling local map</option>
+              </select>
+            </label>
+            <label id="camera-footprint-height-control" class="resolution-control" title="Drone height above the ground plane used to calculate the camera footprint.">
+              <span>Drone height</span>
+              <input id="camera-footprint-height-input" class="small-input resolution-input" type="number" value="2.50" min="0.20" max="50" step="0.10" />
+              <span>m</span>
+            </label>
+            <span id="camera-footprint-summary" class="mini-chip camera-footprint-summary">Camera footprint: --</span>
             <button id="draw-polygon-button" class="ghost" title="Click points on the mission map to define a search polygon">Draw polygon</button>
             <button id="finish-polygon-button" class="ghost" title="Submit the drawn polygon as search/grid area" disabled>Finish</button>
             <button id="clear-area-button" class="ghost" title="Clear the custom search area">Clear</button>
