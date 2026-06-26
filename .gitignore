@@ -75,3 +75,6 @@ eve/Software/detect-and-localize/.venv/
 eve/Software/detect-and-localize/data/
 eve/Software/detect-and-localize/**/*.pyc
 eve/Software/detect-and-localize/**/__pycache__/
+
+# Local PX4 ROS2 message dependency
+Octopus/ros2_ws/src/px4_msgs/
