@@ -37,6 +37,7 @@ const OCTOPUS = {
     patch: null,
     globalMap: null,
     cameraTransformStatus: null,
+    cameraDebug: null,
   },
   selected: null,
   selectedCellKey: null,
@@ -2140,6 +2141,93 @@ function renderInspector() {
   el.innerHTML = `<pre class="json-box">${escapeHtml(JSON.stringify(selected, null, 2))}</pre>`;
 }
 
+
+function bboxText(bbox) {
+  if (!bbox) return "--";
+  return `${safeNumber(bbox.x1, 0)},${safeNumber(bbox.y1, 0)} → ${safeNumber(bbox.x2, 0)},${safeNumber(bbox.y2, 0)}`;
+}
+
+function formatUv(value) {
+  const number = safeNumber(value, NaN);
+  return Number.isFinite(number) ? number.toFixed(4) : "--";
+}
+
+function formatConfidence(value) {
+  const number = safeNumber(value, NaN);
+  return Number.isFinite(number) ? number.toFixed(2) : "--";
+}
+
+function renderCameraDebug() {
+  const el = $("camera-debug-content");
+  if (!el) return;
+
+  const data = OCTOPUS.latest.cameraDebug || null;
+  const image = data?.image || null;
+  const detectionPayload = data?.detections || null;
+  const detections = Array.isArray(detectionPayload?.detections) ? detectionPayload.detections : [];
+
+  const frameAge = ageSeconds(image?.received_at);
+  const detectionAge = ageSeconds(detectionPayload?.received_at || detectionPayload?.timestamp);
+  const frameFresh = freshnessFromAge(frameAge, 2.0, 8.0);
+  const detectionFresh = freshnessFromAge(detectionAge, 2.0, 8.0);
+
+  const cameraMessage = image
+    ? detections.length > 0
+      ? `${detections.length} detection${detections.length === 1 ? "" : "s"}`
+      : "Camera frame live, no confirmed detections"
+    : "No camera debug frame yet";
+
+  const rows = detections.map((det) => `
+    <tr>
+      <td>#${escapeHtml(det.id ?? "--")}</td>
+      <td>${escapeHtml(det.class_name || "rubbish")}</td>
+      <td>${formatConfidence(det.confidence)}</td>
+      <td>${formatUv(det.u)} / ${formatUv(det.v)}</td>
+      <td>${escapeHtml(bboxText(det.bbox))}</td>
+      <td>${statusPill(escapeHtml(det.status || "detected"), det.status === "confirmed" ? "fresh" : "warning")}</td>
+    </tr>
+  `).join("");
+
+  el.innerHTML = `
+    <div class="camera-debug-layout">
+      <div>
+        <div class="camera-debug-frame">
+          ${image?.data_url
+            ? `<img id="camera-debug-image" src="${image.data_url}" alt="Latest detector debug camera frame with bounding boxes" />`
+            : `<div class="camera-debug-placeholder">Waiting for /detector_node/debug_image/compressed</div>`
+          }
+        </div>
+      </div>
+      <div>
+        <div class="camera-debug-meta">
+          ${statusPill(escapeHtml(frameFresh.label), frameFresh.state)}
+          ${statusPill(escapeHtml(detectionFresh.label), detectionFresh.state)}
+          <span class="mini-chip">${escapeHtml(cameraMessage)}</span>
+          <span class="mini-chip">frame: ${escapeHtml(image?.frame_id || detectionPayload?.frame_id || "camera")}</span>
+        </div>
+        ${detections.length === 0
+          ? `<div class="item-card"><div class="item-title">No detections</div><div class="item-meta">${escapeHtml(cameraMessage)}</div></div>`
+          : `<table class="camera-debug-table">
+              <thead><tr><th>ID</th><th>class</th><th>conf</th><th>u / v</th><th>bbox</th><th>status</th></tr></thead>
+              <tbody>${rows}</tbody>
+            </table>`
+        }
+      </div>
+    </div>
+  `;
+}
+
+async function refreshCameraDebug() {
+  try {
+    const data = await apiGet("/api/camera_debug/latest");
+    OCTOPUS.latest.cameraDebug = data.status === "ok" ? data : null;
+  } catch (error) {
+    OCTOPUS.latest.cameraDebug = null;
+    console.warn("Camera debug refresh failed", error);
+  }
+  renderCameraDebug();
+}
+
 function renderMapPatch() {
   const el = $("map-patch-content");
   if (!el) return;
@@ -2559,6 +2647,8 @@ renderMissionPhase();
 renderTimeline();
 refreshAll();
 setInterval(refreshAll, 5000);
+refreshCameraDebug();
+setInterval(refreshCameraDebug, 1000);
 
 
 // --- OCTOPUS EVE CAMERA FRONTEND ---

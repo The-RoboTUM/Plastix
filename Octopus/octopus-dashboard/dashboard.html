@@ -1181,7 +1181,136 @@
       padding-right: 6px;
     }
 
-  </style>
+
+    .camera-debug-layout {
+      display: grid;
+      grid-template-columns: minmax(220px, 1.15fr) minmax(220px, 1fr);
+      gap: 12px;
+      height: 100%;
+      min-height: 0;
+    }
+
+    .camera-debug-frame {
+      min-height: 170px;
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      background: #020617;
+      overflow: hidden;
+      display: grid;
+      place-items: center;
+      position: relative;
+    }
+
+    #camera-debug-image {
+      width: 100%;
+      height: 100%;
+      max-height: 280px;
+      object-fit: contain;
+      display: block;
+    }
+
+    .camera-debug-placeholder {
+      padding: 18px;
+      color: var(--text-muted);
+      text-align: center;
+      font-size: 13px;
+    }
+
+    .camera-debug-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+
+    .camera-debug-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    .camera-debug-table th,
+    .camera-debug-table td {
+      border-bottom: 1px solid rgba(255,255,255,0.08);
+      padding: 6px 5px;
+      text-align: left;
+      vertical-align: top;
+      white-space: nowrap;
+    }
+
+    .camera-debug-table th {
+      color: var(--text-muted);
+      font-size: 10px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .camera-debug-table td:last-child,
+    .camera-debug-table th:last-child {
+      white-space: normal;
+    }
+
+    @media (max-width: 1100px) {
+      .camera-debug-layout { grid-template-columns: 1fr; }
+    }
+
+  
+/* --- CAMERA DEBUG PROMOTED DEBUG VIEW LAYOUT --- */
+/* In System / Debug view, make Camera Debug a large right-side inspector. */
+body[data-view="debug"] .camera-debug-panel,
+body.octopus-view-debug .camera-debug-panel {
+  position: fixed;
+  top: 156px;
+  right: 12px;
+  bottom: 12px;
+  width: min(760px, 42vw);
+  z-index: 900;
+  border-color: rgba(56, 189, 248, 0.55);
+  box-shadow: 0 18px 55px rgba(0, 0, 0, 0.55);
+}
+
+body[data-view="debug"] .camera-debug-panel .panel-body,
+body.octopus-view-debug .camera-debug-panel .panel-body {
+  padding: 10px;
+  overflow: auto;
+}
+
+body[data-view="debug"] .camera-debug-panel img,
+body.octopus-view-debug .camera-debug-panel img,
+body[data-view="debug"] #camera-debug-image,
+body.octopus-view-debug #camera-debug-image {
+  width: 100%;
+  max-height: 48vh;
+  object-fit: contain;
+  display: block;
+  border-radius: 10px;
+  background: #020617;
+  border: 1px solid rgba(255,255,255,0.10);
+}
+
+body[data-view="debug"] .camera-debug-panel table,
+body.octopus-view-debug .camera-debug-panel table {
+  font-size: 11px;
+}
+
+body[data-view="debug"] .camera-debug-panel .item-card,
+body.octopus-view-debug .camera-debug-panel .item-card {
+  padding: 8px;
+}
+
+@media (max-width: 1200px) {
+  body[data-view="debug"] .camera-debug-panel,
+  body.octopus-view-debug .camera-debug-panel {
+    position: relative;
+    top: auto;
+    right: auto;
+    bottom: auto;
+    width: auto;
+  }
+}
+/* --- END CAMERA DEBUG PROMOTED DEBUG VIEW LAYOUT --- */
+
+</style>
 </head>
 <body data-view="overview">
   <header class="topbar">
@@ -1416,6 +1545,13 @@
         </div>
       </section>
 
+
+
+      <section class="panel debug-only camera-debug-panel">
+        <div class="panel-header"><div class="panel-title"><strong>Camera Debug</strong><span>detection inspector</span></div></div>
+        <div class="panel-body" id="camera-debug-content">Waiting for camera debug data...</div>
+      </section>
+
       <section class="panel debug-only map-patch-panel">
         <div class="panel-header"><div class="panel-title"><strong>Latest Map Patch</strong><span>debug JSON</span></div></div>
         <div class="panel-body" id="map-patch-content">No map patch received yet.</div>
@@ -1423,6 +1559,6 @@
     </section>
   </main>
 
-  <script src="live_data.js?v=mission-modes-fleet-1"></script>
+  <script src="live_data.js?v=camera-debug-1"></script>
 </body>
 </html>

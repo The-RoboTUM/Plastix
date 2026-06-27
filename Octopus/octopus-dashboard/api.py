@@ -14,6 +14,92 @@ DB_PATH = os.getenv("DB_PATH", "octopusfinal.db")
 app = FastAPI()
 
 
+# --- CAMERA DEBUG / DETECTION INSPECTOR ROUTES ---
+# In-memory only: keep the newest frame and newest detection payload.
+LATEST_CAMERA_DEBUG = {
+    "received_at": None,
+    "image": None,
+    "detections": None,
+}
+
+
+def _now_ts() -> float:
+    return datetime.now().timestamp()
+
+
+@app.post("/api/camera_debug/frame")
+def post_camera_debug_frame(payload: Dict[str, Any]):
+    received_at = _now_ts()
+    image_format = str(payload.get("format") or "jpeg").lower()
+    if image_format == "jpg":
+        image_format = "jpeg"
+
+    data_url = payload.get("data_url")
+    data_base64 = payload.get("data_base64")
+    if not data_url and data_base64:
+        data_url = f"data:image/{image_format};base64,{data_base64}"
+
+    LATEST_CAMERA_DEBUG["image"] = {
+        "received_at": received_at,
+        "format": image_format,
+        "stamp": payload.get("stamp"),
+        "frame_id": payload.get("frame_id", "camera"),
+        "data_url": data_url,
+    }
+    LATEST_CAMERA_DEBUG["received_at"] = received_at
+
+    return {
+        "status": "ok",
+        "received_at": received_at,
+        "has_image": bool(data_url),
+    }
+
+
+@app.get("/api/camera_debug/frame/latest")
+def get_latest_camera_debug_frame():
+    return {
+        "status": "ok" if LATEST_CAMERA_DEBUG["image"] else "empty",
+        "image": LATEST_CAMERA_DEBUG["image"],
+    }
+
+
+@app.post("/api/camera_debug/detections")
+def post_camera_debug_detections(payload: Dict[str, Any]):
+    received_at = _now_ts()
+    payload["received_at"] = payload.get("received_at", received_at)
+    payload.setdefault("source_id", "detector_node")
+    payload.setdefault("frame_id", "camera")
+    payload.setdefault("detections", [])
+
+    LATEST_CAMERA_DEBUG["detections"] = payload
+    LATEST_CAMERA_DEBUG["received_at"] = received_at
+
+    return {
+        "status": "ok",
+        "received_at": received_at,
+        "detection_count": len(payload.get("detections", [])),
+    }
+
+
+@app.get("/api/camera_debug/detections/latest")
+def get_latest_camera_debug_detections():
+    return {
+        "status": "ok" if LATEST_CAMERA_DEBUG["detections"] else "empty",
+        "detections": LATEST_CAMERA_DEBUG["detections"],
+    }
+
+
+@app.get("/api/camera_debug/latest")
+def get_latest_camera_debug():
+    return {
+        "status": "ok" if (LATEST_CAMERA_DEBUG["image"] or LATEST_CAMERA_DEBUG["detections"]) else "empty",
+        "received_at": LATEST_CAMERA_DEBUG["received_at"],
+        "image": LATEST_CAMERA_DEBUG["image"],
+        "detections": LATEST_CAMERA_DEBUG["detections"],
+    }
+# --- END CAMERA DEBUG / DETECTION INSPECTOR ROUTES ---
+
+
 # --- OCTOPUS EVE CAMERA ROUTES ---
 import subprocess
 from datetime import datetime

@@ -1,5 +1,7 @@
+import json
 import os
 import sys
+import time
 
 import cv2
 import numpy as np
@@ -8,6 +10,7 @@ from rclpy.node import Node
 from rclpy.qos import QoSPresetProfiles, QoSProfile, QoSDurabilityPolicy, QoSHistoryPolicy
 from sensor_msgs.msg import CompressedImage
 from geometry_msgs.msg import PoseArray, Pose
+from std_msgs.msg import String
 
 
 class DetectorNode(Node):
@@ -19,6 +22,8 @@ class DetectorNode(Node):
       * ``~/confirmed``   only when trash gets confirmed: the full set of
         confirmed (settled) trash positions. Latched (transient-local) so a
         subscriber that joins late still receives the latest confirmed map.
+      * ``~/debug_image/compressed`` current camera frame annotated with boxes.
+      * ``~/detections_debug`` JSON payload with bbox/confidence/class/id/u/v.
 
     Position units depend on the ``tags`` parameter: world coordinates when an
     AprilTag CSV is supplied, otherwise normalized image coordinates in [0, 1]
@@ -92,6 +97,15 @@ class DetectorNode(Node):
         )
         self.confirmed_pub = self.create_publisher(PoseArray, '~/confirmed', latched_qos)
 
+        # Additional debug outputs for the dashboard Detection Inspector.
+        # Do not change ~/confirmed: the flight transform depends on it.
+        self.debug_image_pub = self.create_publisher(
+            CompressedImage, '~/debug_image/compressed', 10
+        )
+        self.detections_debug_pub = self.create_publisher(String, '~/detections_debug', 10)
+        self._next_debug_detection_id = 1
+        self._temporary_debug_ids = {}
+
         self.subscription = self.create_subscription(
             CompressedImage, input_topic, self.image_callback,
             QoSPresetProfiles.SENSOR_DATA.value,
@@ -134,6 +148,321 @@ class DetectorNode(Node):
             msg.poses.append(pose)
         return msg
 
+
+    @staticmethod
+    def _stamp_to_float(stamp):
+        try:
+            value = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+        except Exception:
+            value = 0.0
+        return value if value > 0.0 else time.time()
+
+    @staticmethod
+    def _as_list(value):
+        if value is None:
+            return []
+        if isinstance(value, dict):
+            return list(value.values())
+        if isinstance(value, (list, tuple)):
+            return list(value)
+        return [value]
+
+    @staticmethod
+    def _field(item, *names, default=None):
+        if item is None:
+            return default
+        if isinstance(item, dict):
+            for name in names:
+                if name in item:
+                    return item[name]
+            return default
+        for name in names:
+            if hasattr(item, name):
+                return getattr(item, name)
+        return default
+
+    @staticmethod
+    def _plain_float(value):
+        try:
+            number = float(value)
+        except Exception:
+            return None
+        if not np.isfinite(number):
+            return None
+        return number
+
+    def _bbox_to_dict(self, raw_bbox, frame_shape):
+        if raw_bbox is None:
+            return None
+
+        frame_h, frame_w = frame_shape[:2]
+        x1 = y1 = x2 = y2 = None
+
+        if isinstance(raw_bbox, dict):
+            x1 = self._plain_float(self._field(raw_bbox, "x1", "xmin", "left"))
+            y1 = self._plain_float(self._field(raw_bbox, "y1", "ymin", "top"))
+            x2 = self._plain_float(self._field(raw_bbox, "x2", "xmax", "right"))
+            y2 = self._plain_float(self._field(raw_bbox, "y2", "ymax", "bottom"))
+
+            width = self._plain_float(self._field(raw_bbox, "width", "w"))
+            height = self._plain_float(self._field(raw_bbox, "height", "h"))
+            if x2 is None and x1 is not None and width is not None:
+                x2 = x1 + width
+            if y2 is None and y1 is not None and height is not None:
+                y2 = y1 + height
+        else:
+            try:
+                arr = np.array(raw_bbox, dtype=float).reshape(-1).tolist()
+            except Exception:
+                arr = []
+            if len(arr) >= 4:
+                x1, y1, x2, y2 = arr[:4]
+
+        if None in (x1, y1, x2, y2):
+            return None
+
+        x1 = max(0.0, min(float(frame_w - 1), float(x1)))
+        x2 = max(0.0, min(float(frame_w - 1), float(x2)))
+        y1 = max(0.0, min(float(frame_h - 1), float(y1)))
+        y2 = max(0.0, min(float(frame_h - 1), float(y2)))
+
+        if x2 < x1:
+            x1, x2 = x2, x1
+        if y2 < y1:
+            y1, y2 = y2, y1
+
+        return {
+            "x1": int(round(x1)),
+            "y1": int(round(y1)),
+            "x2": int(round(x2)),
+            "y2": int(round(y2)),
+            "width": int(round(x2 - x1)),
+            "height": int(round(y2 - y1)),
+        }
+
+    def _candidate_bbox(self, item, frame_shape):
+        raw_bbox = self._field(
+            item,
+            "bbox", "box", "xyxy", "rect", "rectangle", "tlbr",
+            default=None,
+        )
+        if raw_bbox is None:
+            raw_bbox = self._field(item, "bounds", "bounding_box", default=None)
+        return self._bbox_to_dict(raw_bbox, frame_shape)
+
+    def _candidate_uv(self, item, bbox, frame_shape):
+        frame_h, frame_w = frame_shape[:2]
+
+        if bbox:
+            cx = 0.5 * (bbox["x1"] + bbox["x2"])
+            cy = 0.5 * (bbox["y1"] + bbox["y2"])
+            return cx / max(1, frame_w), 1.0 - (cy / max(1, frame_h))
+
+        u = self._plain_float(self._field(
+            item, "u", "norm_x", "normalized_x", "cx_norm", default=None
+        ))
+        v = self._plain_float(self._field(
+            item, "v", "norm_y", "normalized_y", "cy_norm", default=None
+        ))
+        if u is not None and v is not None:
+            return u, v
+
+        pos = self._field(item, "pos", "position", "center", "uv", default=None)
+        if isinstance(pos, dict):
+            u = self._plain_float(self._field(pos, "u", "x", 0, default=None))
+            v = self._plain_float(self._field(pos, "v", "y", 1, default=None))
+        else:
+            try:
+                arr = np.array(pos, dtype=float).reshape(-1).tolist()
+            except Exception:
+                arr = []
+            if len(arr) >= 2:
+                u = self._plain_float(arr[0])
+                v = self._plain_float(arr[1])
+
+        if u is None or v is None:
+            return None, None
+        return u, v
+
+    def _temporary_debug_id(self, class_name, u, v, bbox, index):
+        if bbox:
+            key = (
+                class_name,
+                int(bbox["x1"] / 10),
+                int(bbox["y1"] / 10),
+                int(bbox["x2"] / 10),
+                int(bbox["y2"] / 10),
+            )
+        elif u is not None and v is not None:
+            key = (class_name, round(float(u), 2), round(float(v), 2))
+        else:
+            key = (class_name, "fallback", int(index))
+
+        if key not in self._temporary_debug_ids:
+            self._temporary_debug_ids[key] = self._next_debug_detection_id
+            self._next_debug_detection_id += 1
+
+        # Keep this debug-only dictionary bounded.
+        if len(self._temporary_debug_ids) > 200:
+            self._temporary_debug_ids = dict(list(self._temporary_debug_ids.items())[-100:])
+
+        return self._temporary_debug_ids[key]
+
+    def _debug_detection_from_candidate(self, item, index, frame_shape, status="detected"):
+        bbox = self._candidate_bbox(item, frame_shape)
+        u, v = self._candidate_uv(item, bbox, frame_shape)
+
+        class_name = self._field(
+            item,
+            "class_name", "class", "label", "name", "category",
+            default="rubbish",
+        )
+        class_name = str(class_name or "rubbish")
+
+        confidence = self._plain_float(self._field(
+            item,
+            "confidence", "conf", "score", "probability",
+            default=None,
+        ))
+
+        raw_id = self._field(
+            item,
+            "id", "track_id", "detection_id", "object_id",
+            default=None,
+        )
+        if raw_id is None:
+            raw_id = self._temporary_debug_id(class_name, u, v, bbox, index)
+
+        try:
+            detection_id = int(raw_id)
+        except Exception:
+            detection_id = str(raw_id)
+
+        item_status = self._field(item, "status", "state", default=status)
+
+        return {
+            "id": detection_id,
+            "class_name": class_name,
+            "confidence": confidence,
+            "u": self._plain_float(u),
+            "v": self._plain_float(v),
+            "bbox": bbox,
+            "status": str(item_status or status),
+            # TODO: propagate detection ID through flight_camera_transform_node.
+            # TODO: join camera debug detections with map/world detections in dashboard.
+        }
+
+    def _build_debug_detections(self, result, frame_shape):
+        confirmed_items = self._as_list(result.get("confirmed", []))
+        confirmed_debug = [
+            self._debug_detection_from_candidate(item, index, frame_shape, "confirmed")
+            for index, item in enumerate(confirmed_items)
+        ]
+        confirmed_ids = {det["id"] for det in confirmed_debug}
+
+        current_items = self._as_list(result.get("detections", None))
+        if not current_items:
+            current_items = self._as_list(getattr(self.pipeline, "detections", []))
+
+        current_debug = []
+        for index, item in enumerate(current_items):
+            det = self._debug_detection_from_candidate(item, index, frame_shape, "detected")
+            if det["id"] in confirmed_ids:
+                det["status"] = "confirmed"
+            current_debug.append(det)
+
+        if current_debug:
+            seen = {det["id"] for det in current_debug}
+            for det in confirmed_debug:
+                if det["id"] not in seen:
+                    current_debug.append(det)
+            return current_debug
+
+        if confirmed_debug:
+            return confirmed_debug
+
+        # Fallback: use the same positions that feed ~/detections. In normalized
+        # mode these are u/v. In tag/world mode bbox may be unavailable here.
+        fallback = []
+        for index, pos in enumerate(result.get("detections_world", [])):
+            item = {"pos": pos, "class_name": "rubbish", "status": "detected"}
+            fallback.append(self._debug_detection_from_candidate(item, index, frame_shape, "detected"))
+        return fallback
+
+    def _draw_debug_overlays(self, debug_frame, detections):
+        frame_h, frame_w = debug_frame.shape[:2]
+        for det in detections:
+            bbox = det.get("bbox")
+            if bbox:
+                x1, y1, x2, y2 = bbox["x1"], bbox["y1"], bbox["x2"], bbox["y2"]
+                cv2.rectangle(debug_frame, (x1, y1), (x2, y2), (0, 165, 255), 2)
+                cx = int(round(0.5 * (x1 + x2)))
+                cy = int(round(0.5 * (y1 + y2)))
+            else:
+                u = det.get("u")
+                v = det.get("v")
+                if u is None or v is None:
+                    continue
+                cx = int(round(max(0.0, min(1.0, float(u))) * frame_w))
+                cy = int(round((1.0 - max(0.0, min(1.0, float(v)))) * frame_h))
+                x1, y1 = max(0, cx - 4), max(0, cy - 4)
+
+            cv2.circle(debug_frame, (cx, cy), 4, (0, 255, 255), -1)
+            conf = det.get("confidence")
+            conf_text = "" if conf is None else f" {float(conf):.2f}"
+            label = f"#{det.get('id')} {det.get('class_name', 'rubbish')}{conf_text}"
+            cv2.putText(
+                debug_frame,
+                label,
+                (int(x1), max(18, int(y1) - 6)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                (0, 255, 255),
+                2,
+                cv2.LINE_AA,
+            )
+
+    def _publish_debug_outputs(self, image_msg, frame, result, stamp):
+        try:
+            timestamp = self._stamp_to_float(stamp)
+            frame_id = image_msg.header.frame_id or "camera"
+            frame_h, frame_w = frame.shape[:2]
+            detections = self._build_debug_detections(result, frame.shape)
+
+            debug_frame = result.get("annotated")
+            debug_frame = debug_frame.copy() if debug_frame is not None else frame.copy()
+            self._draw_debug_overlays(debug_frame, detections)
+
+            payload = {
+                "source_id": "detector_node",
+                "frame_id": frame_id,
+                "timestamp": timestamp,
+                "image_width": int(frame_w),
+                "image_height": int(frame_h),
+                "detections": detections,
+            }
+            debug_json_msg = String()
+            debug_json_msg.data = json.dumps(payload, separators=(",", ":"))
+            self.detections_debug_pub.publish(debug_json_msg)
+
+            ok, encoded = cv2.imencode(
+                ".jpg",
+                debug_frame,
+                [int(cv2.IMWRITE_JPEG_QUALITY), 80],
+            )
+            if not ok:
+                self.get_logger().warn("Failed to encode detector debug image")
+                return
+
+            debug_image_msg = CompressedImage()
+            debug_image_msg.header = image_msg.header
+            debug_image_msg.format = "jpeg"
+            debug_image_msg.data = encoded.tobytes()
+            self.debug_image_pub.publish(debug_image_msg)
+        except Exception as exc:
+            self.get_logger().warn(f"Failed to publish camera debug output: {exc}")
+
+
     def image_callback(self, msg):
         # Decode the JPEG CompressedImage directly with OpenCV. This avoids
         # cv_bridge, whose native extension is built against a different NumPy
@@ -143,7 +472,7 @@ class DetectorNode(Node):
             self.get_logger().warn('Failed to decode frame')
             return
 
-        result = self.pipeline.process(frame, draw=self.show_ui)
+        result = self.pipeline.process(frame, draw=True)
         stamp = msg.header.stamp
 
         self.detections_pub.publish(
@@ -159,6 +488,8 @@ class DetectorNode(Node):
                     f"Confirmed rubbish #{t['id']} at {self.pipeline.coord_label} "
                     f"({pos[0]:.3f}, {pos[1]:.3f})"
                 )
+
+        self._publish_debug_outputs(msg, frame, result, stamp)
 
         if self.show_ui:
             self._show_ui(result)
