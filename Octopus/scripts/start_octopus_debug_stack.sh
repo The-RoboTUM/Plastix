@@ -39,7 +39,9 @@ ros2 run octopus_camera_transform flight_camera_transform_node --ros-args \
   -p require_local_xy_valid:=false \
   -p require_local_z_valid:=false \
   -p use_dist_bottom_if_valid:=false \
-  -p ground_z_ned:=3.5 \
+  -p use_manual_height_above_ground:=true \
+  -p manual_height_above_ground_m:=2.5 \
+  -p ground_z_ned:=0.0 \
   -p pose_stale_sec:=10.0 \
   -p output_topic:=/octopus/detections_world_pose \
   > "$LOG_DIR/flight_camera_transform.log" 2>&1 &

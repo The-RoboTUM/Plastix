@@ -110,6 +110,11 @@ class FlightCameraTransformNode(Node):
         self.declare_parameter("ground_z_ned", 0.0)
         self.declare_parameter("use_dist_bottom_if_valid", True)
 
+        # Bench-test mode: define ground plane relative to the current camera.
+        # PX4 local z is NED, so positive z points down.
+        self.declare_parameter("use_manual_height_above_ground", False)
+        self.declare_parameter("manual_height_above_ground_m", 2.5)
+
         # Safety: for real map placement, local x/y validity should be true.
         # Set false only for bench testing.
         self.declare_parameter("require_local_xy_valid", True)
@@ -367,8 +372,20 @@ class FlightCameraTransformNode(Node):
 
         local = self.last_local_position
         use_dist_bottom = bool(self.get_parameter("use_dist_bottom_if_valid").value)
+        use_manual_height = bool(self.get_parameter("use_manual_height_above_ground").value)
+        manual_height = float(self.get_parameter("manual_height_above_ground_m").value)
 
-        if (
+        if use_manual_height:
+            if not math.isfinite(manual_height) or manual_height <= 0.0:
+                raise ValueError(
+                    f"manual_height_above_ground_m must be > 0, got {manual_height}"
+                )
+
+            # PX4 local frame is NED: positive z points down.
+            # A ground plane below the camera has larger z than p_cam_ned[2].
+            ground_z_ned = p_cam_ned[2] + manual_height
+
+        elif (
             use_dist_bottom
             and local is not None
             and bool(local.dist_bottom_valid)
@@ -478,6 +495,12 @@ class FlightCameraTransformNode(Node):
                 ],
                 "ground_z_ned": float(self.get_parameter("ground_z_ned").value),
                 "use_dist_bottom_if_valid": bool(self.get_parameter("use_dist_bottom_if_valid").value),
+                "use_manual_height_above_ground": bool(
+                    self.get_parameter("use_manual_height_above_ground").value
+                ),
+                "manual_height_above_ground_m": float(
+                    self.get_parameter("manual_height_above_ground_m").value
+                ),
             },
             "odometry": pose_state["odometry"],
             "local_position": pose_state["local_position"],
