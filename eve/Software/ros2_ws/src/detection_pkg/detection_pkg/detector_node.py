@@ -48,6 +48,10 @@ class DetectorNode(Node):
         self.declare_parameter('output_frame', 'map')
         self.declare_parameter('show_ui', False)
 
+        # Republish the latest confirmed set periodically so downstream mapping
+        # stays live. Set <= 0 to disable periodic republishing.
+        self.declare_parameter('confirmed_republish_period_sec', 1.0)
+
         repo_path = self.get_parameter('detect_localize_path').value
         self.output_frame = self.get_parameter('output_frame').value
         input_topic = self.get_parameter('input_topic').value
@@ -106,6 +110,17 @@ class DetectorNode(Node):
         self._next_debug_detection_id = 1
         self._temporary_debug_ids = {}
 
+        self._latest_confirmed_pose_array = None
+        self.confirmed_republish_period_sec = float(
+            self.get_parameter('confirmed_republish_period_sec').value
+        )
+        self.confirmed_republish_timer = None
+        if self.confirmed_republish_period_sec > 0.0:
+            self.confirmed_republish_timer = self.create_timer(
+                self.confirmed_republish_period_sec,
+                self._republish_confirmed_detections,
+            )
+
         self.subscription = self.create_subscription(
             CompressedImage, input_topic, self.image_callback,
             QoSPresetProfiles.SENSOR_DATA.value,
@@ -148,6 +163,15 @@ class DetectorNode(Node):
             msg.poses.append(pose)
         return msg
 
+
+    def _republish_confirmed_detections(self):
+        if self._latest_confirmed_pose_array is None:
+            return
+        if not self._latest_confirmed_pose_array.poses:
+            return
+
+        self._latest_confirmed_pose_array.header.stamp = self.get_clock().now().to_msg()
+        self.confirmed_pub.publish(self._latest_confirmed_pose_array)
 
     @staticmethod
     def _stamp_to_float(stamp):
@@ -479,9 +503,13 @@ class DetectorNode(Node):
             self._to_pose_array(result['detections_world'], stamp)
         )
 
+        confirmed_positions = [t['pos'] for t in result.get('confirmed', [])]
+        if confirmed_positions:
+            self._latest_confirmed_pose_array = self._to_pose_array(confirmed_positions, stamp)
+
         if result['new_confirmed']:
-            confirmed_positions = [t['pos'] for t in result['confirmed']]
-            self.confirmed_pub.publish(self._to_pose_array(confirmed_positions, stamp))
+            if self._latest_confirmed_pose_array is not None:
+                self.confirmed_pub.publish(self._latest_confirmed_pose_array)
             for t in result['new_confirmed']:
                 pos = t['pos']
                 self.get_logger().info(
