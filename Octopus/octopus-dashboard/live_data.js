@@ -38,6 +38,7 @@ const OCTOPUS = {
     globalMap: null,
     cameraTransformStatus: null,
     cameraDebug: null,
+    localCameraGrid: null,
   },
   selected: null,
   selectedCellKey: null,
@@ -57,6 +58,7 @@ const OCTOPUS = {
   },
   missionArea: JSON.parse(localStorage.getItem("octopusMissionArea") || "null"),
   gridMode: localStorage.getItem("octopusGridMode") || "fixed_camera_footprint",
+  gridSource: localStorage.getItem("octopusGridSource") || "global",
   cameraFootprint: JSON.parse(localStorage.getItem("octopusCameraFootprint") || '{"height_m":2.5,"resolution":0.10}'),
   osmPriors: JSON.parse(localStorage.getItem("octopusOsmPriors") || "null"),
   gridDisplay: { ...GRID_DISPLAY_DEFAULTS, ...(JSON.parse(localStorage.getItem("octopusGridDisplay") || "{}")) },
@@ -1572,6 +1574,10 @@ function drawGridScale(ctx, geom) {
 }
 
 function drawGridMap(mapData) {
+  if (getSelectedGridSource() === "local_camera") {
+    drawLocalCameraGrid(OCTOPUS.latest.localCameraGrid);
+    return;
+  }
   const canvas = $("grid-map-canvas");
   const info = $("grid-map-info");
   const selector = $("grid-layer-select");
@@ -1792,6 +1798,139 @@ function applyDashboardView(view = OCTOPUS.dashboardView, announce = false) {
   }, 80);
   renderFleet();
   renderTasks();
+}
+
+
+function getSelectedGridSource() {
+  return OCTOPUS.gridSource || localStorage.getItem("octopusGridSource") || "global";
+}
+
+function drawLocalCameraGrid(localData = OCTOPUS.latest.localCameraGrid) {
+  const canvas = $("grid-map-canvas");
+  const info = $("grid-map-info");
+  if (!canvas) return;
+
+  resizeGridCanvas();
+
+  const ctx = canvas.getContext("2d");
+  const widthPx = canvas.width;
+  const heightPx = canvas.height;
+
+  ctx.clearRect(0, 0, widthPx, heightPx);
+  ctx.fillStyle = "rgba(3, 7, 18, 0.96)";
+  ctx.fillRect(0, 0, widthPx, heightPx);
+
+  const patch = localData?.patch || null;
+  if (!patch) {
+    ctx.fillStyle = "rgba(203, 213, 225, 0.82)";
+    ctx.font = "700 15px Inter, sans-serif";
+    ctx.textAlign = "center";
+    ctx.fillText("No local camera grid data yet", widthPx / 2, heightPx / 2);
+    if (info) {
+      info.innerHTML = `<span class="mini-chip">Local Camera Grid · waiting for /api/local_camera_grid/latest</span>`;
+    }
+    return;
+  }
+
+  const footprintWidth = safeNumber(patch.footprint_width_m, 4.46);
+  const footprintHeight = safeNumber(patch.footprint_height_m, 3.34);
+  const resolution = safeNumber(patch.resolution_m, 0.10);
+  const cells = Array.isArray(patch.updated_cells) ? patch.updated_cells : [];
+
+  const pad = 34;
+  const usableW = Math.max(1, widthPx - pad * 2);
+  const usableH = Math.max(1, heightPx - pad * 2);
+  const scale = Math.min(usableW / footprintWidth, usableH / footprintHeight);
+  const gridW = footprintWidth * scale;
+  const gridH = footprintHeight * scale;
+  const x0 = (widthPx - gridW) / 2;
+  const y0 = (heightPx - gridH) / 2;
+
+  ctx.fillStyle = "rgba(15, 23, 42, 0.98)";
+  ctx.fillRect(x0, y0, gridW, gridH);
+  ctx.strokeStyle = "rgba(100, 160, 200, 0.92)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x0, y0, gridW, gridH);
+
+  const cols = Math.ceil(footprintWidth / resolution);
+  const rows = Math.ceil(footprintHeight / resolution);
+
+  ctx.lineWidth = 1;
+  ctx.strokeStyle = "rgba(148, 163, 184, 0.13)";
+
+  for (let c = 0; c <= cols; c += 1) {
+    const x = x0 + c * resolution * scale;
+    ctx.beginPath();
+    ctx.moveTo(x, y0);
+    ctx.lineTo(x, y0 + gridH);
+    ctx.stroke();
+  }
+
+  for (let r = 0; r <= rows; r += 1) {
+    const y = y0 + r * resolution * scale;
+    ctx.beginPath();
+    ctx.moveTo(x0, y);
+    ctx.lineTo(x0 + gridW, y);
+    ctx.stroke();
+  }
+
+  ctx.strokeStyle = "rgba(56, 189, 248, 0.55)";
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(x0 + gridW / 2, y0);
+  ctx.lineTo(x0 + gridW / 2, y0 + gridH);
+  ctx.moveTo(x0, y0 + gridH / 2);
+  ctx.lineTo(x0 + gridW, y0 + gridH / 2);
+  ctx.stroke();
+
+  for (const cell of cells) {
+    const col = Math.floor(safeNumber(cell.col, safeNumber(cell.x, 0) / resolution));
+    const row = Math.floor(safeNumber(cell.row, safeNumber(cell.y, 0) / resolution));
+
+    const x = x0 + col * resolution * scale;
+    const y = y0 + gridH - (row + 1) * resolution * scale;
+    const w = Math.max(3, resolution * scale);
+    const h = Math.max(3, resolution * scale);
+
+    ctx.fillStyle = "rgba(251, 146, 60, 0.86)";
+    ctx.fillRect(x, y, w, h);
+
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.80)";
+    ctx.lineWidth = 1;
+    ctx.strokeRect(x, y, w, h);
+
+    ctx.fillStyle = "rgba(255, 255, 255, 0.95)";
+    ctx.beginPath();
+    ctx.arc(x + w / 2, y + h / 2, 3.5, 0, Math.PI * 2);
+    ctx.fill();
+  }
+
+  ctx.fillStyle = "rgba(203, 213, 225, 0.95)";
+  ctx.font = "700 12px Inter, sans-serif";
+  ctx.textAlign = "left";
+  ctx.fillText("camera footprint", x0, Math.max(14, y0 - 10));
+  ctx.textAlign = "right";
+  ctx.fillText(`${footprintWidth.toFixed(2)} m × ${footprintHeight.toFixed(2)} m`, x0 + gridW, Math.max(14, y0 - 10));
+
+  const receivedAt = localData?.received_at || patch.timestamp;
+  const age = ageSeconds(receivedAt);
+  const fresh = freshnessFromAge(age, 2, 10);
+
+  if (info) {
+    const first = cells[0] || null;
+    const firstText = first
+      ? `first: u=${safeNumber(first.u).toFixed(3)}, v=${safeNumber(first.v).toFixed(3)} · x=${safeNumber(first.x).toFixed(2)} m, y=${safeNumber(first.y).toFixed(2)} m`
+      : "no updated cells";
+
+    info.innerHTML = `
+      <span class="mini-chip">Local Camera Grid · ${fresh.label}</span>
+      <span class="mini-chip">${footprintWidth.toFixed(2)} m × ${footprintHeight.toFixed(2)} m</span>
+      <span class="mini-chip">${resolution.toFixed(2)} m/cell</span>
+      <span class="mini-chip">${cells.length} detection cell(s)</span>
+      <span class="mini-chip">${firstText}</span>
+      <span class="mini-chip">debug only · robots use global map</span>
+    `;
+  }
 }
 
 function renderMissionPhase() {
@@ -2292,7 +2431,7 @@ function renderAll() {
   renderTimeline();
   renderMissionMap();
 
-  if (OCTOPUS.latest.globalMap || OCTOPUS.osmPriors) {
+  if (getSelectedGridSource() === "local_camera" || OCTOPUS.latest.globalMap || OCTOPUS.osmPriors) {
     drawGridMap(OCTOPUS.latest.globalMap || {});
   }
   updateOsmButton(OCTOPUS.osmPriors ? `OSM priors: ${OCTOPUS.osmPriors.features || 0}` : "Load OSM priors");
@@ -2337,7 +2476,19 @@ async function loadGlobalMap() {
   OCTOPUS.latest.globalMap = data.status === "ok" ? data.map : null;
 }
 
+
+async function loadLocalCameraGrid() {
+  try {
+    const data = await apiGet("/api/local_camera_grid/latest");
+    OCTOPUS.latest.localCameraGrid = data.status === "ok" ? data : null;
+  } catch (error) {
+    console.warn("Local camera grid refresh failed", error);
+    OCTOPUS.latest.localCameraGrid = null;
+  }
+}
+
 async function refreshAll() {
+  await loadLocalCameraGrid();
   try {
     await Promise.all([
       loadTasks(),
@@ -3429,4 +3580,23 @@ drawFleetAndTasksOnGrid = function patchedDrawFleetAndTasksOnGrid(ctx, mapData, 
     OCTOPUS_ORIGINAL_DRAW_FLEET_AND_TASKS_ON_GRID(ctx, mapData, geom);
   }
 };
+
+
+
+function setupGridSourceControls() {
+  const select = $("grid-source-select");
+  if (!select) return;
+
+  select.value = getSelectedGridSource();
+  select.addEventListener("change", () => {
+    OCTOPUS.gridSource = select.value;
+    localStorage.setItem("octopusGridSource", OCTOPUS.gridSource);
+    if (typeof drawGridMap === "function") {
+      drawGridMap(OCTOPUS.latest.globalMap || {});
+    }
+    if (typeof renderSystemHealth === "function") renderSystemHealth();
+  });
+}
+
+setTimeout(setupGridSourceControls, 0);
 
