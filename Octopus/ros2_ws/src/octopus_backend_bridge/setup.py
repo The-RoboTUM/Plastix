@@ -23,6 +23,7 @@ setup(
             'map_patch_backend_bridge_node = octopus_backend_bridge.map_patch_backend_bridge_node:main',
             'camera_transform_status_backend_bridge_node = octopus_backend_bridge.camera_transform_status_backend_bridge_node:main',
             'camera_debug_backend_bridge_node = octopus_backend_bridge.camera_debug_backend_bridge_node:main',
+            'local_camera_grid_backend_bridge_node = octopus_backend_bridge.local_camera_grid_backend_bridge_node:main',
         ],
     },
 )

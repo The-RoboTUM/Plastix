@@ -579,4 +579,27 @@ def get_camera_transform_status():
     }
 
 
+# --- Local Camera Grid API ---
+latest_local_camera_grid_patch = None
+
+@app.post("/api/local_camera_grid")
+async def receive_local_camera_grid_patch(patch: dict):
+    global latest_local_camera_grid_patch
+    latest_local_camera_grid_patch = {
+        "status": "ok",
+        "patch": patch,
+        "received_at": datetime.now().isoformat(),
+    }
+    return {"status": "ok"}
+
+@app.get("/api/local_camera_grid/latest")
+async def get_latest_local_camera_grid_patch():
+    if latest_local_camera_grid_patch is None:
+        return {
+            "status": "empty",
+            "patch": None,
+            "received_at": None,
+        }
+    return latest_local_camera_grid_patch
+
 app.mount("/", StaticFiles(directory=".", html=True), name="static")

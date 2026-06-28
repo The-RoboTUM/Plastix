@@ -14,6 +14,8 @@ pkill -f "world_posearray_to_json_bridge_node" || true
 pkill -f "grid_map_builder_node" || true
 pkill -f "map_patch_backend_bridge_node" || true
 pkill -f "camera_debug_backend_bridge_node" || true
+pkill -f "local_camera_grid_backend_bridge_node" || true
+pkill -f "local_camera_grid_node" || true
 pkill -f "uvicorn api:app" || true
 
 sleep 1
@@ -54,6 +56,13 @@ ros2 run octopus_camera_transform world_posearray_to_json_bridge_node --ros-args
   > "$LOG_DIR/world_posearray_to_json_bridge.log" 2>&1 &
 echo $! > "$LOG_DIR/world_posearray_to_json_bridge.pid"
 
+echo "Starting local camera grid node..."
+ros2 run octopus_camera_transform local_camera_grid_node --ros-args \
+  -p footprint_width_m:=4.46 \
+  -p footprint_height_m:=3.34 \
+  -p resolution_m:=0.10 \
+  > "$LOG_DIR/local_camera_grid.log" 2>&1 &
+
 ros2 run octopus_mapping grid_map_builder_node --ros-args \
   -p width_m:=4.46 \
   -p height_m:=3.34 \
@@ -66,6 +75,10 @@ echo $! > "$LOG_DIR/grid_map_builder.pid"
 ros2 run octopus_backend_bridge map_patch_backend_bridge_node \
   > "$LOG_DIR/map_patch_backend_bridge.log" 2>&1 &
 echo $! > "$LOG_DIR/map_patch_backend_bridge.pid"
+
+echo "Starting local camera grid backend bridge node..."
+ros2 run octopus_backend_bridge local_camera_grid_backend_bridge_node \
+  > "$LOG_DIR/local_camera_grid_backend_bridge.log" 2>&1 &
 
 ros2 run octopus_backend_bridge camera_debug_backend_bridge_node \
   > "$LOG_DIR/camera_debug_backend_bridge.log" 2>&1 &

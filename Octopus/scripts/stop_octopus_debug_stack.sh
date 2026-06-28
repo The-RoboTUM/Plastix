@@ -8,3 +8,7 @@ pkill -f "map_patch_backend_bridge_node" || true
 pkill -f "camera_debug_backend_bridge_node" || true
 pkill -f "uvicorn api:app" || true
 echo "Stopped."
+
+pkill -f "local_camera_grid_node" || true
+
+pkill -f "local_camera_grid_backend_bridge_node" || true
