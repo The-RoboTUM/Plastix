@@ -6,6 +6,17 @@ ROS_WS="$BASE/Octopus/ros2_ws"
 DASH="$BASE/Octopus/octopus-dashboard"
 LOG_DIR="/tmp/octopus_logs"
 
+OCTOPUS_MAPPING_MODE="${OCTOPUS_MAPPING_MODE:-flight_global_mission}"
+if [ "$OCTOPUS_MAPPING_MODE" = "indoor_static_mission" ]; then
+  OCTOPUS_JSON_RELATIVE_MODE=false
+else
+  OCTOPUS_JSON_RELATIVE_MODE=true
+fi
+
+echo "Octopus mapping mode: $OCTOPUS_MAPPING_MODE"
+echo "Octopus JSON relative mode: $OCTOPUS_JSON_RELATIVE_MODE"
+
+
 mkdir -p "$LOG_DIR"
 
 echo "Stopping old Octopus debug stack processes..."
@@ -43,6 +54,9 @@ ros2 run octopus_camera_transform flight_camera_transform_node --ros-args \
   -p use_dist_bottom_if_valid:=false \
   -p use_manual_height_above_ground:=true \
   -p manual_height_above_ground_m:=2.5 \
+  -p transform_mode:=${OCTOPUS_MAPPING_MODE} \
+  -p indoor_static_origin_x:=2.23 \
+  -p indoor_static_origin_y:=1.67 \
   -p ground_z_ned:=0.0 \
   -p pose_stale_sec:=10.0 \
   -p output_topic:=/octopus/detections_world_pose \
@@ -50,7 +64,7 @@ ros2 run octopus_camera_transform flight_camera_transform_node --ros-args \
 echo $! > "$LOG_DIR/flight_camera_transform.pid"
 
 ros2 run octopus_camera_transform world_posearray_to_json_bridge_node --ros-args \
-  -p relative_mode:=true \
+  -p relative_mode:=${OCTOPUS_JSON_RELATIVE_MODE} \
   -p relative_origin_x:=2.5 \
   -p relative_origin_y:=1.5 \
   > "$LOG_DIR/world_posearray_to_json_bridge.log" 2>&1 &

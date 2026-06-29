@@ -3611,6 +3611,7 @@ const OCTOPUS_MAPPING_MODES = {
     attitude: "Not required",
     position: "Ignored",
     note: "Best for checking detector output and u/v → grid cell matching.",
+    command: "OCTOPUS_MAPPING_MODE=flight_global_mission ./Octopus/scripts/start_octopus_debug_stack.sh",
   },
   indoor_static_mission: {
     label: "Indoor Static Mission Map",
@@ -3619,6 +3620,7 @@ const OCTOPUS_MAPPING_MODES = {
     attitude: "Used",
     position: "Ignored / frozen",
     note: "Best for a hanging drone looking at a fixed ground area.",
+    command: "OCTOPUS_MAPPING_MODE=indoor_static_mission ./Octopus/scripts/start_octopus_debug_stack.sh",
   },
   flight_global_mission: {
     label: "Flight Global Mission Map",
@@ -3627,6 +3629,7 @@ const OCTOPUS_MAPPING_MODES = {
     attitude: "Used",
     position: "Used",
     note: "Best for outdoor/real flight and robot task assignment.",
+    command: "OCTOPUS_MAPPING_MODE=flight_global_mission ./Octopus/scripts/start_octopus_debug_stack.sh",
   },
 };
 
@@ -3652,7 +3655,12 @@ function updateMappingSettingsPanel() {
   if (modeSelect) modeSelect.value = modeKey;
 
   const description = $("mapping-mode-description");
-  if (description) description.innerHTML = `${mode.description}<br><span class="muted">${mode.note}</span>`;
+  if (description) {
+    const commandHint = mode.command
+      ? `<br><span class="muted">Startup command: <code>${mode.command}</code></span>`
+      : "";
+    description.innerHTML = `${mode.description}<br><span class="muted">${mode.note}</span>${commandHint}`;
+  }
 
   const gridSourceLabel = $("mapping-grid-source-value");
   if (gridSourceLabel) {

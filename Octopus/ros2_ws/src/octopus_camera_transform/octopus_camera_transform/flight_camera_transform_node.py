@@ -114,6 +114,9 @@ class FlightCameraTransformNode(Node):
         # PX4 local z is NED, so positive z points down.
         self.declare_parameter("use_manual_height_above_ground", False)
         self.declare_parameter("manual_height_above_ground_m", 2.5)
+        self.declare_parameter("transform_mode", "flight_global_mission")
+        self.declare_parameter("indoor_static_origin_x", 2.23)
+        self.declare_parameter("indoor_static_origin_y", 1.67)
 
         # Safety: for real map placement, local x/y validity should be true.
         # Set false only for bench testing.
@@ -366,7 +369,17 @@ class FlightCameraTransformNode(Node):
         )
 
         # Camera optical center in NED frame.
+
         p_cam_ned = p_body_ned + r_ned_body @ p_cam_body
+        # INDOOR_STATIC_MISSION_MODE_PATCH
+        transform_mode = str(self.get_parameter("transform_mode").value)
+        if transform_mode == "indoor_static_mission":
+            # Indoor ceiling/static test:
+            # Use PX4 attitude and manual height, but freeze x/y origin so PX4 local drift
+            # does not move the map while the drone is physically hanging still.
+            p_cam_ned = np.array(p_cam_ned, dtype=float)
+            p_cam_ned[0] = float(self.get_parameter("indoor_static_origin_x").value)
+            p_cam_ned[1] = float(self.get_parameter("indoor_static_origin_y").value)
 
         ground_z_ned = float(self.get_parameter("ground_z_ned").value)
 
@@ -455,6 +468,9 @@ class FlightCameraTransformNode(Node):
 
         payload = {
             "mode": "flight_pose_ground_plane",
+            "transform_mode": str(self.get_parameter("transform_mode").value),
+            "indoor_static_origin_x": float(self.get_parameter("indoor_static_origin_x").value),
+            "indoor_static_origin_y": float(self.get_parameter("indoor_static_origin_y").value),
             "state": pose_state["state"],
             "transform_ready": pose_state["transform_ready"],
             "pose_ready": pose_state["pose_ready"],
