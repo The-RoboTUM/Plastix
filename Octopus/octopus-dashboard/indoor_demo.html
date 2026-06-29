@@ -397,7 +397,8 @@
     }
 
     function latestTimestampFromPatch(data) {
-      return data?.patch?.received_at ?? data?.received_at ?? data?.patch?.timestamp ?? null;
+      // Prefer numeric ROS/backend timestamps. ISO received_at strings are only display metadata.
+      return data?.patch?.timestamp ?? data?.timestamp ?? null;
     }
 
     async function refresh() {
