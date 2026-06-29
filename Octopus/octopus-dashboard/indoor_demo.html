@@ -1,0 +1,513 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Octopus Indoor Demo</title>
+  <style>
+    :root {
+      --bg: #07111f;
+      --panel: #0d1b2e;
+      --panel-2: #10243d;
+      --text: #f4f7fb;
+      --muted: #9fb0c8;
+      --good: #32d583;
+      --warn: #fdb022;
+      --bad: #f97066;
+      --border: rgba(255,255,255,0.12);
+      --blue: #53b1fd;
+      --orange: #f79009;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at top left, rgba(83,177,253,0.18), transparent 32rem),
+        radial-gradient(circle at bottom right, rgba(50,213,131,0.12), transparent 32rem),
+        var(--bg);
+      color: var(--text);
+    }
+
+    .page {
+      min-height: 100vh;
+      padding: 28px;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+      gap: 22px;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 20px;
+    }
+
+    .title h1 {
+      margin: 0;
+      font-size: clamp(30px, 4vw, 52px);
+      letter-spacing: -0.04em;
+    }
+
+    .title p {
+      margin: 8px 0 0;
+      color: var(--muted);
+      font-size: 17px;
+    }
+
+    .mode-badge {
+      padding: 12px 16px;
+      border: 1px solid rgba(50,213,131,0.35);
+      border-radius: 999px;
+      background: rgba(50,213,131,0.10);
+      color: var(--good);
+      font-weight: 800;
+      white-space: nowrap;
+      box-shadow: 0 0 28px rgba(50,213,131,0.12);
+    }
+
+    .main-grid {
+      display: grid;
+      grid-template-columns: 1.25fr 0.75fr;
+      gap: 22px;
+      align-items: stretch;
+    }
+
+    .panel {
+      background: linear-gradient(180deg, rgba(255,255,255,0.055), rgba(255,255,255,0.025)), var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 24px;
+      padding: 22px;
+      box-shadow: 0 24px 80px rgba(0,0,0,0.28);
+    }
+
+    .panel h2 {
+      margin: 0 0 16px;
+      font-size: 20px;
+      letter-spacing: -0.02em;
+    }
+
+    .status-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(220px, 1fr));
+      gap: 14px;
+    }
+
+    .status-card {
+      min-height: 132px;
+      padding: 18px;
+      border-radius: 20px;
+      background: var(--panel-2);
+      border: 1px solid var(--border);
+      position: relative;
+      overflow: hidden;
+    }
+
+    .status-card::after {
+      content: "";
+      position: absolute;
+      inset: auto -40px -60px auto;
+      width: 140px;
+      height: 140px;
+      border-radius: 50%;
+      opacity: 0.14;
+      background: currentColor;
+    }
+
+    .status-card.good { color: var(--good); }
+    .status-card.warn { color: var(--warn); }
+    .status-card.bad { color: var(--bad); }
+
+    .status-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: center;
+    }
+
+    .status-name {
+      color: var(--text);
+      font-weight: 800;
+      font-size: 17px;
+    }
+
+    .status-pill {
+      padding: 6px 10px;
+      border-radius: 999px;
+      background: currentColor;
+      color: var(--bg);
+      font-weight: 900;
+      font-size: 12px;
+      text-transform: uppercase;
+    }
+
+    .status-value {
+      margin-top: 18px;
+      font-size: 28px;
+      font-weight: 900;
+      letter-spacing: -0.04em;
+    }
+
+    .status-detail {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.45;
+    }
+
+    .demo-flow {
+      display: grid;
+      gap: 12px;
+    }
+
+    .flow-step {
+      padding: 15px 16px;
+      border-radius: 16px;
+      border: 1px solid var(--border);
+      background: rgba(255,255,255,0.04);
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+
+    .flow-number {
+      width: 30px;
+      height: 30px;
+      border-radius: 50%;
+      background: rgba(83,177,253,0.18);
+      color: var(--blue);
+      display: grid;
+      place-items: center;
+      font-weight: 900;
+      flex: 0 0 auto;
+    }
+
+    .flow-text strong {
+      display: block;
+      color: var(--text);
+    }
+
+    .flow-text span {
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .data-box {
+      margin-top: 16px;
+      border-radius: 18px;
+      border: 1px solid var(--border);
+      background: rgba(0,0,0,0.22);
+      padding: 16px;
+      min-height: 150px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      font-size: 13px;
+      color: #d6e4ff;
+      white-space: pre-wrap;
+      overflow: auto;
+      max-height: 280px;
+    }
+
+    .footer {
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    a {
+      color: var(--blue);
+      text-decoration: none;
+      font-weight: 700;
+    }
+
+    @media (max-width: 980px) {
+      .main-grid { grid-template-columns: 1fr; }
+      .status-grid { grid-template-columns: 1fr; }
+      header { flex-direction: column; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header>
+      <div class="title">
+        <h1>Octopus Indoor Demonstration</h1>
+        <p>Drone camera detection → Pixhawk orientation projection → Global Mission Grid for robot use</p>
+      </div>
+      <div class="mode-badge">Mapping Mode: Indoor Static Mission Map</div>
+    </header>
+
+    <section class="main-grid">
+      <div class="panel">
+        <h2>Live Demo Health</h2>
+
+        <div class="status-grid">
+          <div id="camera-card" class="status-card warn">
+            <div class="status-top">
+              <div class="status-name">Camera</div>
+              <div class="status-pill">checking</div>
+            </div>
+            <div class="status-value">—</div>
+            <div class="status-detail">Waiting for latest camera debug image.</div>
+          </div>
+
+          <div id="detector-card" class="status-card warn">
+            <div class="status-top">
+              <div class="status-name">Detector confirmed</div>
+              <div class="status-pill">checking</div>
+            </div>
+            <div class="status-value">—</div>
+            <div class="status-detail">Waiting for confirmed detections.</div>
+          </div>
+
+          <div id="px4-card" class="status-card warn">
+            <div class="status-top">
+              <div class="status-name">PX4 odometry</div>
+              <div class="status-pill">inferred</div>
+            </div>
+            <div class="status-value">—</div>
+            <div class="status-detail">Inferred from live Global Mission Grid updates.</div>
+          </div>
+
+          <div id="transform-card" class="status-card warn">
+            <div class="status-top">
+              <div class="status-name">Transform</div>
+              <div class="status-pill">checking</div>
+            </div>
+            <div class="status-value">—</div>
+            <div class="status-detail">Waiting for world projection output.</div>
+          </div>
+
+          <div id="mode-card" class="status-card good">
+            <div class="status-top">
+              <div class="status-name">Mapping mode</div>
+              <div class="status-pill">selected</div>
+            </div>
+            <div class="status-value">indoor_static_mission</div>
+            <div class="status-detail">Uses u/v + manual height + Pixhawk orientation + frozen indoor origin.</div>
+          </div>
+
+          <div id="local-grid-card" class="status-card warn">
+            <div class="status-top">
+              <div class="status-name">Local camera grid</div>
+              <div class="status-pill">checking</div>
+            </div>
+            <div class="status-value">—</div>
+            <div class="status-detail">Camera/debug grid only, not robot output.</div>
+          </div>
+
+          <div id="global-map-card" class="status-card warn">
+            <div class="status-top">
+              <div class="status-name">Global mission map</div>
+              <div class="status-pill">checking</div>
+            </div>
+            <div class="status-value">—</div>
+            <div class="status-detail">This is the robot-relevant grid/map output.</div>
+          </div>
+        </div>
+      </div>
+
+      <aside class="panel">
+        <h2>Demo Flow</h2>
+
+        <div class="demo-flow">
+          <div class="flow-step">
+            <div class="flow-number">1</div>
+            <div class="flow-text">
+              <strong>Camera live</strong>
+              <span>Raspberry Pi publishes compressed camera frames.</span>
+            </div>
+          </div>
+
+          <div class="flow-step">
+            <div class="flow-number">2</div>
+            <div class="flow-text">
+              <strong>Detector confirmed</strong>
+              <span>Detector publishes confirmed trash/object positions.</span>
+            </div>
+          </div>
+
+          <div class="flow-step">
+            <div class="flow-number">3</div>
+            <div class="flow-text">
+              <strong>Projection</strong>
+              <span>Octopus projects u/v using height and Pixhawk orientation.</span>
+            </div>
+          </div>
+
+          <div class="flow-step">
+            <div class="flow-number">4</div>
+            <div class="flow-text">
+              <strong>Global Mission Grid</strong>
+              <span>Robot-relevant map patch is published in the map frame.</span>
+            </div>
+          </div>
+        </div>
+
+        <div id="latest-data" class="data-box">Waiting for data...</div>
+      </aside>
+    </section>
+
+    <div class="footer">
+      <div>Robot output: <strong>/octopus/global_map</strong>, <strong>/octopus/trash_grid</strong>, <strong>/octopus/detections_world</strong></div>
+      <div><a href="/dashboard.html">Open full dashboard</a></div>
+    </div>
+  </main>
+
+  <script>
+    const FRESH_SEC = 6.0;
+
+    function nowSeconds() {
+      return Date.now() / 1000;
+    }
+
+    function isFresh(ts, maxAge = FRESH_SEC) {
+      if (typeof ts !== "number") return false;
+      return nowSeconds() - ts < maxAge;
+    }
+
+    function setCard(id, state, value, detail) {
+      const card = document.getElementById(id);
+      if (!card) return;
+
+      card.classList.remove("good", "warn", "bad");
+      card.classList.add(state);
+
+      const pill = card.querySelector(".status-pill");
+      const valueEl = card.querySelector(".status-value");
+      const detailEl = card.querySelector(".status-detail");
+
+      if (pill) pill.textContent = state === "good" ? "live" : state === "bad" ? "offline" : "checking";
+      if (valueEl) valueEl.textContent = value;
+      if (detailEl) detailEl.textContent = detail;
+    }
+
+    async function getJson(url) {
+      const response = await fetch(url, { cache: "no-store" });
+      if (!response.ok) throw new Error(`${url}: HTTP ${response.status}`);
+      return response.json();
+    }
+
+    function latestTimestampFromCamera(data) {
+      return data?.received_at ?? data?.image?.received_at ?? data?.image?.stamp ?? null;
+    }
+
+    function latestTimestampFromPatch(data) {
+      return data?.patch?.received_at ?? data?.received_at ?? data?.patch?.timestamp ?? null;
+    }
+
+    async function refresh() {
+      let camera = null;
+      let localGrid = null;
+      let globalMap = null;
+
+      try { camera = await getJson("/api/camera_debug/latest"); } catch (e) {}
+      try { localGrid = await getJson("/api/local_camera_grid/latest"); } catch (e) {}
+      try { globalMap = await getJson("/api/map_patch/latest"); } catch (e) {}
+
+      const cameraTs = latestTimestampFromCamera(camera);
+      const localTs = latestTimestampFromPatch(localGrid);
+      const globalTs = latestTimestampFromPatch(globalMap);
+
+      const cameraLive = camera?.status === "ok" && isFresh(cameraTs);
+      const localLive = localGrid?.status === "ok" && isFresh(localTs);
+      const globalLive = globalMap?.status === "ok" && isFresh(globalTs);
+
+      const localCells = localGrid?.patch?.updated_cells?.length ?? 0;
+      const globalCells = globalMap?.patch?.updated_cells?.length ?? 0;
+
+      setCard(
+        "camera-card",
+        cameraLive ? "good" : "bad",
+        cameraLive ? "live" : "offline",
+        cameraLive
+          ? `Latest image received ${Math.max(0, nowSeconds() - cameraTs).toFixed(1)} s ago.`
+          : "No fresh camera debug image received."
+      );
+
+      setCard(
+        "detector-card",
+        localLive ? "good" : "bad",
+        localLive ? "live" : "offline",
+        localLive
+          ? `Confirmed detections are updating. Local grid cells: ${localCells}.`
+          : "No fresh confirmed detection reached the local camera grid."
+      );
+
+      setCard(
+        "px4-card",
+        globalLive ? "good" : "warn",
+        globalLive ? "fresh" : "unknown",
+        globalLive
+          ? "Global map is updating, so PX4 odometry/attitude is fresh enough for projection."
+          : "PX4 freshness cannot be proven from backend map output right now."
+      );
+
+      setCard(
+        "transform-card",
+        globalLive ? "good" : "bad",
+        globalLive ? "ready" : "not ready",
+        globalLive
+          ? `World projection is producing map patches. Global cells: ${globalCells}.`
+          : "No fresh Global Mission Grid patch received."
+      );
+
+      setCard(
+        "local-grid-card",
+        localLive ? "good" : "bad",
+        localLive ? "live" : "offline",
+        localLive
+          ? `Local camera grid updated ${Math.max(0, nowSeconds() - localTs).toFixed(1)} s ago.`
+          : "No fresh local camera grid patch."
+      );
+
+      setCard(
+        "global-map-card",
+        globalLive ? "good" : "bad",
+        globalLive ? "live" : "offline",
+        globalLive
+          ? `Robot-relevant global map updated ${Math.max(0, nowSeconds() - globalTs).toFixed(1)} s ago.`
+          : "No fresh global mission map patch."
+      );
+
+      const latestData = document.getElementById("latest-data");
+      if (latestData) {
+        const globalCell = globalMap?.patch?.updated_cells?.[0];
+        const localCell = localGrid?.patch?.updated_cells?.[0];
+
+        latestData.textContent =
+`Latest outputs
+
+Camera:
+  status: ${camera?.status ?? "unknown"}
+  fresh: ${cameraLive}
+
+Local Camera Grid:
+  status: ${localGrid?.status ?? "unknown"}
+  fresh: ${localLive}
+  cells: ${localCells}
+  first cell: ${localCell ? `x=${localCell.x}, y=${localCell.y}, u=${localCell.u}, v=${localCell.v}` : "none"}
+
+Global Mission Map:
+  status: ${globalMap?.status ?? "unknown"}
+  fresh: ${globalLive}
+  cells: ${globalCells}
+  first cell: ${globalCell ? `x=${globalCell.x}, y=${globalCell.y}, row=${globalCell.row}, col=${globalCell.col}` : "none"}
+
+Selected mode:
+  indoor_static_mission
+
+Robot uses:
+  Global Mission Grid only`;
+      }
+    }
+
+    refresh();
+    setInterval(refresh, 1000);
+  </script>
+</body>
+</html>
