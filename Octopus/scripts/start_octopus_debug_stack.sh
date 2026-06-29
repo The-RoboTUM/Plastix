@@ -57,6 +57,8 @@ ros2 run octopus_camera_transform flight_camera_transform_node --ros-args \
   -p transform_mode:=${OCTOPUS_MAPPING_MODE} \
   -p indoor_static_origin_x:=2.23 \
   -p indoor_static_origin_y:=1.67 \
+  -p indoor_static_align_yaw_on_start:=true \
+  -p indoor_static_map_yaw_offset_rad:=1.57079632679 \
   -p ground_z_ned:=0.0 \
   -p pose_stale_sec:=10.0 \
   -p output_topic:=/octopus/detections_world_pose \

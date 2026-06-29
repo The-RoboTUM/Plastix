@@ -61,6 +61,7 @@ def rpy_to_rotmat(roll: float, pitch: float, yaw: float) -> np.ndarray:
 class FlightCameraTransformNode(Node):
     def __init__(self):
         super().__init__("flight_camera_transform_node")
+        self.indoor_static_yaw_zero_rad = None
 
         self.declare_parameter("detector_topic", "/detector_node/confirmed")
         self.declare_parameter("output_topic", "/octopus/detections_world")
@@ -117,6 +118,8 @@ class FlightCameraTransformNode(Node):
         self.declare_parameter("transform_mode", "flight_global_mission")
         self.declare_parameter("indoor_static_origin_x", 2.23)
         self.declare_parameter("indoor_static_origin_y", 1.67)
+        self.declare_parameter("indoor_static_align_yaw_on_start", True)
+        self.declare_parameter("indoor_static_map_yaw_offset_rad", 1.57079632679)
 
         # Safety: for real map placement, local x/y validity should be true.
         # Set false only for bench testing.
@@ -417,6 +420,8 @@ class FlightCameraTransformNode(Node):
             )
 
         hit_ned = p_cam_ned + t * ray_ned
+        # INDOOR_STATIC_YAW_ALIGNMENT_HIT_NED_PATCH
+        hit_ned = self._octopus_apply_indoor_static_yaw_alignment(hit_ned, self.last_odometry.q)
         return hit_ned
 
     def detection_callback(self, msg: PoseArray):
@@ -471,6 +476,10 @@ class FlightCameraTransformNode(Node):
             "transform_mode": str(self.get_parameter("transform_mode").value),
             "indoor_static_origin_x": float(self.get_parameter("indoor_static_origin_x").value),
             "indoor_static_origin_y": float(self.get_parameter("indoor_static_origin_y").value),
+            "indoor_static_align_yaw_on_start": bool(self.get_parameter("indoor_static_align_yaw_on_start").value),
+            "indoor_static_map_yaw_offset_rad": float(self.get_parameter("indoor_static_map_yaw_offset_rad").value),
+            "indoor_static_yaw_zero_rad": self.indoor_static_yaw_zero_rad,
+
             "state": pose_state["state"],
             "transform_ready": pose_state["transform_ready"],
             "pose_ready": pose_state["pose_ready"],
@@ -527,6 +536,70 @@ class FlightCameraTransformNode(Node):
         msg = String()
         msg.data = json.dumps(payload)
         self.status_pub.publish(msg)
+
+
+
+    def _octopus_yaw_from_quat_wxyz(self, q):
+        """Return yaw from PX4 quaternion [w, x, y, z]."""
+        try:
+            w, x, y, z = [float(v) for v in q]
+            return math.atan2(
+                2.0 * (w * z + x * y),
+                1.0 - 2.0 * (y * y + z * z),
+            )
+        except Exception:
+            return None
+
+    def _octopus_rotate_xy(self, dx, dy, angle_rad):
+        c = math.cos(angle_rad)
+        s = math.sin(angle_rad)
+        return (
+            c * dx - s * dy,
+            s * dx + c * dy,
+        )
+
+    def _octopus_apply_indoor_static_yaw_alignment(self, point_ned, q_wxyz):
+        """Rotate projected point around the frozen indoor origin.
+
+        Indoor demo convention:
+        - origin/back-left is the map origin
+        - +x is right
+        - +y is forward
+        - +y should match drone/camera front at startup
+        """
+        transform_mode = str(self.get_parameter("transform_mode").value)
+        if transform_mode != "indoor_static_mission":
+            return point_ned
+        align_on_start = bool(self.get_parameter("indoor_static_align_yaw_on_start").value)
+        if not align_on_start:
+            return point_ned
+
+        current_yaw = self._octopus_yaw_from_quat_wxyz(q_wxyz)
+        if current_yaw is None:
+            return point_ned
+
+        if self.indoor_static_yaw_zero_rad is None:
+            self.indoor_static_yaw_zero_rad = current_yaw
+            self.get_logger().info(
+                f"Indoor static yaw alignment locked: yaw_zero={self.indoor_static_yaw_zero_rad:.4f} rad"
+            )
+
+        origin_x = float(self.get_parameter("indoor_static_origin_x").value)
+        origin_y = float(self.get_parameter("indoor_static_origin_y").value)
+        yaw_offset = float(self.get_parameter("indoor_static_map_yaw_offset_rad").value)
+
+        # Rotate raw PX4/NED projection into the indoor demo map frame.
+        # yaw_offset=+pi/2 means map +y is intended as drone/camera forward at startup.
+        align_angle = yaw_offset - self.indoor_static_yaw_zero_rad
+
+        p = np.array(point_ned, dtype=float)
+        dx = float(p[0]) - origin_x
+        dy = float(p[1]) - origin_y
+        rx, ry = self._octopus_rotate_xy(dx, dy, align_angle)
+
+        p[0] = origin_x + rx
+        p[1] = origin_y + ry
+        return p
 
 
 def main(args=None):
