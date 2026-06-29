@@ -59,6 +59,7 @@ const OCTOPUS = {
   missionArea: JSON.parse(localStorage.getItem("octopusMissionArea") || "null"),
   gridMode: localStorage.getItem("octopusGridMode") || "fixed_camera_footprint",
   gridSource: localStorage.getItem("octopusGridSource") || "global",
+  mappingMode: localStorage.getItem("octopusMappingMode") || "local_camera_debug",
   cameraFootprint: JSON.parse(localStorage.getItem("octopusCameraFootprint") || '{"height_m":2.5,"resolution":0.10}'),
   osmPriors: JSON.parse(localStorage.getItem("octopusOsmPriors") || "null"),
   gridDisplay: { ...GRID_DISPLAY_DEFAULTS, ...(JSON.parse(localStorage.getItem("octopusGridDisplay") || "{}")) },
@@ -3599,4 +3600,133 @@ function setupGridSourceControls() {
 }
 
 setTimeout(setupGridSourceControls, 0);
+
+
+
+const OCTOPUS_MAPPING_MODES = {
+  local_camera_debug: {
+    label: "Local Camera Debug",
+    gridSource: "local_camera",
+    description: `<strong>Local Camera Debug:</strong> shows what Eve currently sees in the camera footprint. This is dashboard/debug only and is not sent to ground robots.`,
+    attitude: "Not required",
+    position: "Ignored",
+    note: "Best for checking detector output and u/v → grid cell matching.",
+  },
+  indoor_static_mission: {
+    label: "Indoor Static Mission Map",
+    gridSource: "global",
+    description: `<strong>Indoor Static Mission Map:</strong> for ceiling/static indoor tests without GPS. Uses manual height and PX4 attitude, but should use a fixed/frozen map origin instead of drifting PX4 x/y.`,
+    attitude: "Used",
+    position: "Ignored / frozen",
+    note: "Best for a hanging drone looking at a fixed ground area.",
+  },
+  flight_global_mission: {
+    label: "Flight Global Mission Map",
+    gridSource: "global",
+    description: `<strong>Flight Global Mission Map:</strong> real mission mode. Uses PX4 pose, attitude and height/ground-plane projection to create persistent world/map coordinates for robots.`,
+    attitude: "Used",
+    position: "Used",
+    note: "Best for outdoor/real flight and robot task assignment.",
+  },
+};
+
+function selectedMappingMode() {
+  const value = OCTOPUS.mappingMode || localStorage.getItem("octopusMappingMode") || "local_camera_debug";
+  return OCTOPUS_MAPPING_MODES[value] ? value : "local_camera_debug";
+}
+
+function setGridSourceFromMappingMode(modeKey) {
+  const mode = OCTOPUS_MAPPING_MODES[modeKey] || OCTOPUS_MAPPING_MODES.local_camera_debug;
+  OCTOPUS.gridSource = mode.gridSource;
+  localStorage.setItem("octopusGridSource", OCTOPUS.gridSource);
+
+  const gridSourceSelect = $("grid-source-select");
+  if (gridSourceSelect) gridSourceSelect.value = OCTOPUS.gridSource;
+}
+
+function updateMappingSettingsPanel() {
+  const modeKey = selectedMappingMode();
+  const mode = OCTOPUS_MAPPING_MODES[modeKey] || OCTOPUS_MAPPING_MODES.local_camera_debug;
+
+  const modeSelect = $("mapping-mode-select");
+  if (modeSelect) modeSelect.value = modeKey;
+
+  const description = $("mapping-mode-description");
+  if (description) description.innerHTML = `${mode.description}<br><span class="muted">${mode.note}</span>`;
+
+  const gridSourceLabel = $("mapping-grid-source-value");
+  if (gridSourceLabel) {
+    gridSourceLabel.textContent = getSelectedGridSource() === "local_camera"
+      ? "Local Camera Grid"
+      : "Global Mission Grid";
+  }
+
+  const resolution = safeNumber(
+    OCTOPUS.latest.localCameraGrid?.patch?.resolution_m ??
+    OCTOPUS.cameraFootprint?.resolution ??
+    $("grid-resolution-input")?.value,
+    0.10
+  );
+
+  const resolutionValue = $("mapping-resolution-value");
+  if (resolutionValue) resolutionValue.textContent = `${resolution.toFixed(2)} m / cell`;
+
+  const footprint = OCTOPUS.latest.localCameraGrid?.patch || {};
+  const footprintWidth = safeNumber(footprint.footprint_width_m, 4.46);
+  const footprintHeight = safeNumber(footprint.footprint_height_m, 3.34);
+
+  const footprintValue = $("mapping-footprint-value");
+  if (footprintValue) footprintValue.textContent = `${footprintWidth.toFixed(2)} m × ${footprintHeight.toFixed(2)} m`;
+
+  const height = safeNumber(
+    OCTOPUS.cameraFootprint?.height_m ?? $("camera-footprint-height-input")?.value,
+    2.50
+  );
+
+  const heightValue = $("mapping-height-value");
+  if (heightValue) heightValue.textContent = `${height.toFixed(2)} m`;
+
+  const attitudeValue = $("mapping-attitude-value");
+  if (attitudeValue) attitudeValue.textContent = mode.attitude;
+
+  const positionValue = $("mapping-position-value");
+  if (positionValue) positionValue.textContent = mode.position;
+
+  const robotWarning = document.querySelector(".mapping-warning-chip");
+  if (robotWarning) robotWarning.textContent = "Robot output source: Global Mission Map only";
+}
+
+function setupMappingSettingsControls() {
+  const modeSelect = $("mapping-mode-select");
+  if (modeSelect && !modeSelect.dataset.bound) {
+    modeSelect.dataset.bound = "true";
+    modeSelect.value = selectedMappingMode();
+
+    modeSelect.addEventListener("change", () => {
+      OCTOPUS.mappingMode = modeSelect.value;
+      localStorage.setItem("octopusMappingMode", OCTOPUS.mappingMode);
+
+      setGridSourceFromMappingMode(OCTOPUS.mappingMode);
+      updateMappingSettingsPanel();
+
+      if (typeof drawGridMap === "function") drawGridMap(OCTOPUS.latest.globalMap || {});
+      if (typeof renderSystemHealth === "function") renderSystemHealth();
+    });
+  }
+
+  const gridSourceSelect = $("grid-source-select");
+  if (gridSourceSelect && !gridSourceSelect.dataset.mappingSyncBound) {
+    gridSourceSelect.dataset.mappingSyncBound = "true";
+    gridSourceSelect.addEventListener("change", () => {
+      OCTOPUS.gridSource = gridSourceSelect.value;
+      localStorage.setItem("octopusGridSource", OCTOPUS.gridSource);
+      updateMappingSettingsPanel();
+    });
+  }
+
+  updateMappingSettingsPanel();
+}
+
+setTimeout(setupMappingSettingsControls, 0);
+setInterval(updateMappingSettingsPanel, 2000);
 

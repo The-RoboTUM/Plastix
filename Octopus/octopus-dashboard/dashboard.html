@@ -924,6 +924,92 @@
       min-width: 170px;
     }
 
+
+    .mapping-settings-panel {
+      flex: 1.1;
+    }
+
+    .mapping-settings-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .mapping-setting-card {
+      border: 1px solid var(--border-subtle);
+      background: rgba(15, 23, 42, 0.68);
+      border-radius: 12px;
+      padding: 10px;
+      min-width: 0;
+    }
+
+    .mapping-setting-card.full {
+      grid-column: 1 / -1;
+    }
+
+    .mapping-setting-label {
+      color: var(--text-muted);
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      margin-bottom: 6px;
+    }
+
+    .mapping-setting-value {
+      font-size: 13px;
+      font-weight: 800;
+      color: var(--text-main);
+      line-height: 1.25;
+    }
+
+    .mapping-setting-note {
+      margin-top: 5px;
+      color: var(--text-muted);
+      font-size: 11px;
+      line-height: 1.35;
+    }
+
+    .mapping-mode-select {
+      width: 100%;
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      background: rgba(3, 7, 18, 0.92);
+      color: var(--text-main);
+      padding: 8px 10px;
+      font-weight: 800;
+      outline: none;
+    }
+
+    .mapping-mode-description {
+      margin-top: 10px;
+      border: 1px solid rgba(56, 189, 248, 0.25);
+      background: rgba(14, 116, 144, 0.14);
+      border-radius: 12px;
+      padding: 10px;
+      color: var(--text-soft);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .mapping-mode-description strong {
+      color: var(--text-main);
+    }
+
+    .mapping-warning-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border: 1px solid rgba(245, 158, 11, 0.35);
+      background: rgba(120, 53, 15, 0.22);
+      color: #fcd34d;
+      border-radius: 999px;
+      padding: 5px 8px;
+      font-size: 11px;
+      font-weight: 800;
+      margin-top: 8px;
+    }
+
+
     .camera-footprint-summary {
       max-width: 360px;
       overflow: hidden;
@@ -1507,6 +1593,68 @@ body.octopus-view-debug .camera-debug-panel .item-card {
 
 
           <div class="panel-body" id="system-health-content">Checking system health...</div>
+        </section>
+
+
+        <section class="panel mapping-settings-panel" style="flex: 1.12;">
+          <div class="panel-header">
+            <div class="panel-title">
+              <strong>Mapping Settings</strong>
+              <span>debug vs mission map mode</span>
+            </div>
+          </div>
+          <div class="panel-body">
+            <div class="mapping-settings-grid">
+              <div class="mapping-setting-card full">
+                <div class="mapping-setting-label">Mission mapping mode</div>
+                <select id="mapping-mode-select" class="mapping-mode-select" aria-label="Mission mapping mode">
+                  <option value="local_camera_debug">Local Camera Debug</option>
+                  <option value="indoor_static_mission">Indoor Static Mission Map</option>
+                  <option value="flight_global_mission">Flight Global Mission Map</option>
+                </select>
+                <div id="mapping-mode-description" class="mapping-mode-description">
+                  <strong>Local Camera Debug:</strong> shows what Eve currently sees in the camera footprint. This is for dashboard/debug only and is not sent to ground robots.
+                </div>
+                <div class="mapping-warning-chip">Robot output source: Global Mission Map only</div>
+              </div>
+
+              <div class="mapping-setting-card">
+                <div class="mapping-setting-label">Grid source</div>
+                <div id="mapping-grid-source-value" class="mapping-setting-value">Local / Global selector</div>
+                <div class="mapping-setting-note">Controls what is drawn in the Local Grid Map canvas.</div>
+              </div>
+
+              <div class="mapping-setting-card">
+                <div class="mapping-setting-label">Grid resolution</div>
+                <div id="mapping-resolution-value" class="mapping-setting-value">0.10 m / cell</div>
+                <div class="mapping-setting-note">Used for camera grid and mission grid visualization.</div>
+              </div>
+
+              <div class="mapping-setting-card">
+                <div class="mapping-setting-label">Camera footprint</div>
+                <div id="mapping-footprint-value" class="mapping-setting-value">4.46 m × 3.34 m</div>
+                <div class="mapping-setting-note">Computed from camera calibration and manual height.</div>
+              </div>
+
+              <div class="mapping-setting-card">
+                <div class="mapping-setting-label">Manual height</div>
+                <div id="mapping-height-value" class="mapping-setting-value">2.50 m</div>
+                <div class="mapping-setting-note">Used when no reliable distance-to-ground sensor is available.</div>
+              </div>
+
+              <div class="mapping-setting-card">
+                <div class="mapping-setting-label">PX4 attitude</div>
+                <div id="mapping-attitude-value" class="mapping-setting-value">Used in global projection</div>
+                <div class="mapping-setting-note">Compensates roll, pitch and yaw in world projection modes.</div>
+              </div>
+
+              <div class="mapping-setting-card">
+                <div class="mapping-setting-label">PX4 x/y position</div>
+                <div id="mapping-position-value" class="mapping-setting-value">Mode dependent</div>
+                <div class="mapping-setting-note">Ignored/frozen for indoor static; used for flight global map.</div>
+              </div>
+            </div>
+          </div>
         </section>
 
         <section class="panel planning-panel" style="flex: 1;">
