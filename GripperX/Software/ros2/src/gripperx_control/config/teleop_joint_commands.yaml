@@ -1,0 +1,25 @@
+
+teleop_joint_commands_node:
+  ros__parameters:
+    a: 0.203
+    b: 0.16556
+    wheel_radius: 0.052
+    cmd_vel_topic: /cmd_vel
+    joint_states_topic: /hw/joint_states
+    joint_commands_topic: /hw/joint_commands
+    steering_angle_limit: 0.78539816339
+    steer_alignment_min_scale: 0.45
+    steer_alignment_deadband_rad: 0.12
+    max_wheel_angular_speed: 12.0
+    control_rate_hz: 100.0
+    cmd_vel_timeout_sec: 0.5
+    enforce_front_forward: false
+    allow_reverse: true
+    enable_point_turn: true
+    point_turn_steer_target: 0.0
+    point_turn_vx_threshold: 0.01
+    point_turn_vy_threshold: 0.01
+    point_turn_omega_threshold: 0.35
+
+
+

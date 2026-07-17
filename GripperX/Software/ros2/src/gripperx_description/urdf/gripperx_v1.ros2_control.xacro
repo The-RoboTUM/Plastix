@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+
+  <xacro:macro name="ros2_control_position_joint" params="joint_name">
+    <joint name="${joint_name}">
+      <command_interface name="position" />
+      <state_interface name="position" />
+      <state_interface name="velocity" />
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="ros2_control_velocity_joint" params="joint_name">
+    <joint name="${joint_name}">
+      <command_interface name="velocity" />
+      <state_interface name="position" />
+      <state_interface name="velocity" />
+    </joint>
+  </xacro:macro>
+
+  <xacro:macro name="gripperx_ros2_control_joints">
+    <xacro:ros2_control_position_joint joint_name="f_left_steer" />
+    <xacro:ros2_control_position_joint joint_name="f_right_steer" />
+    <xacro:ros2_control_position_joint joint_name="b_leftsteer" />
+    <xacro:ros2_control_position_joint joint_name="b_rightsteer" />
+
+    <xacro:ros2_control_velocity_joint joint_name="f_leftwheel" />
+    <xacro:ros2_control_velocity_joint joint_name="f_rightwheel" />
+    <xacro:ros2_control_velocity_joint joint_name="b_leftwheel" />
+    <xacro:ros2_control_velocity_joint joint_name="b_rightwheel" />
+  </xacro:macro>
+
+  <xacro:macro
+    name="gripperx_ros2_control_hardware"
+    params="
+      name
+      plugin
+      use_hw_topics:=false
+      joint_commands_topic:=/hw/joint_commands
+      joint_states_topic:=/hw/joint_states
+      state_timeout_sec:=2.0
+      command_watchdog_enabled:=true
+      command_timeout_sec:=0.5
+      command_watchdog_rate_hz:=50.0
+      command_divergence_eps:=0.001
+      wheel_command_topic:=/wheel_velocity_controller/commands">
+    <ros2_control name="${name}" type="system">
+      <hardware>
+        <plugin>${plugin}</plugin>
+        <xacro:if value="${use_hw_topics}">
+          <param name="joint_commands_topic">${joint_commands_topic}</param>
+          <param name="joint_states_topic">${joint_states_topic}</param>
+          <param name="state_timeout_sec">${state_timeout_sec}</param>
+          <!-- Command watchdog behind the ros2_control layer (Task #14). -->
+          <param name="command_watchdog_enabled">${command_watchdog_enabled}</param>
+          <param name="command_timeout_sec">${command_timeout_sec}</param>
+          <param name="command_watchdog_rate_hz">${command_watchdog_rate_hz}</param>
+          <param name="command_divergence_eps">${command_divergence_eps}</param>
+          <param name="wheel_command_topic">${wheel_command_topic}</param>
+        </xacro:if>
+      </hardware>
+      <xacro:gripperx_ros2_control_joints />
+    </ros2_control>
+  </xacro:macro>
+
+</robot>

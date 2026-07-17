@@ -1,0 +1,19 @@
+sensor_mocks:
+  ros__parameters:
+    scan_topic: /scan
+    imu_topic: /imu/data
+    gps_topic: /gps/fix
+    scan_frame_id: lidar_link
+    imu_frame_id: imu_link
+    gps_frame_id: gps_link
+    scan_rate_hz: 10.0
+    imu_rate_hz: 50.0
+    gps_rate_hz: 5.0
+    scan_sample_count: 720
+    scan_range_max: 12.0
+
+# Real-driver placeholders (edit when use_mock_sensors:=false).
+# Expected topics for gripperx_localization:
+#   /scan      (sensor_msgs/LaserScan)
+#   /imu/data  (sensor_msgs/Imu)
+#   /gps/fix   (sensor_msgs/NavSatFix) — optional, enable_gps in localization launch

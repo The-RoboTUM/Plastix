@@ -1,0 +1,5 @@
+119:# ROS 2 Jazzy
+120:source /opt/ros/jazzy/setup.bash
+121:export ROS_DOMAIN_ID=42
+122:export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+123:source ~/microros_ws/install/setup.bash

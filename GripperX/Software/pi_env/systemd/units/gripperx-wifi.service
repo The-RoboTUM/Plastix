@@ -1,0 +1,9 @@
+# /etc/systemd/system/gripperx-wifi.service
+[Unit]
+Description=GripperX WiFi Reconnect
+After=network.target wpa_supplicant.service
+Wants=wpa_supplicant.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/gripperx-wifi.sh

@@ -1,0 +1,19 @@
+# /etc/systemd/system/gripperx-bringup.service
+[Unit]
+Description=GripperX ROS2 Bringup (arm + servos + drive)
+After=local-fs.target network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+Environment=HOME=/home/ubuntu
+ExecStart=/usr/local/bin/gripperx-bringup.sh
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

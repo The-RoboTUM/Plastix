@@ -1,0 +1,18 @@
+# /etc/systemd/system/gripperx-mapping.service
+[Unit]
+Description=GripperX Mapping (rf2o + slam_toolbox)
+After=gripperx-bringup.service network-online.target
+Requires=gripperx-bringup.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Environment=HOME=/home/ubuntu
+ExecStartPre=/bin/sleep 20
+ExecStart=/usr/local/bin/gripperx-mapping.sh
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

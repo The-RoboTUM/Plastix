@@ -1,0 +1,7 @@
+teleop_mux:
+  ros__parameters:
+    # Active mode at startup: keyboard | controller | autonomous
+    initial_mode: keyboard
+    publish_rate_hz: 20.0
+    # If the active source is silent for longer than cmd_timeout_sec → send zero
+    cmd_timeout_sec: 0.5
