@@ -1,0 +1,9 @@
+# GripperX — stable device names
+# ESP32 (drive + micro-ROS)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="0001", SYMLINK+="esp32", MODE="0666"
+
+# Waveshare Bus Servo Adapter A (steering ST3215)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5A68010295", SYMLINK+="steering_servo", MODE="0666"
+
+# Seeed XIAO Bus Servo Board (arm STS3215)
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5AAF262825", SYMLINK+="arm_servo", MODE="0666"

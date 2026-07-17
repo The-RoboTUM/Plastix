@@ -1,0 +1,409 @@
+Desired=Unknown/Install/Remove/Purge/Hold
+| Status=Not/Inst/Conf-files/Unpacked/halF-conf/Half-inst/trig-aWait/Trig-pend
+|/ Err?=(none)/Reinst-required (Status,Err: uppercase=bad)
+||/ Name                                             Version                          Architecture Description
++++-================================================-================================-============-=================================================================================================================================================================================================================================================================================================================
+ii  ros-jazzy-ackermann-msgs                         2.0.2-6noble.20260612.092601     arm64        ROS2 messages for robots using Ackermann steering.
+ii  ros-jazzy-ackermann-steering-controller          4.40.1-1noble.20260615.073755    arm64        Steering controller for Ackermann kinematics.
+ii  ros-jazzy-action-msgs                            2.0.4-1noble.20260612.052535     arm64        Messages and service definitions common among all ROS actions.
+ii  ros-jazzy-actionlib-msgs                         5.3.8-1noble.20260612.053838     arm64        A package containing some message definitions used in the implementation of ROS 1 actions.
+ii  ros-jazzy-actuator-msgs                          0.0.1-4noble.20260612.092556     arm64        ROS 2 message interface for Actuators.
+ii  ros-jazzy-admittance-controller                  4.40.1-1noble.20260614.074934    arm64        Implementation of admittance controllers for different input and output interface.
+ii  ros-jazzy-ament-cmake                            2.5.6-2noble.20260305.203904     arm64        The entry point package for the ament buildsystem in CMake.
+ii  ros-jazzy-ament-cmake-auto                       2.5.6-2noble.20260305.211009     arm64        The auto-magic functions for ease to use of the ament buildsystem in CMake.
+ii  ros-jazzy-ament-cmake-copyright                  0.17.5-1noble.20260411.113359    arm64        The CMake API for ament_copyright to check every source file contains copyright reference.
+ii  ros-jazzy-ament-cmake-core                       2.5.6-2noble.20260224.191051     arm64        The core of the ament buildsystem in CMake.
+ii  ros-jazzy-ament-cmake-cppcheck                   0.17.5-1noble.20260410.225507    arm64        The CMake API for ament_cppcheck to perform static code analysis on C/C++ code using Cppcheck.
+ii  ros-jazzy-ament-cmake-cpplint                    0.17.5-1noble.20260410.225517    arm64        The CMake API for ament_cpplint to lint C / C++ code using cpplint.
+ii  ros-jazzy-ament-cmake-export-definitions         2.5.6-2noble.20260225.111647     arm64        The ability to export definitions to downstream packages in the ament buildsystem.
+ii  ros-jazzy-ament-cmake-export-dependencies        2.5.6-2noble.20260225.121204     arm64        The ability to export dependencies to downstream packages in the ament buildsystem in CMake.
+ii  ros-jazzy-ament-cmake-export-include-directories 2.5.6-2noble.20260305.195340     arm64        The ability to export include directories to downstream packages in the ament buildsystem in CMake.
+ii  ros-jazzy-ament-cmake-export-interfaces          2.5.6-2noble.20260225.115659     arm64        The ability to export interfaces to downstream packages in the ament buildsystem in CMake.
+ii  ros-jazzy-ament-cmake-export-libraries           2.5.6-2noble.20260225.114045     arm64        The ability to export libraries to downstream packages in the ament buildsystem in CMake.
+ii  ros-jazzy-ament-cmake-export-link-flags          2.5.6-2noble.20260305.195440     arm64        The ability to export link flags to downstream packages in the ament buildsystem.
+ii  ros-jazzy-ament-cmake-export-targets             2.5.6-2noble.20260225.115837     arm64        The ability to export targets to downstream packages in the ament buildsystem in CMake.
+ii  ros-jazzy-ament-cmake-flake8                     0.17.5-1noble.20260411.114519    arm64        The CMake API for ament_flake8 to check code syntax and style conventions with flake8.
+ii  ros-jazzy-ament-cmake-gen-version-h              2.5.6-2noble.20260225.114201     arm64        Generate a C header containing the version number of the package
+ii  ros-jazzy-ament-cmake-gmock                      2.5.6-2noble.20260225.232840     arm64        The ability to add Google mock-based tests in the ament buildsystem in CMake.
+ii  ros-jazzy-ament-cmake-gtest                      2.5.6-2noble.20260225.230858     arm64        The ability to add gtest-based tests in the ament buildsystem in CMake.
+ii  ros-jazzy-ament-cmake-include-directories        2.5.6-2noble.20260225.114255     arm64        The functionality to order include directories according to a chain of prefixes in the ament buildsystem in CMake.
+ii  ros-jazzy-ament-cmake-libraries                  2.5.6-2noble.20260225.115526     arm64        The functionality to deduplicate libraries in the ament buildsystem in CMake.
+ii  ros-jazzy-ament-cmake-lint-cmake                 0.17.5-1noble.20260411.112818    arm64        The CMake API for ament_lint_cmake to lint CMake code using cmakelint.
+ii  ros-jazzy-ament-cmake-pep257                     0.17.5-1noble.20260411.115523    arm64        The CMake API for ament_pep257 to check code against the docstring style conventions in PEP 257.
+ii  ros-jazzy-ament-cmake-pytest                     2.5.6-2noble.20260225.124454     arm64        The ability to run Python tests using pytest in the ament buildsystem in CMake.
+ii  ros-jazzy-ament-cmake-python                     2.5.6-2noble.20260225.115526     arm64        The ability to use Python in the ament buildsystem in CMake.
+ii  ros-jazzy-ament-cmake-ros                        0.12.1-1noble.20260603.145943    arm64        The ROS specific CMake bits in the ament buildsystem.
+ii  ros-jazzy-ament-cmake-target-dependencies        2.5.6-2noble.20260225.121314     arm64        The ability to add definitions, include directories and libraries of a package to a target in the ament buildsystem in CMake.
+ii  ros-jazzy-ament-cmake-test                       2.5.6-2noble.20260225.121319     arm64        The ability to add tests in the ament buildsystem in CMake.
+ii  ros-jazzy-ament-cmake-uncrustify                 0.17.5-1noble.20260411.113331    arm64        The CMake API for ament_uncrustify to check code against styleconventions using uncrustify.
+ii  ros-jazzy-ament-cmake-version                    2.5.6-2noble.20260225.115526     arm64        The ability to override the exported package version in the ament buildsystem.
+ii  ros-jazzy-ament-cmake-xmllint                    0.17.5-1noble.20260411.115523    arm64        The CMake API for ament_xmllint to check XML file using xmmlint.
+ii  ros-jazzy-ament-copyright                        0.17.5-1noble.20260410.225542    arm64        The ability to check source files for copyright and license information.
+ii  ros-jazzy-ament-cppcheck                         0.17.5-1noble.20260410.080852    arm64        The ability to perform static code analysis on C/C++ code using Cppcheck and generate xUnit test result files.
+ii  ros-jazzy-ament-cpplint                          0.17.5-1noble.20260410.080931    arm64        The ability to check code against the Google style conventions using cpplint and generate xUnit test result files.
+ii  ros-jazzy-ament-flake8                           0.17.5-1noble.20260411.112228    arm64        The ability to check code for style and syntax conventions with flake8.
+ii  ros-jazzy-ament-index-cpp                        1.8.4-1noble.20260519.010814     arm64        C++ API to access the ament resource index.
+ii  ros-jazzy-ament-index-python                     1.8.4-1noble.20260519.010838     arm64        Python API to access the ament resource index.
+ii  ros-jazzy-ament-lint                             0.17.5-1noble.20260410.080953    arm64        Providing common API for ament linter packages.
+ii  ros-jazzy-ament-lint-auto                        0.17.5-1noble.20260410.081016    arm64        The auto-magic functions for ease to use of the ament linters in CMake.
+ii  ros-jazzy-ament-lint-cmake                       0.17.5-1noble.20260410.125655    arm64        The ability to lint CMake code using cmakelint and generate xUnit test result files.
+ii  ros-jazzy-ament-lint-common                      0.17.5-1noble.20260411.120318    arm64        The list of commonly used linters in the ament build system in CMake.
+ii  ros-jazzy-ament-package                          0.16.5-1noble.20260121.175232    arm64        The parser for the manifest files in the ament buildsystem.
+ii  ros-jazzy-ament-pep257                           0.17.5-1noble.20260411.112251    arm64        The ability to check code against the docstring style conventions in PEP 257 and generate xUnit test result files.
+ii  ros-jazzy-ament-uncrustify                       0.17.5-1noble.20260410.225047    arm64        The ability to check code against style conventions using uncrustify and generate xUnit test result files.
+ii  ros-jazzy-ament-xmllint                          0.17.5-1noble.20260411.112313    arm64        The ability to check XML files like the package manifest using xmllint and generate xUnit test result files.
+ii  ros-jazzy-angles                                 1.16.1-1noble.20260305.211211    arm64        This package provides a set of simple math utilities to work with angles.
+ii  ros-jazzy-backward-ros                           1.0.8-1noble.20260225.223902     arm64        The backward_ros package is a ros wrapper of backward-cpp from https://github.com/bombela/backward-cpp
+ii  ros-jazzy-behaviortree-cpp                       4.9.0-1noble.20260612.122100     arm64        This package provides the Behavior Trees core library.
+ii  ros-jazzy-bicycle-steering-controller            4.40.1-1noble.20260615.074622    arm64        Steering controller with bicycle kinematics.
+ii  ros-jazzy-bond                                   4.2.0-1noble.20260612.053908     arm64        A bond allows two processes, A and B, to know when the other has terminated, either cleanly or by crashing.
+ii  ros-jazzy-bondcpp                                4.2.0-1noble.20260612.120806     arm64        C++ implementation of bond, a mechanism for checking when another process has terminated.
+ii  ros-jazzy-builtin-interfaces                     2.0.4-1noble.20260612.051853     arm64        A package containing message and service definitions for types defined in the OMG IDL Platform Specific Model.
+ii  ros-jazzy-chained-filter-controller              4.40.1-1noble.20260612.130708    arm64        ros2_controller for configuring filter chains
+ii  ros-jazzy-chomp-motion-planner                   2.12.4-1noble.20260617.145348    arm64        chomp_motion_planner
+ii  ros-jazzy-class-loader                           2.7.1-1noble.20260603.150816     arm64        The class_loader package is a ROS-independent package for loading plugins during runtime and the foundation of the higher level ROS &quot;pluginlib&quot; library.
+ii  ros-jazzy-common-interfaces                      5.3.8-1noble.20260612.090713     arm64        common_interfaces contains messages and services that are widely used by other ROS packages.
+ii  ros-jazzy-composition-interfaces                 2.0.4-1noble.20260612.092230     arm64        A package containing message and service definitions for managing composable nodes in a container process.
+ii  ros-jazzy-console-bridge-vendor                  1.7.2-1noble.20260603.145621     arm64        Wrapper around console_bridge, providing nothing but a dependency on console_bridge, on some systems.
+ii  ros-jazzy-control-msgs                           5.9.0-1noble.20260612.083143     arm64        control_msgs contains base messages and actions useful for controlling robots.
+ii  ros-jazzy-control-toolbox                        4.11.0-1noble.20260614.074413    arm64        The control toolbox contains modules that are useful across all controllers.
+ii  ros-jazzy-controller-interface                   4.45.2-1noble.20260612.130228    arm64        Base classes for controllers and syntax cookies for supporting common sensor types in controllers and broadcasters
+ii  ros-jazzy-controller-manager                     4.45.2-1noble.20260612.162541    arm64        The main runnable entrypoint of ros2_control and home of controller management and resource management.
+ii  ros-jazzy-controller-manager-msgs                4.45.2-1noble.20260612.081517    arm64        Messages and services for the controller manager.
+ii  ros-jazzy-costmap-queue                          1.3.12-1noble.20260614.103450    arm64        The costmap_queue package
+ii  ros-jazzy-cv-bridge                              4.1.0-1noble.20260612.114100     arm64        This contains CvBridge, which converts between ROS2 Image messages and OpenCV images.
+ii  ros-jazzy-cyclonedds                             0.10.5-1noble.20260305.204044    arm64        Eclipse Cyclone DDS is a very performant and robust open-source DDS implementation.
+ii  ros-jazzy-diagnostic-msgs                        5.3.8-1noble.20260612.081536     arm64        A package containing some diagnostics related message and service definitions.
+ii  ros-jazzy-diagnostic-updater                     4.2.7-1noble.20260612.100858     arm64        Update and publish diagnostic information.
+ii  ros-jazzy-diff-drive-controller                  4.40.1-1noble.20260614.101845    arm64        Controller for a differential-drive mobile base.
+ii  ros-jazzy-domain-coordinator                     0.12.1-1noble.20260603.145652    arm64        A tool to coordinate unique ROS_DOMAIN_IDs across multiple processes
+ii  ros-jazzy-dwb-core                               1.3.12-1noble.20260614.095733    arm64        DWB core interfaces package
+ii  ros-jazzy-dwb-critics                            1.3.12-1noble.20260614.103737    arm64        The dwb_critics package
+ii  ros-jazzy-dwb-msgs                               1.3.12-1noble.20260612.084808    arm64        Message/Service definitions specifically for the dwb_core
+ii  ros-jazzy-dwb-plugins                            1.3.12-1noble.20260614.102610    arm64        Standard implementations of the GoalChecker and TrajectoryGenerators for dwb_core
+ii  ros-jazzy-effort-controllers                     4.40.1-1noble.20260612.131441    arm64        Generic controller for forwarding commands.
+ii  ros-jazzy-eigen-stl-containers                   1.1.0-1noble.20260305.212614     arm64        This package provides a set of typedef's that allow using Eigen datatypes in STL containers
+ii  ros-jazzy-eigen3-cmake-module                    0.3.1-1noble.20260603.145848     arm64        Exports a custom CMake module to find Eigen3.
+ii  ros-jazzy-fastcdr                                2.2.7-1noble.20260225.225058     arm64        *eProsima Fast CDR* is a C++ serialization library implementing the Common Data Representation (CDR) mechanism defined by the Object Management Group (OMG) consortium.
+ii  ros-jazzy-fastrtps                               2.14.6-1noble.20260303.223942    arm64        *eprosima Fast DDS* (formerly Fast RTPS) is a C++ implementation of the DDS (Data Distribution Service) standard of the OMG (Object Management Group).
+ii  ros-jazzy-fastrtps-cmake-module                  3.6.4-1noble.20260603.150028     arm64        Provide CMake module to find eProsima FastRTPS.
+ii  ros-jazzy-filters                                2.2.2-1noble.20260612.122522     arm64        This library provides a standardized interface for processing data as a sequence of filters.
+ii  ros-jazzy-foonathan-memory-vendor                1.3.1-3noble.20260225.225339     arm64        Foonathan/memory vendor package for Fast-RTPS.
+ii  ros-jazzy-force-torque-sensor-broadcaster        4.40.1-1noble.20260614.074439    arm64        Controller to publish state of force-torque sensors.
+ii  ros-jazzy-forward-command-controller             4.40.1-1noble.20260612.130920    arm64        Generic controller for forwarding commands.
+ii  ros-jazzy-generate-parameter-library             0.7.3-1noble.20260612.124157     arm64        CMake to generate ROS parameter library.
+ii  ros-jazzy-generate-parameter-library-py          0.7.3-1noble.20260514.121849     arm64        Python to generate ROS parameter library.
+ii  ros-jazzy-geographic-msgs                        1.0.6-2noble.20260612.081003     arm64        ROS messages for Geographic Information Systems.
+ii  ros-jazzy-geometric-shapes                       2.3.4-1noble.20260617.135618     arm64        This package contains generic definitions of geometric shapes and bodies.
+ii  ros-jazzy-geometry-msgs                          5.3.8-1noble.20260612.060310     arm64        A package containing some geometry related message definitions.
+ii  ros-jazzy-geometry2                              0.36.21-1noble.20260614.080307   arm64        A metapackage to bring in the default packages second generation Transform Library in ros, tf2.
+ii  ros-jazzy-gmock-vendor                           1.14.9000-2noble.20260225.231553 arm64        The package provides GoogleMock.
+ii  ros-jazzy-google-benchmark-vendor                0.5.1-1noble.20260225.225637     arm64        This package provides Google Benchmark.
+ii  ros-jazzy-gpio-controllers                       4.40.1-1noble.20260612.130713    arm64        Controllers to interact with gpios.
+ii  ros-jazzy-gps-msgs                               2.1.2-1noble.20260612.060310     arm64        GPS messages for use in GPS drivers
+ii  ros-jazzy-gps-sensor-broadcaster                 4.40.1-1noble.20260612.131138    arm64        Controller to publish readings of GPS sensors.
+ii  ros-jazzy-gripper-controllers                    4.40.1-1noble.20260614.101935    arm64        The gripper_controllers package
+ii  ros-jazzy-gtest-vendor                           1.14.9000-2noble.20260225.225707 arm64        The package provides GoogleTest.
+ii  ros-jazzy-gz-cmake-vendor                        0.0.11-1noble.20260225.124345    arm64        Vendor package for: gz-cmake3 3.5.6 Gazebo CMake : CMake Modules for Gazebo Projects
+ii  ros-jazzy-gz-common-vendor                       0.0.9-1noble.20260422.181330     arm64        Vendor package for: gz-common5 5.8.0 Gazebo Common : AV, Graphics, Events, and much more.
+ii  ros-jazzy-gz-dartsim-vendor                      0.0.3-1noble.20260305.214301     arm64        Vendor package for the DART physics engine v6.13.2
+ii  ros-jazzy-gz-fuel-tools-vendor                   0.0.6-1noble.20260422.182935     arm64        Vendor package for: gz-fuel_tools9 9.1.1 Gazebo Fuel Tools: Classes and tools for interacting with Gazebo Fuel
+ii  ros-jazzy-gz-gui-vendor                          0.0.5-1noble.20260422.185303     arm64        Vendor package for: gz-gui8 8.4.0 Gazebo GUI : Graphical interfaces for robotics applications
+ii  ros-jazzy-gz-math-vendor                         0.0.9-1noble.20260422.164834     arm64        Vendor package for: gz-math7 7.6.0 Gazebo Math : Math classes and functions for robot applications
+ii  ros-jazzy-gz-msgs-vendor                         0.0.6-1noble.20260422.181330     arm64        Vendor package for: gz-msgs10 10.3.2 Gazebo Messages: Protobuf messages and functions for robot applications
+ii  ros-jazzy-gz-ogre-next-vendor                    0.0.5-1noble.20260305.214254     arm64        Vendor package for Ogre-next v2.3.3
+ii  ros-jazzy-gz-physics-vendor                      0.0.7-1noble.20260604.221416     arm64        Vendor package for: gz-physics7 7.6.0 Gazebo Physics : Physics classes and functions for robot applications
+ii  ros-jazzy-gz-plugin-vendor                       0.0.5-1noble.20260225.131206     arm64        Vendor package for: gz-plugin2 2.0.4 Gazebo Plugin : Cross-platform C++ library for dynamically loading plugins.
+ii  ros-jazzy-gz-rendering-vendor                    0.0.7-1noble.20260422.182442     arm64        Vendor package for: gz-rendering8 8.2.3 Gazebo Rendering: Rendering library for robot applications
+ii  ros-jazzy-gz-ros2-control                        1.2.19-1noble.20260612.163226    arm64        Gazebo ros2_control package allows to control simulated robots using ros2_control framework.
+ii  ros-jazzy-gz-sensors-vendor                      0.0.6-1noble.20260604.221407     arm64        Vendor package for: gz-sensors8 8.2.2 Gazebo Sensors : Sensor models for simulation
+ii  ros-jazzy-gz-sim-vendor                          0.0.10-1noble.20260605.052554    arm64        Vendor package for: gz-sim8 8.11.0 Gazebo Sim : A Robotic Simulator
+ii  ros-jazzy-gz-tools-vendor                        0.0.7-1noble.20260225.130014     arm64        Vendor package for: gz-tools2 2.0.3 Gazebo Tools: Entrypoint to Gazebo's command line interface
+ii  ros-jazzy-gz-transport-vendor                    0.0.7-1noble.20260422.182952     arm64        Vendor package for: gz-transport13 13.5.0 Gazebo Transport: Provides fast and efficient asynchronous message passing, services, and data logging.
+ii  ros-jazzy-gz-utils-vendor                        0.0.5-1noble.20260225.125927     arm64        Vendor package for: gz-utils2 2.2.1 Gazebo Utils : Classes and functions for robot applications
+ii  ros-jazzy-hardware-interface                     4.45.2-1noble.20260612.124024    arm64        Base classes for hardware abstraction and tooling for them
+ii  ros-jazzy-iceoryx-binding-c                      2.0.6-1noble.20260305.195919     arm64        Eclipse iceoryx inter-process-communication (IPC) middleware C-Language Binding
+ii  ros-jazzy-iceoryx-hoofs                          2.0.6-1noble.20260225.230504     arm64        Eclipse iceoryx inter-process-communication (IPC) middleware basic building blocks
+ii  ros-jazzy-iceoryx-posh                           2.0.6-1noble.20260225.232956     arm64        Eclipse iceoryx inter-process-communication (IPC) middleware Posix Shared Memory Library and middleware daemon (RouDi)
+un  ros-jazzy-iceoryx-utils                          <none>                           <none>       (no description available)
+ii  ros-jazzy-image-transport                        5.1.8-1noble.20260614.051231     arm64        image_transport should always be used to subscribe to and publish images.
+ii  ros-jazzy-imu-sensor-broadcaster                 4.40.1-1noble.20260612.131125    arm64        Controller to publish readings of IMU sensors.
+ii  ros-jazzy-interactive-markers                    2.5.5-1noble.20260614.095706     arm64        3D interactive marker communication library for RViz and similar tools.
+ii  ros-jazzy-joint-limits                           4.45.2-1noble.20260612.120622    arm64        Package with interfaces for handling of joint limits in controllers or in hardware.
+ii  ros-jazzy-joint-state-broadcaster                4.40.1-1noble.20260612.131137    arm64        Broadcaster to publish joint state
+ii  ros-jazzy-joint-state-publisher                  2.4.1-1noble.20260612.132656     arm64        This package contains a tool for setting and publishing joint state values for a given URDF.
+ii  ros-jazzy-joint-state-publisher-gui              2.4.1-1noble.20260612.161537     arm64        This package contains a GUI tool for setting and publishing joint state values for a given URDF.
+ii  ros-jazzy-joint-trajectory-controller            4.40.1-1noble.20260614.102125    arm64        Controller for executing joint-space trajectories on a group of joints
+ii  ros-jazzy-kdl-parser                             2.11.0-3noble.20260604.174910    arm64        The Kinematics and Dynamics Library (KDL) defines a tree structure to represent the kinematic and dynamic parameters of a robot mechanism.
+ii  ros-jazzy-keyboard-handler                       0.3.2-1noble.20260305.214544     arm64        Handler for input from keyboard
+ii  ros-jazzy-kinematics-interface                   1.7.1-1noble.20260612.121835     arm64        Kinematics interface for ROS 2 control
+ii  ros-jazzy-laser-geometry                         2.7.2-1noble.20260612.100954     arm64        This package contains a class for converting from a 2D laser scan as defined by sensor_msgs/LaserScan into a point cloud as defined by sensor_msgs/PointCloud or sensor_msgs/PointCloud2.
+ii  ros-jazzy-launch                                 3.4.11-1noble.20260603.145505    arm64        The ROS launch tool.
+ii  ros-jazzy-launch-param-builder                   0.1.1-4noble.20260612.161543     arm64        Python library for loading parameters in launch files
+ii  ros-jazzy-launch-ros                             0.26.12-1noble.20260612.133411   arm64        ROS specific extensions to the launch tool.
+ii  ros-jazzy-launch-testing                         3.4.11-1noble.20260603.145921    arm64        A package to create tests which involve launch files and multiple processes.
+ii  ros-jazzy-launch-testing-ament-cmake             3.4.11-1noble.20260603.150105    arm64        A package providing cmake functions for running launch tests from the build.
+ii  ros-jazzy-launch-testing-ros                     0.26.12-1noble.20260612.161624   arm64        A package providing utilities for writing ROS2 enabled launch tests.
+ii  ros-jazzy-launch-xml                             3.4.11-1noble.20260603.145746    arm64        XML frontend for the launch package.
+ii  ros-jazzy-launch-yaml                            3.4.11-1noble.20260603.145754    arm64        YAML frontend for the launch package.
+ii  ros-jazzy-libcurl-vendor                         3.4.4-1noble.20260305.214736     arm64        Wrapper around libcurl, it provides a fixed CMake module and an ExternalProject build of it.
+ii  ros-jazzy-liblz4-vendor                          0.26.11-1noble.20260603.145530   arm64        LZ4 compression vendor package, providing a dependency for LZ4.
+ii  ros-jazzy-libstatistics-collector                1.7.4-1noble.20260612.095552     arm64        Lightweight aggregation utilities to collect statistics and measure message metrics.
+ii  ros-jazzy-libyaml-vendor                         1.6.4-2noble.20260603.145652     arm64        Vendored version of libyaml.
+ii  ros-jazzy-lifecycle-msgs                         2.0.4-1noble.20260612.060410     arm64        A package containing some lifecycle related message and service definitions.
+ii  ros-jazzy-map-msgs                               2.4.1-2noble.20260612.084659     arm64        This package defines messages commonly used in mapping packages.
+ii  ros-jazzy-marine-acoustic-msgs                   2.1.0-2noble.20260612.084549     arm64        The marine_acoustic_msgs package, including messages for common underwater sensors (DVL, multibeam sonar, imaging sonar)
+ii  ros-jazzy-mcap-vendor                            0.26.11-1noble.20260604.093033   arm64        mcap vendor package
+ii  ros-jazzy-mecanum-drive-controller               4.40.1-1noble.20260614.094304    arm64        Implementation of mecanum drive controller for 4 wheel drive.
+ii  ros-jazzy-message-filters                        4.11.17-1noble.20260614.050915   arm64        A set of ROS 2 message filters which take in messages and may output those messages at a later time, based on the conditions that filter needs met.
+ii  ros-jazzy-moveit                                 2.12.4-1noble.20260617.164903    arm64        Meta package that contains all essential packages of MoveIt 2
+ii  ros-jazzy-moveit-common                          2.12.4-1noble.20260305.205849    arm64        Common support functionality used throughout MoveIt
+ii  ros-jazzy-moveit-configs-utils                   2.12.4-1noble.20260612.201942    arm64        Python library for loading moveit config parameters in launch files
+ii  ros-jazzy-moveit-core                            2.12.4-1noble.20260617.143031    arm64        Core libraries used by MoveIt
+ii  ros-jazzy-moveit-kinematics                      2.12.4-1noble.20260617.152129    arm64        Package for all inverse kinematics solvers in MoveIt
+ii  ros-jazzy-moveit-msgs                            2.6.0-1noble.20260612.090054     arm64        Messages, services and actions used by MoveIt
+ii  ros-jazzy-moveit-planners                        2.12.4-1noble.20260617.160023    arm64        Meta package that installs all available planners for MoveIt
+ii  ros-jazzy-moveit-planners-chomp                  2.12.4-1noble.20260617.150019    arm64        The interface for using CHOMP within MoveIt
+ii  ros-jazzy-moveit-planners-ompl                   2.12.4-1noble.20260617.152605    arm64        MoveIt interface to OMPL
+ii  ros-jazzy-moveit-planners-stomp                  2.12.4-1noble.20260617.145348    arm64        STOMP Motion Planner for MoveIt
+ii  ros-jazzy-moveit-plugins                         2.12.4-1noble.20260617.150001    arm64        Metapackage for MoveIt plugins.
+ii  ros-jazzy-moveit-ros                             2.12.4-1noble.20260617.160857    arm64        Components of MoveIt that use ROS
+ii  ros-jazzy-moveit-ros-benchmarks                  2.12.4-1noble.20260617.153323    arm64        Enhanced tools for benchmarks in MoveIt
+ii  ros-jazzy-moveit-ros-move-group                  2.12.4-1noble.20260617.152740    arm64        The move_group node for MoveIt
+ii  ros-jazzy-moveit-ros-occupancy-map-monitor       2.12.4-1noble.20260617.145122    arm64        Components of MoveIt connecting to occupancy map
+ii  ros-jazzy-moveit-ros-planning                    2.12.4-1noble.20260617.145640    arm64        Planning components of MoveIt that use ROS
+ii  ros-jazzy-moveit-ros-planning-interface          2.12.4-1noble.20260617.154541    arm64        Components of MoveIt that offer simpler remote (as from another ROS 2 node) interfaces to planning and execution
+ii  ros-jazzy-moveit-ros-robot-interaction           2.12.4-1noble.20260617.152037    arm64        Components of MoveIt that offer interaction via interactive markers
+ii  ros-jazzy-moveit-ros-visualization               2.12.4-1noble.20260617.154835    arm64        Components of MoveIt that offer visualization
+ii  ros-jazzy-moveit-ros-warehouse                   2.12.4-1noble.20260617.152611    arm64        Components of MoveIt connecting to MongoDB
+ii  ros-jazzy-moveit-setup-app-plugins               2.12.4-1noble.20260617.162141    arm64        Various specialty plugins for MoveIt Setup Assistant
+ii  ros-jazzy-moveit-setup-assistant                 2.12.4-1noble.20260617.164556    arm64        Generates a configuration package that makes it easy to use MoveIt
+ii  ros-jazzy-moveit-setup-controllers               2.12.4-1noble.20260617.162138    arm64        MoveIt Setup Steps for ROS 2 Control
+ii  ros-jazzy-moveit-setup-core-plugins              2.12.4-1noble.20260617.162140    arm64        Core (meta) plugins for MoveIt Setup Assistant
+ii  ros-jazzy-moveit-setup-framework                 2.12.4-1noble.20260617.161734    arm64        C++ Interface for defining setup steps for MoveIt Setup Assistant
+ii  ros-jazzy-moveit-setup-srdf-plugins              2.12.4-1noble.20260617.162143    arm64        SRDF-based plugins for MoveIt Setup Assistant
+ii  ros-jazzy-moveit-simple-controller-manager       2.12.4-1noble.20260617.145401    arm64        A generic, simple controller manager plugin for MoveIt.
+ii  ros-jazzy-nav-2d-msgs                            1.3.12-1noble.20260612.084633    arm64        Basic message types for two dimensional navigation, extending from geometry_msgs::Pose2D.
+ii  ros-jazzy-nav-2d-utils                           1.3.12-1noble.20260614.095312    arm64        A handful of useful utility functions for nav_2d packages.
+ii  ros-jazzy-nav-msgs                               5.3.8-1noble.20260612.082120     arm64        A package containing some navigation related message and service definitions.
+ii  ros-jazzy-nav2-amcl                              1.3.12-1noble.20260614.075224    arm64        amcl is a probabilistic localization system for a robot moving in 2D.
+ii  ros-jazzy-nav2-behavior-tree                     1.3.12-1noble.20260614.075451    arm64        Nav2 behavior tree wrappers, nodes, and utilities
+ii  ros-jazzy-nav2-behaviors                         1.3.12-1noble.20260614.095313    arm64        Nav2 behavior server
+ii  ros-jazzy-nav2-bringup                           1.3.12-1noble.20260615.095620    arm64        Bringup scripts and configurations for the Nav2 stack
+ii  ros-jazzy-nav2-bt-navigator                      1.3.12-1noble.20260614.082455    arm64        Nav2 BT Navigator Server
+ii  ros-jazzy-nav2-collision-monitor                 1.3.12-1noble.20260614.080819    arm64        Collision Monitor
+ii  ros-jazzy-nav2-common                            1.3.12-1noble.20260612.161656    arm64        Common support functionality used throughout the navigation 2 stack
+ii  ros-jazzy-nav2-constrained-smoother              1.3.12-1noble.20260614.102802    arm64        Ceres constrained smoother
+ii  ros-jazzy-nav2-controller                        1.3.12-1noble.20260614.102844    arm64        Controller action interface
+ii  ros-jazzy-nav2-core                              1.3.12-1noble.20260614.082157    arm64        A set of headers for plugins core to the Nav2 stack
+ii  ros-jazzy-nav2-costmap-2d                        1.3.12-1noble.20260614.075323    arm64        This package provides an implementation of a 2D costmap that takes in sensor data from the world, builds a 2D or 3D occupancy grid of the data (depending on whether a voxel based implementation is used), and inflates costs in a 2D costmap based on the occupancy grid and a user specified inflation radius.
+ii  ros-jazzy-nav2-dwb-controller                    1.3.12-1noble.20260615.082603    arm64        ROS2 controller (DWB) metapackage
+ii  ros-jazzy-nav2-graceful-controller               1.3.12-1noble.20260614.095754    arm64        Graceful motion controller
+ii  ros-jazzy-nav2-lifecycle-manager                 1.3.12-1noble.20260614.095313    arm64        A controller/manager for the lifecycle nodes of the Navigation 2 system
+ii  ros-jazzy-nav2-map-server                        1.3.12-1noble.20260614.103023    arm64        Refactored map server for ROS2 Navigation
+ii  ros-jazzy-nav2-minimal-tb3-sim                   1.0.1-1noble.20260614.084159     arm64        Nav2 Minimum TurtleBot3 Simulation
+ii  ros-jazzy-nav2-minimal-tb4-description           1.0.1-1noble.20260614.092213     arm64        Nav2's minimum Turtlebot4 Description package
+ii  ros-jazzy-nav2-minimal-tb4-sim                   1.0.1-1noble.20260614.092522     arm64        Nav2 Minimum TurtleBot4 Simulation
+ii  ros-jazzy-nav2-mppi-controller                   1.3.12-1noble.20260614.082708    arm64        nav2_mppi_controller
+ii  ros-jazzy-nav2-msgs                              1.3.12-1noble.20260612.162307    arm64        Messages and service files for the Nav2 stack
+ii  ros-jazzy-nav2-navfn-planner                     1.3.12-1noble.20260614.083041    arm64        Nav2 NavFn planner
+ii  ros-jazzy-nav2-planner                           1.3.12-1noble.20260614.083147    arm64        Nav2 planner server package
+ii  ros-jazzy-nav2-regulated-pure-pursuit-controller 1.3.12-1noble.20260614.095312    arm64        Regulated Pure Pursuit Controller
+ii  ros-jazzy-nav2-rotation-shim-controller          1.3.12-1noble.20260614.103424    arm64        Rotation Shim Controller
+ii  ros-jazzy-nav2-route                             1.3.12-1noble.20260614.083322    arm64        A Route Graph planner to compliment the Planner Server
+ii  ros-jazzy-nav2-rviz-plugins                      1.3.12-1noble.20260614.105134    arm64        Navigation 2 plugins for rviz
+ii  ros-jazzy-nav2-simple-commander                  1.3.12-1noble.20260612.163820    arm64        An importable library for writing mobile robot applications in python3
+ii  ros-jazzy-nav2-smac-planner                      1.3.12-1noble.20260614.083338    arm64        Smac global planning plugin: A*, Hybrid-A*, State Lattice
+ii  ros-jazzy-nav2-smoother                          1.3.12-1noble.20260614.102914    arm64        Smoother action interface
+ii  ros-jazzy-nav2-theta-star-planner                1.3.12-1noble.20260614.083440    arm64        Theta* Global Planning Plugin
+ii  ros-jazzy-nav2-util                              1.3.12-1noble.20260614.074750    arm64        Nav2 utilities
+ii  ros-jazzy-nav2-velocity-smoother                 1.3.12-1noble.20260614.103113    arm64        Nav2's Output velocity smoother
+ii  ros-jazzy-nav2-voxel-grid                        1.3.12-1noble.20260612.161953    arm64        voxel_grid provides an implementation of an efficient 3D voxel grid.
+ii  ros-jazzy-nav2-waypoint-follower                 1.3.12-1noble.20260614.082453    arm64        A waypoint follower navigation server
+ii  ros-jazzy-navigation2                            1.3.12-1noble.20260615.092426    arm64        ROS2 Navigation Stack
+ii  ros-jazzy-object-recognition-msgs                2.0.0-5noble.20260612.085706     arm64        Object_recognition_msgs contains the ROS message and the actionlib definition used in object_recognition_core
+ii  ros-jazzy-octomap-msgs                           2.0.1-1noble.20260612.084706     arm64        This package provides messages and serializations / conversion for the OctoMap library.
+ii  ros-jazzy-omni-wheel-drive-controller            4.40.1-1noble.20260612.131243    arm64        A chainable controller for mobile robots with omnidirectional drive with three or more omni wheels.
+ii  ros-jazzy-ompl                                   1.7.0-2noble.20260305.224900     arm64        OMPL is a free sampling-based motion planning library.
+ii  ros-jazzy-opennav-docking                        1.3.12-1noble.20260614.103430    arm64        A Task Server for robot charger docking
+ii  ros-jazzy-opennav-docking-bt                     1.3.12-1noble.20260614.102947    arm64        A set of BT nodes and XMLs for docking
+ii  ros-jazzy-opennav-docking-core                   1.3.12-1noble.20260614.103147    arm64        A set of headers for plugins core to the opennav docking framework
+ii  ros-jazzy-orocos-kdl-vendor                      0.5.2-1noble.20260603.150050     arm64        Wrapper around orocos_kdl, providing nothing but a dependency on orocos_kdl on some systems.
+ii  ros-jazzy-osqp-vendor                            0.2.0-4noble.20260305.220107     arm64        Wrapper around osqp that ships with a CMake module
+ii  ros-jazzy-osrf-pycommon                          2.1.7-1noble.20260305.201653     arm64        Commonly needed Python modules, used by Python software developed at OSRF.
+ii  ros-jazzy-pal-statistics                         2.7.0-1noble.20260612.120645     arm64        The pal_statistics package
+ii  ros-jazzy-pal-statistics-msgs                    2.7.0-1noble.20260612.090016     arm64        Statistics msgs package
+ii  ros-jazzy-parallel-gripper-controller            4.40.1-1noble.20260614.102408    arm64        The parallel_gripper_controller package
+ii  ros-jazzy-parameter-traits                       0.7.3-1noble.20260612.123910     arm64        Functions and types for rclcpp::Parameter
+ii  ros-jazzy-pid-controller                         4.40.1-1noble.20260614.102457    arm64        Controller based on PID implememenation from control_toolbox package.
+ii  ros-jazzy-pilz-industrial-motion-planner         2.12.4-1noble.20260617.154917    arm64        MoveIt plugin to generate industrial trajectories PTP, LIN, CIRC and sequences thereof.
+ii  ros-jazzy-pluginlib                              5.4.5-1noble.20260604.172545     arm64        The pluginlib package provides tools for writing and dynamically loading plugins using the ROS build infrastructure.
+ii  ros-jazzy-point-cloud-transport                  4.0.8-1noble.20260614.051508     arm64        Support for transporting PointCloud2 messages in compressed format and plugin interface for implementing additional PointCloud2 transports.
+ii  ros-jazzy-pose-broadcaster                       4.40.1-1noble.20260612.131605    arm64        Broadcaster to publish cartesian states.
+ii  ros-jazzy-position-controllers                   4.40.1-1noble.20260612.131451    arm64        Generic position controller for forwarding position commands.
+ii  ros-jazzy-pybind11-vendor                        3.1.3-1noble.20260305.220146     arm64        Wrapper around pybind11.
+ii  ros-jazzy-python-cmake-module                    0.11.1-2noble.20260305.220219    arm64        Provide CMake module with extra functionality for Python.
+ii  ros-jazzy-python-orocos-kdl-vendor               0.5.2-1noble.20260603.150415     arm64        Wrapper around PyKDL, providing nothing but a dependency on PyKDL on some systems.
+ii  ros-jazzy-python-qt-binding                      2.2.2-1noble.20260305.205533     arm64        This stack provides Python bindings for Qt.
+ii  ros-jazzy-random-numbers                         2.0.5-1noble.20260617.135326     arm64        This library contains wrappers for generating floating point values, integers, quaternions using boost libraries.
+ii  ros-jazzy-range-sensor-broadcaster               4.40.1-1noble.20260612.131628    arm64        Controller to publish readings of range sensors.
+ii  ros-jazzy-rcl                                    9.2.11-1noble.20260612.094928    arm64        The ROS client library common implementation.
+ii  ros-jazzy-rcl-action                             9.2.11-1noble.20260612.095238    arm64        Package containing a C-based ROS action implementation
+ii  ros-jazzy-rcl-interfaces                         2.0.4-1noble.20260612.091447     arm64        The ROS client library common interfaces.
+ii  ros-jazzy-rcl-lifecycle                          9.2.11-1noble.20260612.095339    arm64        Package containing a C-based lifecycle implementation
+ii  ros-jazzy-rcl-logging-interface                  3.1.1-1noble.20260604.171824     arm64        Interface that rcl_logging backends needs to implement.
+ii  ros-jazzy-rcl-logging-spdlog                     3.1.1-1noble.20260604.172137     arm64        Implementation of rcl_logging API for an spdlog backend.
+ii  ros-jazzy-rcl-yaml-param-parser                  9.2.11-1noble.20260612.050815    arm64        Parse a YAML parameter file and populate the C data structure.
+ii  ros-jazzy-rclcpp                                 28.1.21-1noble.20260612.095833   arm64        The ROS client library in C++.
+ii  ros-jazzy-rclcpp-action                          28.1.21-1noble.20260612.100837   arm64        Adds action APIs for C++.
+ii  ros-jazzy-rclcpp-components                      28.1.21-1noble.20260612.102635   arm64        Package containing tools for dynamically loadable components
+ii  ros-jazzy-rclcpp-lifecycle                       28.1.21-1noble.20260612.120153   arm64        Package containing a prototype for lifecycle implementation
+ii  ros-jazzy-rclpy                                  7.1.11-1noble.20260612.095634    arm64        Package containing the Python client.
+ii  ros-jazzy-rcpputils                              2.11.4-1noble.20260603.150554    arm64        Package containing utility code for C++.
+ii  ros-jazzy-rcutils                                6.7.6-1noble.20260603.150149     arm64        Package containing various utility types and functions for C
+ii  ros-jazzy-realtime-tools                         3.11.0-1noble.20260612.101250    arm64        Contains a set of tools that can be used from a hard realtime thread, without breaking the realtime behavior.
+ii  ros-jazzy-resource-retriever                     3.4.4-1noble.20260604.172353     arm64        This package retrieves data from url-format files such as http://, ftp://, package:// file://, etc., and loads the data into memory.
+ii  ros-jazzy-rmw                                    7.3.3-1noble.20260612.050446     arm64        Contains the ROS middleware API.
+un  ros-jazzy-rmw-connextdds                         <none>                           <none>       (no description available)
+ii  ros-jazzy-rmw-cyclonedds-cpp                     2.2.3-1noble.20260612.091852     arm64        Implement the ROS middleware interface using Eclipse CycloneDDS in C++.
+ii  ros-jazzy-rmw-dds-common                         3.1.1-1noble.20260612.091532     arm64        Define a common interface between DDS implementations of ROS middleware.
+ii  ros-jazzy-rmw-fastrtps-cpp                       8.4.4-1noble.20260612.092346     arm64        Implement the ROS middleware interface using eProsima FastRTPS static code generation in C++.
+ii  ros-jazzy-rmw-fastrtps-shared-cpp                8.4.4-1noble.20260612.091855     arm64        Code shared on static and dynamic type support of rmw_fastrtps_cpp.
+ii  ros-jazzy-rmw-implementation                     2.15.6-1noble.20260612.094512    arm64        Proxy implementation of the ROS 2 Middleware Interface.
+ii  ros-jazzy-rmw-implementation-cmake               7.3.3-1noble.20260305.221018     arm64        CMake functions which can discover and enumerate available implementations.
+ii  ros-jazzy-robot-localization                     3.8.3-1noble.20260614.073224     arm64        Provides nonlinear state estimation through sensor fusion of an abritrary number of sensors.
+ii  ros-jazzy-robot-state-publisher                  3.3.4-1noble.20260614.055403     arm64        This package take the joint angles of a robot as input, and publishes the 3D poses of the robot links to tf2, using a kinematic tree model of the robot.
+ii  ros-jazzy-ros-base                               0.11.0-1noble.20260614.091815    arm64        A package which extends 'ros_core' and includes other basic functionalities like tf2 and urdf.
+ii  ros-jazzy-ros-core                               0.11.0-1noble.20260612.194005    arm64        A package to aggregate the packages required to use publish / subscribe, services, generate messages and other core ROS concepts.
+ii  ros-jazzy-ros-environment                        4.2.1-1noble.20260225.120022     arm64        The package provides the environment variables `ROS_VERSION` and `ROS_DISTRO`.
+ii  ros-jazzy-ros-gz-bridge                          1.0.22-1noble.20260612.145221    arm64        Bridge communication between ROS and Gazebo Transport
+ii  ros-jazzy-ros-gz-image                           1.0.22-1noble.20260614.051950    arm64        Image utilities for Gazebo simulation with ROS.
+ii  ros-jazzy-ros-gz-interfaces                      1.0.22-1noble.20260612.091939    arm64        Message and service data structures for interacting with Gazebo from ROS2.
+ii  ros-jazzy-ros-gz-sim                             1.0.22-1noble.20260614.054729    arm64        Tools for using Gazebo Sim simulation with ROS.
+ii  ros-jazzy-ros-workspace                          1.0.3-7noble.20260224.192101     arm64        Provides the prefix level environment files for ROS 2 packages.
+ii  ros-jazzy-ros2-control                           4.45.2-1noble.20260612.174902    arm64        Metapackage for ROS2 control related packages
+ii  ros-jazzy-ros2-control-cmake                     0.4.0-1noble.20260429.105756     arm64        Provides CMake macros used by the ros2_control framework
+ii  ros-jazzy-ros2-control-test-assets               4.45.2-1noble.20260514.130008    arm64        Shared test resources for ros2_control stack
+ii  ros-jazzy-ros2-controllers                       4.40.1-1noble.20260615.085512    arm64        Metapackage for ros2_controllers related packages
+ii  ros-jazzy-ros2action                             0.32.10-1noble.20260612.162216   arm64        The action command for ROS 2 command line tools.
+ii  ros-jazzy-ros2bag                                0.26.11-1noble.20260612.202425   arm64        Entry point for rosbag in ROS 2
+ii  ros-jazzy-ros2cli                                0.32.10-1noble.20260612.161709   arm64        Framework for ROS 2 command line tools.
+ii  ros-jazzy-ros2cli-common-extensions              0.3.1-1noble.20260612.193901     arm64        Meta package for ros2cli common extensions
+ii  ros-jazzy-ros2component                          0.32.10-1noble.20260612.190231   arm64        The component command for ROS 2 command line tools.
+ii  ros-jazzy-ros2controlcli                         4.45.2-1noble.20260612.163310    arm64        The ROS 2 command line tools for ros2_control.
+ii  ros-jazzy-ros2doctor                             0.32.10-1noble.20260612.162257   arm64        A command line tool to check potential issues in a ROS 2 system
+ii  ros-jazzy-ros2interface                          0.32.10-1noble.20260612.162016   arm64        The interface command for ROS 2 command line tools
+ii  ros-jazzy-ros2launch                             0.26.12-1noble.20260612.190450   arm64        The launch command for ROS 2 command line tools.
+ii  ros-jazzy-ros2lifecycle                          0.32.10-1noble.20260612.162505   arm64        The lifecycle command for ROS 2 command line tools.
+ii  ros-jazzy-ros2multicast                          0.32.10-1noble.20260612.190105   arm64        The multicast command for ROS 2 command line tools.
+ii  ros-jazzy-ros2node                               0.32.10-1noble.20260612.162347   arm64        The node command for ROS 2 command line tools.
+ii  ros-jazzy-ros2param                              0.32.10-1noble.20260612.162446   arm64        The param command for ROS 2 command line tools.
+ii  ros-jazzy-ros2pkg                                0.32.10-1noble.20260612.190052   arm64        The pkg command for ROS 2 command line tools.
+ii  ros-jazzy-ros2plugin                             5.4.5-1noble.20260612.190441     arm64        The plugin command for ROS 2 command line tools.
+ii  ros-jazzy-ros2run                                0.32.10-1noble.20260612.190902   arm64        The run command for ROS 2 command line tools.
+ii  ros-jazzy-ros2service                            0.32.10-1noble.20260612.162300   arm64        The service command for ROS 2 command line tools.
+ii  ros-jazzy-ros2topic                              0.32.10-1noble.20260612.162212   arm64        The topic command for ROS 2 command line tools.
+ii  ros-jazzy-rosbag2                                0.26.11-1noble.20260612.202546   arm64        Meta package for rosbag2 related packages
+ii  ros-jazzy-rosbag2-compression                    0.26.11-1noble.20260612.173908   arm64        Compression implementations for rosbag2 bags and messages.
+ii  ros-jazzy-rosbag2-compression-zstd               0.26.11-1noble.20260612.202148   arm64        Zstandard compression library implementation of rosbag2_compression
+ii  ros-jazzy-rosbag2-cpp                            0.26.11-1noble.20260612.123737   arm64        C++ ROSBag2 client library
+ii  ros-jazzy-rosbag2-interfaces                     0.26.11-1noble.20260612.053417   arm64        Interface definitions for controlling rosbag2
+ii  ros-jazzy-rosbag2-py                             0.26.11-1noble.20260612.175053   arm64        Python API for rosbag2
+ii  ros-jazzy-rosbag2-storage                        0.26.11-1noble.20260612.123349   arm64        ROS2 independent storage format to store serialized ROS2 messages
+ii  ros-jazzy-rosbag2-storage-default-plugins        0.26.11-1noble.20260612.202209   arm64        Intermediate metapackage to point at default storage plugin(s) for rosbag2
+ii  ros-jazzy-rosbag2-storage-mcap                   0.26.11-1noble.20260612.173921   arm64        rosbag2 storage plugin using the MCAP file format
+ii  ros-jazzy-rosbag2-storage-sqlite3                0.26.11-1noble.20260612.174102   arm64        ROSBag2 SQLite3 storage plugin
+ii  ros-jazzy-rosbag2-transport                      0.26.11-1noble.20260612.174257   arm64        Layer encapsulating ROS middleware to allow rosbag2 to be used with or without middleware
+ii  ros-jazzy-rosgraph-msgs                          2.0.4-1noble.20260612.091956     arm64        Messages relating to the ROS Computation Graph.
+ii  ros-jazzy-rosidl-adapter                         4.6.9-1noble.20260612.045318     arm64        API and scripts to parse .msg/.srv/.action files and convert them to .idl.
+ii  ros-jazzy-rosidl-cli                             4.6.9-1noble.20260612.045056     arm64        Command line tools for ROS interface generation.
+ii  ros-jazzy-rosidl-cmake                           4.6.9-1noble.20260612.050232     arm64        The CMake functionality to invoke code generation for ROS interface files.
+ii  ros-jazzy-rosidl-core-generators                 0.2.1-1noble.20260612.051523     arm64        A configuration package defining core ROS interface generators.
+ii  ros-jazzy-rosidl-core-runtime                    0.2.1-1noble.20260612.051518     arm64        A configuration package defining runtime dependencies for core ROS interfaces.
+ii  ros-jazzy-rosidl-default-generators              1.6.1-1noble.20260612.052930     arm64        A configuration package defining the default ROS interface generators.
+ii  ros-jazzy-rosidl-default-runtime                 1.6.1-1noble.20260612.052928     arm64        A configuration package defining the runtime for the ROS interfaces.
+ii  ros-jazzy-rosidl-dynamic-typesupport             0.1.2-3noble.20260612.050219     arm64        Unified serialization support interface for dynamic typesupport in C.
+ii  ros-jazzy-rosidl-dynamic-typesupport-fastrtps    0.1.0-3noble.20260612.050502     arm64        FastDDS serialization support implementation for use with C/C++.
+ii  ros-jazzy-rosidl-generator-c                     4.6.9-1noble.20260612.050445     arm64        Generate the ROS interfaces in C.
+ii  ros-jazzy-rosidl-generator-cpp                   4.6.9-1noble.20260612.050559     arm64        Generate the ROS interfaces in C++.
+ii  ros-jazzy-rosidl-generator-py                    0.22.2-1noble.20260612.051150    arm64        Generate the ROS interfaces in Python.
+ii  ros-jazzy-rosidl-generator-rs                    0.4.12-1noble.20260612.051152    arm64        Generate the ROS interfaces in Rust.
+ii  ros-jazzy-rosidl-generator-type-description      4.6.9-1noble.20260612.050054     arm64        Generate hashes and descriptions of ROS 2 interface types, per REP-2011.
+ii  ros-jazzy-rosidl-parser                          4.6.9-1noble.20260612.045834     arm64        The parser for `.idl` ROS interface files.
+ii  ros-jazzy-rosidl-pycommon                        4.6.9-1noble.20260612.050023     arm64        Common Python functions used by rosidl packages.
+ii  ros-jazzy-rosidl-runtime-c                       4.6.9-1noble.20260612.045845     arm64        Provides definitions, initialization and finalization functions, and macros for getting and working with rosidl typesupport types in C.
+ii  ros-jazzy-rosidl-runtime-cpp                     4.6.9-1noble.20260612.050208     arm64        Provides definitions and templated functions for getting and working with rosidl typesupport types in C++.
+ii  ros-jazzy-rosidl-runtime-py                      0.13.2-1noble.20260612.050023    arm64        Runtime utilities for working with generated ROS interfaces in Python.
+ii  ros-jazzy-rosidl-typesupport-c                   3.2.3-1noble.20260612.050932     arm64        Generate the type support for C messages.
+ii  ros-jazzy-rosidl-typesupport-cpp                 3.2.3-1noble.20260612.051258     arm64        Generate the type support for C++ messages.
+ii  ros-jazzy-rosidl-typesupport-fastrtps-c          3.6.4-1noble.20260612.051041     arm64        Generate the C interfaces for eProsima FastRTPS.
+ii  ros-jazzy-rosidl-typesupport-fastrtps-cpp        3.6.4-1noble.20260612.050817     arm64        Generate the C++ interfaces for eProsima FastRTPS.
+ii  ros-jazzy-rosidl-typesupport-interface           4.6.9-1noble.20260612.045115     arm64        The interface for rosidl typesupport packages.
+ii  ros-jazzy-rosidl-typesupport-introspection-c     4.6.9-1noble.20260612.050703     arm64        Generate the message type support for dynamic message construction in C.
+ii  ros-jazzy-rosidl-typesupport-introspection-cpp   4.6.9-1noble.20260612.050922     arm64        Generate the message type support for dynamic message construction in C++.
+ii  ros-jazzy-rpyutils                               0.4.2-1noble.20260305.205337     arm64        Package containing various utility types and functions for Python
+ii  ros-jazzy-rsl                                    1.3.0-1noble.20260612.123547     arm64        ROS Support Library
+ii  ros-jazzy-ruckig                                 0.9.2-5noble.20260305.203224     arm64        Instantaneous Motion Generation for Robots and Machines.
+ii  ros-jazzy-rviz-assimp-vendor                     14.1.22-1noble.20260608.082004   arm64        Wrapper around assimp, providing nothing but a dependency on assimp, on some systems.
+ii  ros-jazzy-rviz-common                            14.1.22-1noble.20260614.052326   arm64        Common rviz API, used by rviz plugins and applications.
+ii  ros-jazzy-rviz-default-plugins                   14.1.22-1noble.20260614.100200   arm64        Several default plugins for rviz to cover the basic functionality.
+ii  ros-jazzy-rviz-ogre-vendor                       14.1.22-1noble.20260610.083936   arm64        Wrapper around ogre3d, it provides a fixed CMake module and an ExternalProject build of ogre.
+ii  ros-jazzy-rviz-rendering                         14.1.22-1noble.20260611.094711   arm64        Library which provides the 3D rendering functionality in rviz.
+ii  ros-jazzy-rviz2                                  14.1.22-1noble.20260615.083715   arm64        3D visualization tool for ROS.
+ii  ros-jazzy-sdformat-urdf                          1.0.2-1noble.20260604.183812     arm64        URDF plugin to parse SDFormat XML into URDF C++ DOM objects.
+ii  ros-jazzy-sdformat-vendor                        0.0.11-1noble.20260604.182804    arm64        Vendor package for: sdformat14 14.9.0 SDFormat is an XML file format that describes environments, objects, and robots in a manner suitable for robotic applications
+ii  ros-jazzy-sensor-msgs                            5.3.8-1noble.20260612.082718     arm64        A package containing some sensor data related message and service definitions.
+ii  ros-jazzy-sensor-msgs-py                         5.3.8-1noble.20260612.091811     arm64        A package for easy creation and reading of PointCloud2 messages in Python.
+ii  ros-jazzy-service-msgs                           2.0.4-1noble.20260612.052205     arm64        Messages definitions common among all ROS services
+ii  ros-jazzy-shape-msgs                             5.3.8-1noble.20260612.085104     arm64        A package containing some message definitions which describe geometric shapes.
+ii  ros-jazzy-simulation-interfaces                  1.5.1-1noble.20260612.082730     arm64        A package containing simulation interfaces including messages, services and actions
+ii  ros-jazzy-slam-toolbox                           2.8.5-1noble.20260614.104642     arm64        This package provides a sped up improved slam karto with updated SDK and visualization and modification toolsets
+ii  ros-jazzy-smclib                                 4.2.0-1noble.20260317.155426     arm64        The State Machine Compiler (SMC) from http://smc.sourceforge.net/ converts a language-independent description of a state machine into the source code to support that state machine.
+ii  ros-jazzy-spdlog-vendor                          1.6.2-1noble.20260603.151440     arm64        Wrapper around spdlog, providing nothing but a dependency on spdlog, on some systems.
+ii  ros-jazzy-sqlite3-vendor                         0.26.11-1noble.20260604.090944   arm64        SQLite 3 vendor package
+ii  ros-jazzy-srdfdom                                2.0.7-1noble.20260612.201116     arm64        Parser for Semantic Robot Description Format (SRDF).
+ii  ros-jazzy-sros2                                  0.13.6-1noble.20260612.162423    arm64        Command line tools for managing SROS2 keys
+ii  ros-jazzy-sros2-cmake                            0.13.6-1noble.20260612.190641    arm64        CMake macros to configure security
+ii  ros-jazzy-state-interfaces-broadcaster           4.40.1-1noble.20260612.131651    arm64        Broadcaster to publish the requested hardware interface states
+ii  ros-jazzy-statistics-msgs                        2.0.4-1noble.20260612.053420     arm64        Message definitions for reporting statistics for topics and system resources.
+ii  ros-jazzy-std-msgs                               5.3.8-1noble.20260612.053429     arm64        A package containing some standard message definitions.
+ii  ros-jazzy-std-srvs                               5.3.8-1noble.20260612.090547     arm64        A package containing some standard service definitions.
+ii  ros-jazzy-steering-controllers-library           4.40.1-1noble.20260614.094413    arm64        Package for steering robot configurations including odometry and interfaces.
+ii  ros-jazzy-stereo-msgs                            5.3.8-1noble.20260612.084934     arm64        A package containing some stereo camera related message definitions.
+ii  ros-jazzy-stomp                                  0.1.2-4noble.20260305.205336     arm64        This package provides the STOMP (Stochastic Trajectory Optimization for Motion Planning) algorithm that can be used for robot motion planning tasks or other similar optimization tasks
+ii  ros-jazzy-tcb-span                               1.3.1-1noble.20260516.181230     arm64        Implementation of C++20's std::span
+ii  ros-jazzy-teleop-twist-keyboard                  2.4.1-1noble.20260612.132037     arm64        A robot-agnostic teleoperation node to convert keyboard commands to Twist messages.
+ii  ros-jazzy-tf2                                    0.36.21-1noble.20260612.080352   arm64        tf2 is the second generation of the transform library, which lets the user keep track of multiple coordinate frames over time.
+ii  ros-jazzy-tf2-bullet                             0.36.21-1noble.20260614.055818   arm64        tf2_bullet
+ii  ros-jazzy-tf2-eigen                              0.36.21-1noble.20260614.055857   arm64        tf2_eigen
+ii  ros-jazzy-tf2-eigen-kdl                          0.36.21-1noble.20260612.093812   arm64        Conversion functions between: - Eigen and KDL
+ii  ros-jazzy-tf2-geometry-msgs                      0.36.21-1noble.20260614.055959   arm64        tf2_geometry_msgs
+ii  ros-jazzy-tf2-kdl                                0.36.21-1noble.20260614.060020   arm64        KDL binding for tf2
+ii  ros-jazzy-tf2-msgs                               0.36.21-1noble.20260612.082742   arm64        tf2_msgs
+ii  ros-jazzy-tf2-py                                 0.36.21-1noble.20260612.100533   arm64        The tf2_py package
+ii  ros-jazzy-tf2-ros                                0.36.21-1noble.20260614.051508   arm64        This package contains the C++ ROS bindings for the tf2 library
+ii  ros-jazzy-tf2-ros-py                             0.36.21-1noble.20260612.100802   arm64        This package contains the ROS Python bindings for the tf2 library
+ii  ros-jazzy-tf2-sensor-msgs                        0.36.21-1noble.20260614.060022   arm64        Small lib to transform sensor_msgs with tf.
+ii  ros-jazzy-tf2-tools                              0.36.21-1noble.20260612.154248   arm64        tf2_tools
+ii  ros-jazzy-tinyxml2-vendor                        0.9.2-1noble.20260305.223118     arm64        Wrapper around tinyxml2, providing nothing but a dependency on tinyxml2, on some systems.
+ii  ros-jazzy-tl-expected                            1.3.1-1noble.20260516.181318     arm64        C++11/14/17 std::expected with functional-style extensions
+ii  ros-jazzy-tracetools                             8.2.6-1noble.20260604.091022     arm64        Tracing wrapper for ROS 2.
+ii  ros-jazzy-trajectory-msgs                        5.3.8-1noble.20260612.082940     arm64        A package containing some robot trajectory message definitions.
+ii  ros-jazzy-transmission-interface                 4.45.2-1noble.20260612.174446    arm64        data structures for representing mechanical transmissions, methods for propagating values between actuator and joint spaces and tooling to support this.
+ii  ros-jazzy-tricycle-controller                    4.40.1-1noble.20260612.131658    arm64        Controller for a tricycle drive mobile base
+ii  ros-jazzy-tricycle-steering-controller           4.40.1-1noble.20260615.083841    arm64        Steering controller with tricycle kinematics.
+ii  ros-jazzy-type-description-interfaces            2.0.4-1noble.20260612.052559     arm64        A package containing message and service definitions for describing and communicating descriptions of other types.
+ii  ros-jazzy-uncrustify-vendor                      3.0.1-1noble.20260305.223611     arm64        Wrapper around uncrustify, providing nothing but a dependency on uncrustify, on some systems.
+ii  ros-jazzy-unique-identifier-msgs                 2.5.1-1noble.20260612.051815     arm64        ROS messages for universally unique identifiers.
+ii  ros-jazzy-urdf                                   2.10.1-2noble.20260604.174740    arm64        This package contains a C++ parser for the Unified Robot Description Format (URDF), which is an XML format for representing a robot model.
+ii  ros-jazzy-urdf-parser-plugin                     2.10.1-2noble.20260604.092949    arm64        This package contains a C++ base class for URDF parsers.
+ii  ros-jazzy-urdfdom                                4.0.2-1noble.20260604.093156     arm64        A library to access URDFs using the DOM model.
+ii  ros-jazzy-urdfdom-headers                        1.1.3-1noble.20260604.092803     arm64        C++ headers for URDF.
+ii  ros-jazzy-urdfdom-py                             1.2.1-3noble.20260612.162511     arm64        Python implementation of the URDF parser.
+ii  ros-jazzy-velocity-controllers                   4.40.1-1noble.20260612.131555    arm64        Generic controller for forwarding commands.
+ii  ros-jazzy-vision-msgs                            4.1.1-3noble.20260612.085240     arm64        Messages for interfacing with various computer vision pipelines, such as object detectors.
+ii  ros-jazzy-visualization-msgs                     5.3.8-1noble.20260612.083755     arm64        A package containing some visualization and interaction related message definitions.
+ii  ros-jazzy-warehouse-ros                          2.0.5-1noble.20260614.081114     arm64        Persistent storage of ROS messages
+ii  ros-jazzy-xacro                                  2.1.1-1noble.20260519.011649     arm64        Xacro (XML Macros) Xacro is an XML macro language.
+ii  ros-jazzy-yaml-cpp-vendor                        9.0.1-1noble.20260305.224129     arm64        Wrapper around yaml-cpp, it provides a fixed CMake module and an ExternalProject build of it.
+ii  ros-jazzy-zstd-vendor                            0.26.11-1noble.20260604.092801   arm64        Zstd compression vendor package, providing a dependency for Zstd.

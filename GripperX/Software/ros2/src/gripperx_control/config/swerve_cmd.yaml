@@ -1,0 +1,82 @@
+swerve_cmd_node:
+  ros__parameters:
+    a: 0.203
+    b: 0.16556
+    wheel_radius: 0.052
+    cmd_vel_topic: /cmd_vel
+    joint_state_topic: /joint_states
+    command_topic: /swerve_cmd_joint_states
+    # 2026-07-16 (user decision): raised 45deg->60deg (0.7854->1.0472 rad) so the
+    # IK can plan the true tangential in-place-spin angle atan2(a,b)=50.8deg with
+    # margin (no scrub). SIM/planning only — the real servos stay clamped at 45deg
+    # by steer_servo_node + calibration (SR-6 enforced) until rework recalibration.
+    steering_angle_limit: 1.0472
+    steer_alignment_min_scale: 0.45
+    steer_alignment_deadband_rad: 0.12
+    max_wheel_angular_speed: 12.0
+    # Fix 7 / NFR-1 (#11): 50 -> 30 Hz. Downstream consumer ros2_control
+    # only processes commands at controller_manager update_rate=30 anyway
+    # (gripperx_control/config/ros2_controllers.yaml) -- 50 Hz already over-provisions
+    # it today without loss. Safety margins at 30 Hz (33 ms period)
+    # against all dependent timeouts/time constants remain >= factor 9
+    # (steer_diff_time_constant_sec=0.3s, cmd_vel_timeout_sec/
+    # steer_states_timeout_sec=0.5s, GripperXInterface command_timeout_sec=0.5s).
+    # Details/table: gripperx_control/docs/FIX7_DEPLOY.md
+    control_rate_hz: 30.0
+    cmd_vel_timeout_sec: 0.5
+    use_direct_ik: true
+    # Steering differential from /hw/steer_states feedback (Task #21, default off).
+    # Details/deployment: gripperx_control/docs/STEER_DIFFERENTIAL.md
+    enable_steer_feedback_differential: false
+    steer_diff_omega_gate: 0.05
+    steer_diff_min_speed_mps: 0.03
+    steer_diff_time_constant_sec: 0.3
+    steer_diff_max_omega: 1.5
+    steer_diff_min_ratio: 0.5
+    steer_diff_max_ratio: 1.5
+    # Full swerve for teleop/manual. Nav2 forward-only limits are in gripperx_planning/config/nav2.yaml (DWB).
+    enforce_front_forward: false
+    allow_reverse: true
+    # Back to false (2026-07-16): now that the steer limit is 60deg (> the 50.8deg
+    # tangential angle), pure rotation uses the SWERVE spin — wheels roll on the
+    # rotation tangent, zero scrub/drift — which is smoother than the tank turn's
+    # straight-wheel skid. Keeping point_turn on would hide the very tangential
+    # spin this limit raise enables. (Tank turn stays available as a manual option.)
+    enable_point_turn: false
+    point_turn_steer_target: 0.0
+    point_turn_vx_threshold: 0.01
+    point_turn_vy_threshold: 0.01
+    point_turn_omega_threshold: 0.35
+    kx: 4.0
+    ky: 4.0
+    ktheta: 3.0
+    kd_gains:
+      - 5.0
+      - 5.0
+      - 5.0
+      - 5.0
+    # Fix 7 / NFR-1 (#11): optional bridge merge (joint_command_bridge mapping
+    # directly in swerve_cmd_node, saves one DDS node/hop per cycle). Default
+    # OFF -> behavior-neutral, joint_command_bridge remains the default path.
+    # Enable only via control.launch.py argument use_integrated_bridge:=true
+    # (control.launch.py then takes over the values below from
+    # swerve_cmd_bridge.yaml and disables the separate joint_command_bridge node).
+    # Details: gripperx_control/docs/FIX7_DEPLOY.md
+    enable_integrated_bridge: false
+    steering_command_topic: /steering_position_controller/commands
+    wheel_command_topic: /wheel_velocity_controller/commands
+    steering_joint_names:
+      - f_left_steer
+      - f_right_steer
+      - b_leftsteer
+      - b_rightsteer
+    wheel_joint_names:
+      - f_leftwheel
+      - f_rightwheel
+      - b_leftwheel
+      - b_rightwheel
+    wheel_command_multipliers:
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0

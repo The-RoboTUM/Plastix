@@ -1,0 +1,51 @@
+steer_servo_node:
+  ros__parameters:
+    use_single_bus: true
+    serial_port: /dev/steering_servo
+    serial_ports:
+      - /dev/steering_servo
+    baud_rate: 1000000
+    protocol_end: 0
+    # Order: FL, FR, BL, BR
+    # Calibrated 2026-07-01: raw positions at straight-ahead steering.
+    # protocol_end=0 (SCS): no byte swap in SCS_LOBYTE/HIBYTE. protocol_end=1 would
+    # swap bytes and drive to wrong positions.
+    servo_ids: [11, 14, 12, 13]
+    center_counts:    [1785, 1147, 1104, 1544]
+    counts_plus_90:   [2809, 2171, 2128, 2568]
+    counts_minus_90:  [761, 123, 80, 520]
+    # Raised 45->60deg (2026-07-16, user decision; SR-6 45deg self-collision
+    # rationale stemmed from the now-removed spring linkage). NOTE: the physical
+    # self-collision boundary is still enforced by the calibration end-stops
+    # (counts_plus_90/counts_minus_90 below) — a 60deg command maps to those old
+    # ~45deg end-stop counts, so the real servos CANNOT actually exceed ~45deg
+    # and the 0-45deg range is now under-scaled, until the counts are recalibrated
+    # at rework (robot disassembled; counts belong to the old spring linkage,
+    # ASBUILT §1.3). Real >45deg remains blocked by calibration until then.
+    steering_angle_limit_deg: 60.0
+    # Task #22c: front servos may optionally steer further than the
+    # base limit above (rear always stays at steering_angle_limit_deg).
+    # Default off -> behavior-neutral. BEFORE enabling: front_extended_steering_limit_deg
+    # requires its own calibration (counts_plus_90/counts_minus_90 for FL/FR must
+    # reflect the new, actually safe end stop -- see gripperx_control/docs/STEERING_LIMITS.md).
+    enable_front_extended_steering: false
+    # Aligned to the new base (60deg) so the extension guard does not treat it as
+    # a reduction if ever enabled; extension stays off (still needs its own FL/FR
+    # end-stop recalibration before use).
+    front_extended_steering_limit_deg: 60.0
+    move_time_ms: 400
+    move_acc: 20
+    # Fix 7 / NFR-1 (#11): 50 -> 30 Hz. Every cycle performs BLOCKING serial
+    # I/O (sync_write_positions_timed + up to 4x read_position) -- this is
+    # the suspected largest real CPU/timing cost factor on the Pi overall
+    # (Task #14 overrun suspicion). Consumer swerve_cmd_node reads /hw/steer_states
+    # with steer_states_timeout_sec=0.5s; at 30 Hz (33ms period) a margin of
+    # ~15x remains. /hw/joint_commands only arrives via GripperXInterface at
+    # controller_manager update_rate=30 anyway -- 50 Hz polling here was already
+    # over-provisioning. Details/table: gripperx_control/docs/FIX7_DEPLOY.md
+    control_rate_hz: 30.0
+    command_timeout_sec: 0.5
+    ping_retries: 3
+    require_all_servos: true
+    joint_commands_topic: /hw/joint_commands
+    steer_states_topic: /hw/steer_states
