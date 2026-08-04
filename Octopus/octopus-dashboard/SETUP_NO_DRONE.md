@@ -19,18 +19,23 @@ test_camera_feed.py ──HTTP POST──▶ api.py ──serviert──▶ dash
 
 ---
 
-## 1. Was auf das Zielgerät kopieren
+## 0. Repo holen (per git)
 
-Es reicht der Ordner **`octopus-dashboard/`** komplett, insbesondere:
-
+```bash
+git clone https://gitex.itq.de/cirqmind/PlastiX.git
+cd PlastiX
+git checkout octopus-dashboard-cleanup      # WICHTIG: das Dashboard liegt auf diesem Branch, nicht main
+cd Octopus/octopus-dashboard
 ```
-api.py                 dashboard.html        live_data.js
-vendor/                (Leaflet, offline)    octopusfinal.db   (Tasks/Fleet-Demo-Daten)
-requirements.txt       test_camera_feed.py   SETUP_NO_DRONE.md
-```
 
-Optional, nur für **echte** YOLO-Detektion statt Demo-Boxen:
-ein Modell aus `eve/Software/detect-and-localize/data/models/` (z. B. `indoor_v8s.pt`).
+Hinweise:
+- **git-lfs ist nicht nötig** — das Dashboard (inkl. Leaflet unter `vendor/`) besteht aus
+  normalen Dateien.
+- Die **YOLO-Modelle sind nicht im Repo** (bewusst per `.gitignore` ausgeschlossen, weil groß).
+  Für den `--demo`-Modus braucht man sie nicht. Für **echte** YOLO-Detektion ein Modell aus
+  `eve/Software/detect-and-localize/data/models/` (z. B. `indoor_v8s.pt`) separat auf das
+  Zielgerät kopieren.
+- `octopusfinal.db` (Demo-Daten für Tasks/Fleet) ist im Repo und wird mitgeholt.
 
 ---
 
