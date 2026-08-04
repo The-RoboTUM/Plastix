@@ -413,39 +413,6 @@ class DetectorNode(Node):
             fallback.append(self._debug_detection_from_candidate(item, index, frame_shape, "detected"))
         return fallback
 
-    def _draw_debug_overlays(self, debug_frame, detections):
-        frame_h, frame_w = debug_frame.shape[:2]
-        for det in detections:
-            bbox = det.get("bbox")
-            if bbox:
-                x1, y1, x2, y2 = bbox["x1"], bbox["y1"], bbox["x2"], bbox["y2"]
-                cv2.rectangle(debug_frame, (x1, y1), (x2, y2), (0, 165, 255), 2)
-                cx = int(round(0.5 * (x1 + x2)))
-                cy = int(round(0.5 * (y1 + y2)))
-            else:
-                u = det.get("u")
-                v = det.get("v")
-                if u is None or v is None:
-                    continue
-                cx = int(round(max(0.0, min(1.0, float(u))) * frame_w))
-                cy = int(round((1.0 - max(0.0, min(1.0, float(v)))) * frame_h))
-                x1, y1 = max(0, cx - 4), max(0, cy - 4)
-
-            cv2.circle(debug_frame, (cx, cy), 4, (0, 255, 255), -1)
-            conf = det.get("confidence")
-            conf_text = "" if conf is None else f" {float(conf):.2f}"
-            label = f"#{det.get('id')} {det.get('class_name', 'rubbish')}{conf_text}"
-            cv2.putText(
-                debug_frame,
-                label,
-                (int(x1), max(18, int(y1) - 6)),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.55,
-                (0, 255, 255),
-                2,
-                cv2.LINE_AA,
-            )
-
     def _publish_debug_outputs(self, image_msg, frame, result, stamp):
         try:
             timestamp = self._stamp_to_float(stamp)
@@ -453,9 +420,11 @@ class DetectorNode(Node):
             frame_h, frame_w = frame.shape[:2]
             detections = self._build_debug_detections(result, frame.shape)
 
+            # No overlays are burned into the debug frame — the dashboard draws both
+            # the bounding box and the label from the detections payload below. The
+            # detector only ships the raw camera frame plus the detection data.
             debug_frame = result.get("annotated")
             debug_frame = debug_frame.copy() if debug_frame is not None else frame.copy()
-            self._draw_debug_overlays(debug_frame, detections)
 
             payload = {
                 "source_id": "detector_node",

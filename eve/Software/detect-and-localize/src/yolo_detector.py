@@ -29,14 +29,10 @@ class YOLODetector:
                 "bbox": xyxy
             })
 
-            if draw:
-                color = (0, 255, 0)
-                (xmin, ymin, xmax, ymax) = xyxy
-                cv2.rectangle(annotated, (xmin, ymin), (xmax, ymax), color, 2)
-                text = f"{label} {conf:.2f}"
-                (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                cv2.rectangle(annotated, (xmin, ymin - th - 4), (xmin + tw, ymin), color, -1)
-                cv2.putText(annotated, text, (xmin, ymin - 2), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0,0,0), 1)
+            # Boxes/labels are no longer burned into the frame here. The dashboard
+            # draws its own (yellow) box, and detector_node draws a single green
+            # label in _draw_debug_overlays, so every detection is framed once
+            # (dashboard) and labelled once (detector) without duplication.
 
         if draw:
             return detections, annotated

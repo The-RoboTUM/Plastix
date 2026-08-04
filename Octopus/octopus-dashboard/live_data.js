@@ -55,7 +55,11 @@ const OCTOPUS = {
     polygonMode: false,
     polygonPoints: [],
     polygonPreviewLayer: null,
+    placeEveMode: false,
   },
+  manualEve: JSON.parse(localStorage.getItem("octopusManualEve") || "null"),
+  eveYawDeg: parseFloat(localStorage.getItem("octopusEveYawDeg") || "0") || 0,
+  projectDetections: (localStorage.getItem("octopusProjectDetections") ?? "1") === "1",
   missionArea: JSON.parse(localStorage.getItem("octopusMissionArea") || "null"),
   gridMode: localStorage.getItem("octopusGridMode") || "fixed_camera_footprint",
   gridSource: localStorage.getItem("octopusGridSource") || "global",
@@ -64,6 +68,11 @@ const OCTOPUS = {
   osmPriors: JSON.parse(localStorage.getItem("octopusOsmPriors") || "null"),
   gridDisplay: { ...GRID_DISPLAY_DEFAULTS, ...(JSON.parse(localStorage.getItem("octopusGridDisplay") || "{}")) },
   gridView: { scale: 1, offsetX: 0, offsetY: 0, isPanning: false, lastX: 0, lastY: 0, moved: false },
+  cameraFeed: {
+    gridCols: parseInt(localStorage.getItem("octopusCameraFeedGridCols") ?? "8", 10),
+    highlightCells: (localStorage.getItem("octopusCameraFeedHighlight") ?? "1") === "1",
+    imageSignature: null,
+  },
 };
 
 const DEMO_MAP_ORIGIN = { lat: 48.2513611, lon: 11.6359722 };
@@ -542,10 +551,27 @@ function robotStatusFromState(state, age) {
 function getFleetSnapshot() {
   return Object.values(ROBOT_FLEET_PROFILES).map((profile) => {
     const battery = matchBatteryForProfile(profile) || { percent: profile.fallback?.battery, state: profile.fallback?.state, ts: null, is_demo: true };
-    const location = matchLocationForProfile(profile) || fallbackLocationForProfile(profile);
+    let location = matchLocationForProfile(profile) || fallbackLocationForProfile(profile);
+    // Manual placement of the Eve drone takes precedence over live/fallback location.
+    if (profile.key === "eve" && OCTOPUS.manualEve &&
+        Number.isFinite(OCTOPUS.manualEve.lat) && Number.isFinite(OCTOPUS.manualEve.lon)) {
+      location = {
+        id: profile.name,
+        lat: OCTOPUS.manualEve.lat,
+        lon: OCTOPUS.manualEve.lon,
+        ts: OCTOPUS.manualEve.ts || new Date().toISOString(),
+        state: "manual placement",
+        manual: true,
+      };
+    }
     const age = ageSeconds(location.ts || battery.ts);
-    const state = battery.state || location.state || profile.fallback?.state || "unknown";
-    const demo = Boolean(location.is_demo || battery.is_demo);
+    let state = battery.state || location.state || profile.fallback?.state || "unknown";
+    let demo = Boolean(location.is_demo || battery.is_demo);
+    // A manually placed Eve counts as real, positioned data (not demo/offline).
+    if (location.manual) {
+      state = "manual placement";
+      demo = false;
+    }
     const status = demo ? "unknown" : robotStatusFromState(state, age);
     const local = latLngToLocal(safeNumber(location.lat, NaN), safeNumber(location.lon, NaN));
     const currentTask = findCurrentTaskForRobot(profile);
@@ -778,11 +804,47 @@ function handleMissionMapMouseMove(event) {
 }
 
 function handleMissionMapClick(event) {
+  if (OCTOPUS.missionMap.placeEveMode) {
+    placeEveAt(event.latlng.lat, event.latlng.lng);
+    return;
+  }
   if (!OCTOPUS.missionMap.polygonMode) return;
   OCTOPUS.missionMap.polygonPoints.push(event.latlng);
   const count = OCTOPUS.missionMap.polygonPoints.length;
   addTimeline(`Search polygon point ${count} set.`, "info");
   renderPolygonPreview();
+}
+
+function setEvePlacementMode(enabled) {
+  const state = OCTOPUS.missionMap;
+  state.placeEveMode = enabled;
+  if (enabled && state.polygonMode) setPolygonMode(false);
+  const btn = $("set-eve-button");
+  const mapEl = $("mission-map");
+  if (btn) btn.classList.toggle("area-active", enabled);
+  if (mapEl) mapEl.classList.toggle("polygon-drawing", enabled);
+  if (enabled) addTimeline("Set Eve enabled. Click on the mission map to place the Eve drone.", "info");
+}
+
+function placeEveAt(lat, lon) {
+  OCTOPUS.manualEve = { lat, lon, ts: new Date().toISOString() };
+  localStorage.setItem("octopusManualEve", JSON.stringify(OCTOPUS.manualEve));
+  setEvePlacementMode(false);
+  const { x, y } = latLngToLocal(lat, lon);
+  addTimeline(`Eve placed manually at x=${x.toFixed(2)} m, y=${y.toFixed(2)} m (local).`, "success");
+  renderAll();
+}
+
+function clearManualEve() {
+  setEvePlacementMode(false);
+  if (!OCTOPUS.manualEve) {
+    addTimeline("No manual Eve placement to clear.", "info");
+    return;
+  }
+  OCTOPUS.manualEve = null;
+  localStorage.removeItem("octopusManualEve");
+  addTimeline("Manual Eve placement cleared. Using live/fallback position.", "warning");
+  renderAll();
 }
 
 function finishPolygonArea() {
@@ -801,6 +863,7 @@ function finishPolygonArea() {
 }
 
 function startPolygonArea() {
+  if (OCTOPUS.missionMap.placeEveMode) setEvePlacementMode(false);
   OCTOPUS.missionMap.polygonPoints = [];
   setPolygonMode(true);
   addTimeline("Draw polygon enabled. Click search-area points on the mission map, then press Finish.", "info");
@@ -1305,11 +1368,13 @@ function renderMissionMap() {
     if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
     const icon = missionRobotIcon(robot);
     const style = deviceStyle(robot.type === "water" ? "boat" : robot.type, robot.state);
+    const isEve = robot.key === "eve";
     const marker = icon
-      ? L.marker([lat, lon], { icon })
+      ? L.marker([lat, lon], { icon, draggable: isEve })
       : L.circleMarker([lat, lon], { radius: 8, color: style.color, weight: 2, fillColor: style.fillColor, fillOpacity: 0.92 });
 
-    marker.bindTooltip(`${robot.icon} ${robot.name} · ${robot.role}<br>${robot.state || "unknown"} · ${robot.capability}`, {
+    const dragHint = isEve ? "<br><em>drag to move · manually placed</em>" : "";
+    marker.bindTooltip(`${robot.icon} ${robot.name} · ${robot.role}<br>${robot.state || "unknown"} · ${robot.capability}${dragHint}`, {
       permanent: false,
       direction: "top",
     });
@@ -1318,6 +1383,13 @@ function renderMissionMap() {
       OCTOPUS.selected = { type: "fleet", id: robot.name, device_type: robot.type, robot };
       renderInspector();
     });
+
+    if (isEve) {
+      marker.on("dragend", (dragEvent) => {
+        const ll = dragEvent.target.getLatLng();
+        placeEveAt(ll.lat, ll.lng);
+      });
+    }
 
     marker.addTo(state.markerLayer);
     bounds.push([lat, lon]);
@@ -1358,6 +1430,9 @@ function renderMissionMap() {
     bounds.push([lat, lon]);
   });
 
+  // Live camera detections projected onto the map from Eve's position + footprint.
+  renderProjectedDetections(state, bounds);
+
   const meta = getActiveGridMeta(OCTOPUS.latest.globalMap);
   bounds.push(localToLatLng(0, 0));
   bounds.push(localToLatLng(meta.width_m, meta.height_m));
@@ -1373,6 +1448,118 @@ function fitMissionMap() {
   if (!state.map) return;
   state.hasFit = false;
   renderMissionMap();
+}
+
+// Project the live camera detections onto world/local coordinates using Eve's
+// position, heading and the camera ground footprint. Assumes a downward-looking
+// camera; image-top = drone forward. Heading (yaw) defaults to 0 = facing north.
+function projectDetectionsToMap() {
+  const eve = getFleetSnapshot().find((r) => r.key === "eve");
+  if (!eve || eve.demo || !Number.isFinite(safeNumber(eve.local?.x, NaN))) {
+    return { eve: null, corners: null, points: [] };
+  }
+  const fp = octopusComputeCameraFootprintMeta().footprint;
+  const widthM = fp.left_m + fp.right_m;
+  const heightM = fp.top_m + fp.bottom_m;
+  const yawDeg = safeNumber(OCTOPUS.eveYawDeg, 0);
+  const th = (yawDeg * Math.PI) / 180;
+  const cos = Math.cos(th);
+  const sin = Math.sin(th);
+  const ex = eve.local.x;
+  const ey = eve.local.y;
+
+  // camera-frame offset (right, forward) -> world local (east=x, north=y), rotated by heading.
+  const toWorld = (offRight, offFwd) => {
+    const east = offRight * cos + offFwd * sin;
+    const north = -offRight * sin + offFwd * cos;
+    return localToLatLng(ex + east, ey + north);
+  };
+
+  const corners = [
+    toWorld(-fp.left_m, -fp.bottom_m),
+    toWorld(fp.right_m, -fp.bottom_m),
+    toWorld(fp.right_m, fp.top_m),
+    toWorld(-fp.left_m, fp.top_m),
+  ];
+  const evePos = toWorld(0, 0);
+  const headingTip = toWorld(0, fp.top_m); // middle of the forward footprint edge
+
+  const points = cameraFeedDetections()
+    .map((det) => {
+      const u = clamp(safeNumber(det.u, NaN), 0, 1);
+      const v = clamp(safeNumber(det.v, NaN), 0, 1);
+      if (!Number.isFinite(u) || !Number.isFinite(v)) return null;
+      const offRight = u * widthM - fp.left_m;
+      const offFwd = v * heightM - fp.bottom_m;
+      const [lat, lon] = toWorld(offRight, offFwd);
+      return { det, lat, lon };
+    })
+    .filter(Boolean);
+
+  return { eve, corners, points, evePos, headingTip, yawDeg };
+}
+
+function renderProjectedDetections(state, bounds) {
+  if (OCTOPUS.projectDetections === false) return;
+  const proj = projectDetectionsToMap();
+  if (!proj.eve) return;
+
+  // Camera footprint outline on the ground (what Eve currently sees).
+  if (proj.corners) {
+    const poly = L.polygon(proj.corners, {
+      color: "#d4ff00",
+      opacity: 0.9,
+      weight: 1.5,
+      dashArray: "5,5",
+      fill: true,
+      fillColor: "#d4ff00",
+      fillOpacity: 0.05,
+      interactive: false,
+    });
+    poly.addTo(state.markerLayer);
+    proj.corners.forEach((c) => bounds.push(c));
+  }
+
+  // Heading arrow from Eve toward the forward (image-top) direction.
+  if (proj.evePos && proj.headingTip) {
+    L.polyline([proj.evePos, proj.headingTip], {
+      color: "#38bdf8",
+      weight: 3,
+      opacity: 0.95,
+      interactive: false,
+    }).addTo(state.markerLayer);
+    L.circleMarker(proj.headingTip, {
+      radius: 4,
+      color: "#0b1220",
+      weight: 1.5,
+      fillColor: "#38bdf8",
+      fillOpacity: 1,
+      interactive: false,
+    })
+      .bindTooltip(`Eve heading ${Math.round(proj.yawDeg)}°`, { direction: "top" })
+      .addTo(state.markerLayer);
+  }
+
+  // Projected trash detections as markers on the map.
+  proj.points.forEach(({ det, lat, lon }) => {
+    const conf = safeNumber(det.confidence, NaN);
+    const confText = Number.isFinite(conf) ? ` ${conf.toFixed(2)}` : "";
+    const marker = L.circleMarker([lat, lon], {
+      radius: 7,
+      color: "#0b1220",
+      weight: 2,
+      fillColor: "#fb923c",
+      fillOpacity: 0.95,
+    }).bindTooltip(`🗑 ${escapeHtml(det.class_name || "rubbish")}${escapeHtml(confText)}<br><em>projected from camera</em>`, {
+      direction: "top",
+    });
+    marker.on("click", () => {
+      OCTOPUS.selected = { type: "projected_detection", detection: det, lat, lon, local: latLngToLocal(lat, lon) };
+      renderInspector();
+    });
+    marker.addTo(state.markerLayer);
+    bounds.push([lat, lon]);
+  });
 }
 
 function valueForLayer(cell, layer) {
@@ -2357,6 +2544,275 @@ function renderCameraDebug() {
   `;
 }
 
+function mergeDetectionCluster(items) {
+  if (items.length === 1) return items[0];
+  // Prefer a member that has a bbox (so we can draw a real frame), then carry the
+  // highest confidence and a confirmed status/id if any member is confirmed.
+  const hasBbox = (d) => d.bbox && Number.isFinite(safeNumber(d.bbox.x1, NaN));
+  const base = items.find(hasBbox) || items[0];
+  let conf = null;
+  items.forEach((d) => {
+    const c = safeNumber(d.confidence, NaN);
+    if (Number.isFinite(c) && (conf === null || c > conf)) conf = c;
+  });
+  const confirmedItem = items.find((d) => d.status === "confirmed");
+  return {
+    ...base,
+    id: (confirmedItem || base).id,
+    confidence: conf !== null ? conf : base.confidence,
+    status: confirmedItem ? "confirmed" : base.status,
+  };
+}
+
+function cameraFeedDetections() {
+  const payload = OCTOPUS.latest.cameraDebug?.detections || null;
+  const list = Array.isArray(payload?.detections) ? payload.detections : [];
+  // Only detections with usable normalized image coordinates can be placed on the feed.
+  const usable = list.filter((det) => {
+    const u = safeNumber(det.u, NaN);
+    const v = safeNumber(det.v, NaN);
+    return Number.isFinite(u) && Number.isFinite(v);
+  });
+
+  // The detector emits the same physical object twice — once as a raw YOLO
+  // detection (with bbox) and once as a confirmed track (u/v only, no bbox) — with
+  // different ids, so its id-based de-dup misses them and we would draw two
+  // overlapping boxes. Merge detections that sit at the same image location.
+  const MERGE_DIST = 0.05; // normalized u/v distance (~32 px on a 640-wide frame)
+  const clusters = [];
+  usable.forEach((det) => {
+    const u = safeNumber(det.u, 0);
+    const v = safeNumber(det.v, 0);
+    const hit = clusters.find((c) => Math.hypot(c.u - u, c.v - v) <= MERGE_DIST);
+    if (hit) hit.items.push(det);
+    else clusters.push({ u, v, items: [det] });
+  });
+  return clusters.map((c) => mergeDetectionCluster(c.items));
+}
+
+// Compute the rectangle occupied by an object-fit:contain image inside its container.
+function containedImageRect(container, natW, natH) {
+  const cw = container.clientWidth;
+  const ch = container.clientHeight;
+  if (!natW || !natH || !cw || !ch) return { x: 0, y: 0, w: cw, h: ch, cw, ch };
+  const scale = Math.min(cw / natW, ch / natH);
+  const w = natW * scale;
+  const h = natH * scale;
+  return { x: (cw - w) / 2, y: (ch - h) / 2, w, h, cw, ch };
+}
+
+function drawCameraFeedOverlay() {
+  const frame = $("camera-feed-frame");
+  const img = $("camera-feed-image");
+  const canvas = $("camera-feed-overlay");
+  if (!frame || !canvas) return;
+
+  const dpr = window.devicePixelRatio || 1;
+  const cw = frame.clientWidth;
+  const ch = frame.clientHeight;
+  if (cw <= 0 || ch <= 0) return;
+
+  canvas.width = Math.round(cw * dpr);
+  canvas.height = Math.round(ch * dpr);
+  canvas.style.width = `${cw}px`;
+  canvas.style.height = `${ch}px`;
+
+  const ctx = canvas.getContext("2d");
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.clearRect(0, 0, cw, ch);
+
+  const hasImage = !!(img && img.src && img.complete && img.naturalWidth > 0);
+  if (!hasImage) return;
+
+  const rect = containedImageRect(frame, img.naturalWidth, img.naturalHeight);
+  const cols = clamp(parseInt(OCTOPUS.cameraFeed.gridCols, 10) || 0, 0, 40);
+  const rows = cols > 0 ? Math.max(1, Math.round(cols * (rect.h / rect.w))) : 0;
+  const detections = cameraFeedDetections();
+  const trashColor = "251,146,60";
+
+  // Neon-yellow grid over the camera image footprint.
+  if (cols > 0 && rows > 0) {
+    ctx.strokeStyle = "rgba(212,255,0,0.8)";
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    for (let c = 0; c <= cols; c++) {
+      const x = Math.round(rect.x + (rect.w / cols) * c) + 0.5;
+      ctx.moveTo(x, rect.y);
+      ctx.lineTo(x, rect.y + rect.h);
+    }
+    for (let r = 0; r <= rows; r++) {
+      const y = Math.round(rect.y + (rect.h / rows) * r) + 0.5;
+      ctx.moveTo(rect.x, y);
+      ctx.lineTo(rect.x + rect.w, y);
+    }
+    ctx.stroke();
+
+    // Frame border around the camera footprint.
+    ctx.strokeStyle = "rgba(212,255,0,1)";
+    ctx.lineWidth = 2;
+    ctx.strokeRect(rect.x + 1, rect.y + 1, rect.w - 2, rect.h - 2);
+  }
+
+  // Highlight the grid cells that contain a detection. Drawn on top of the grid
+  // so the trash cells stand out against the neon lines.
+  // The detector publishes v with a bottom-left origin (v=0 at the image bottom),
+  // while the frame pixels are top-left, so flip v to line the cells up with the
+  // detector's own bounding boxes baked into the debug frame.
+  if (cols > 0 && rows > 0 && OCTOPUS.cameraFeed.highlightCells && detections.length) {
+    const cellW = rect.w / cols;
+    const cellH = rect.h / rows;
+    const seen = new Set();
+    detections.forEach((det) => {
+      const u = clamp(safeNumber(det.u, 0), 0, 0.999999);
+      const v = clamp(safeNumber(det.v, 0), 0, 0.999999);
+      const cx = Math.floor(u * cols);
+      const cy = Math.floor((1 - v) * rows);
+      const key = `${cx},${cy}`;
+      if (seen.has(key)) return;
+      seen.add(key);
+      const x = rect.x + cx * cellW;
+      const y = rect.y + cy * cellH;
+      ctx.fillStyle = `rgba(${trashColor},0.30)`;
+      ctx.fillRect(x, y, cellW, cellH);
+      ctx.strokeStyle = `rgba(${trashColor},1)`;
+      ctx.lineWidth = 2.5;
+      ctx.strokeRect(x + 1.5, y + 1.5, cellW - 3, cellH - 3);
+    });
+  }
+
+  // Green bounding box + center dot + label per detection. The detector no longer
+  // burns anything into the frame, so the box, dot and label all come from the
+  // dashboard here, drawn from the detections payload.
+  if (detections.length) {
+    const green = "46,232,111";
+    ctx.font = "700 12px ui-sans-serif, system-ui, sans-serif";
+    ctx.textBaseline = "middle";
+    detections.forEach((det) => {
+      const bbox = det.bbox || null;
+      let bx;
+      let by;
+      let bw;
+      let bh;
+      const x1 = safeNumber(bbox?.x1, NaN);
+      const y1 = safeNumber(bbox?.y1, NaN);
+      const x2 = safeNumber(bbox?.x2, NaN);
+      const y2 = safeNumber(bbox?.y2, NaN);
+      if ([x1, y1, x2, y2].every(Number.isFinite)) {
+        // bbox is in the detector debug frame's own pixel space (top-left origin),
+        // exactly like the baked-in green box — scale into the contained rect, no v flip.
+        const normalized = Math.max(x2, y2) <= 1.5;
+        const sx = normalized ? rect.w : rect.w / (img.naturalWidth || 1);
+        const sy = normalized ? rect.h : rect.h / (img.naturalHeight || 1);
+        bx = rect.x + x1 * sx;
+        by = rect.y + y1 * sy;
+        bw = (x2 - x1) * sx;
+        bh = (y2 - y1) * sy;
+      } else {
+        // No bbox (e.g. a confirmed marker) — box the v-flipped u/v point instead.
+        const u = clamp(safeNumber(det.u, 0), 0, 1);
+        const v = clamp(safeNumber(det.v, 0), 0, 1);
+        const px = rect.x + u * rect.w;
+        const py = rect.y + (1 - v) * rect.h;
+        const half = Math.max(14, rect.w * 0.03);
+        bx = px - half;
+        by = py - half;
+        bw = half * 2;
+        bh = half * 2;
+      }
+      // Slight padding so the frame sits just outside the object.
+      bx -= 3; by -= 3; bw += 6; bh += 6;
+
+      // Dark halo underneath for contrast against bright ground, then the green box.
+      ctx.strokeStyle = "rgba(0,0,0,0.55)";
+      ctx.lineWidth = 4;
+      ctx.strokeRect(bx, by, bw, bh);
+      ctx.strokeStyle = `rgba(${green},1)`;
+      ctx.lineWidth = 2;
+      ctx.strokeRect(bx, by, bw, bh);
+
+      // Center dot at the middle of the trash object.
+      const dotX = bx + bw / 2;
+      const dotY = by + bh / 2;
+      ctx.beginPath();
+      ctx.arc(dotX, dotY, 4, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(${green},1)`;
+      ctx.fill();
+      ctx.lineWidth = 1.5;
+      ctx.strokeStyle = "rgba(0,0,0,0.6)";
+      ctx.stroke();
+
+      // Label chip: "class 0.80" (no id, decimal confidence), above the box.
+      const parts = [det.class_name || "rubbish"];
+      const conf = safeNumber(det.confidence, NaN);
+      if (Number.isFinite(conf)) parts.push(conf.toFixed(2));
+      const label = parts.join(" ");
+      const padX = 5;
+      const chipH = 18;
+      const tw = ctx.measureText(label).width;
+      let lx = bx;
+      let ly = by - chipH - 2;
+      if (ly < rect.y) ly = by + bh + 2;
+      lx = clamp(lx, rect.x, rect.x + rect.w - tw - padX * 2);
+      ly = clamp(ly, rect.y, rect.y + rect.h - chipH);
+      ctx.fillStyle = "rgba(0,0,0,0.5)";
+      ctx.fillRect(lx - 1, ly - 1, tw + padX * 2 + 2, chipH + 2);
+      ctx.fillStyle = `rgba(${green},0.95)`;
+      ctx.fillRect(lx, ly, tw + padX * 2, chipH);
+      ctx.fillStyle = "#06140b";
+      ctx.fillText(label, lx + padX, ly + chipH / 2);
+    });
+  }
+}
+
+function renderCameraFeed() {
+  const img = $("camera-feed-image");
+  const placeholder = $("camera-feed-placeholder");
+  const meta = $("camera-feed-meta");
+  if (!img || !meta) return;
+
+  const data = OCTOPUS.latest.cameraDebug || null;
+  const image = data?.image || null;
+  const detectionPayload = data?.detections || null;
+  const dataUrl = image?.data_url || null;
+  const detections = cameraFeedDetections();
+
+  const frameAge = ageSeconds(image?.received_at);
+  const detectionAge = ageSeconds(detectionPayload?.received_at || detectionPayload?.timestamp);
+  const frameFresh = freshnessFromAge(frameAge, 2.0, 8.0);
+  const detectionFresh = freshnessFromAge(detectionAge, 2.0, 8.0);
+
+  if (dataUrl) {
+    if (placeholder) placeholder.style.display = "none";
+    img.style.display = "block";
+    const signature = `${image?.received_at || ""}:${dataUrl.length}`;
+    if (OCTOPUS.cameraFeed.imageSignature !== signature) {
+      OCTOPUS.cameraFeed.imageSignature = signature;
+      img.onload = () => drawCameraFeedOverlay();
+      img.src = dataUrl;
+    } else {
+      drawCameraFeedOverlay();
+    }
+  } else {
+    if (placeholder) placeholder.style.display = "";
+    img.style.display = "none";
+    if (img.src) img.removeAttribute("src");
+    OCTOPUS.cameraFeed.imageSignature = null;
+    drawCameraFeedOverlay();
+  }
+
+  const countClass = detections.length ? "" : "empty";
+  const countLabel = detections.length
+    ? `${detections.length} trash detection${detections.length === 1 ? "" : "s"}`
+    : "No trash detected";
+  meta.innerHTML = `
+    ${statusPill(escapeHtml(`Frame ${frameFresh.label}`), frameFresh.state)}
+    ${statusPill(escapeHtml(`Detections ${detectionFresh.label}`), detectionFresh.state)}
+    <span class="camera-feed-count ${countClass}"><span class="swatch"></span>${escapeHtml(countLabel)}</span>
+    <span class="spacer"></span>
+    <span class="mini-chip">frame: ${escapeHtml(image?.frame_id || detectionPayload?.frame_id || "camera")}</span>
+  `;
+}
+
 async function refreshCameraDebug() {
   try {
     const data = await apiGet("/api/camera_debug/latest");
@@ -2366,6 +2822,7 @@ async function refreshCameraDebug() {
     console.warn("Camera debug refresh failed", error);
   }
   renderCameraDebug();
+  renderCameraFeed();
 }
 
 function renderMapPatch() {
@@ -2431,6 +2888,7 @@ function renderAll() {
   renderMapPatch();
   renderTimeline();
   renderMissionMap();
+  renderCameraFeed();
 
   if (getSelectedGridSource() === "local_camera" || OCTOPUS.latest.globalMap || OCTOPUS.osmPriors) {
     drawGridMap(OCTOPUS.latest.globalMap || {});
@@ -2651,6 +3109,35 @@ function onGridKeyDown(event) {
   drawGridMap(OCTOPUS.latest.globalMap || {});
 }
 
+function setupCameraFeedControls() {
+  const colsSelect = $("camera-feed-grid-cols");
+  if (colsSelect) {
+    colsSelect.value = String(OCTOPUS.cameraFeed.gridCols);
+    colsSelect.addEventListener("change", () => {
+      OCTOPUS.cameraFeed.gridCols = parseInt(colsSelect.value, 10) || 0;
+      localStorage.setItem("octopusCameraFeedGridCols", String(OCTOPUS.cameraFeed.gridCols));
+      drawCameraFeedOverlay();
+    });
+  }
+
+  const highlight = $("camera-feed-highlight");
+  if (highlight) {
+    highlight.checked = OCTOPUS.cameraFeed.highlightCells;
+    highlight.addEventListener("change", () => {
+      OCTOPUS.cameraFeed.highlightCells = highlight.checked;
+      localStorage.setItem("octopusCameraFeedHighlight", highlight.checked ? "1" : "0");
+      drawCameraFeedOverlay();
+    });
+  }
+
+  const frame = $("camera-feed-frame");
+  if (frame && typeof ResizeObserver !== "undefined") {
+    const observer = new ResizeObserver(() => drawCameraFeedOverlay());
+    observer.observe(frame);
+  }
+  window.addEventListener("resize", drawCameraFeedOverlay);
+}
+
 function setupEventListeners() {
   const phaseSelect = $("mission-phase-select");
   if (phaseSelect) {
@@ -2667,8 +3154,12 @@ function setupEventListeners() {
     viewSelect.addEventListener("change", () => {
       applyDashboardView(viewSelect.value, true);
       renderAll();
+      // Canvas needs a re-measure once the overview layout is applied.
+      setTimeout(drawCameraFeedOverlay, 90);
     });
   }
+
+  setupCameraFeedControls();
 
   const mapModeSelector = $("mission-map-mode");
   if (mapModeSelector) {
@@ -2681,6 +3172,51 @@ function setupEventListeners() {
   const missionFitButton = $("mission-fit-button");
   if (missionFitButton) {
     missionFitButton.addEventListener("click", fitMissionMap);
+  }
+
+  const setEveButton = $("set-eve-button");
+  if (setEveButton) {
+    setEveButton.addEventListener("click", () => {
+      setEvePlacementMode(!OCTOPUS.missionMap.placeEveMode);
+    });
+  }
+
+  const clearEveButton = $("clear-eve-button");
+  if (clearEveButton) {
+    clearEveButton.addEventListener("click", clearManualEve);
+  }
+
+  const yawInput = $("eve-yaw-input");
+  const yawLabel = $("eve-yaw-label");
+  if (yawInput) {
+    const initial = Math.round((((OCTOPUS.eveYawDeg || 0) % 360) + 360) % 360);
+    yawInput.value = String(initial);
+    if (yawLabel) yawLabel.textContent = `${initial}°`;
+    let yawRafPending = false;
+    yawInput.addEventListener("input", () => {
+      OCTOPUS.eveYawDeg = parseFloat(yawInput.value) || 0;
+      localStorage.setItem("octopusEveYawDeg", String(OCTOPUS.eveYawDeg));
+      if (yawLabel) yawLabel.textContent = `${Math.round(OCTOPUS.eveYawDeg)}°`;
+      if (!yawRafPending) {
+        yawRafPending = true;
+        requestAnimationFrame(() => {
+          yawRafPending = false;
+          renderMissionMap();
+        });
+      }
+    });
+  }
+
+  const projectButton = $("project-detections-button");
+  if (projectButton) {
+    projectButton.classList.toggle("area-active", OCTOPUS.projectDetections !== false);
+    projectButton.addEventListener("click", () => {
+      OCTOPUS.projectDetections = !(OCTOPUS.projectDetections !== false);
+      localStorage.setItem("octopusProjectDetections", OCTOPUS.projectDetections ? "1" : "0");
+      projectButton.classList.toggle("area-active", OCTOPUS.projectDetections);
+      addTimeline(`Detection projection ${OCTOPUS.projectDetections ? "enabled" : "disabled"}.`, "info");
+      renderMissionMap();
+    });
   }
 
   const drawPolygonButton = $("draw-polygon-button");

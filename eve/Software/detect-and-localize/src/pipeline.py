@@ -1,9 +1,9 @@
 import cv2
 import numpy as np
 
+from src.apriltag_utils import load_tag_positions, detect_tags, estimate_homography
 from src.yolo_detector import YOLODetector
 from src.tracking import GarbageTracker
-from src.apriltag_utils import load_tag_positions, detect_tags, estimate_homography
 
 
 class DetectAndLocalize:

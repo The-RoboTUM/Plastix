@@ -852,9 +852,11 @@
       body[data-view] .main-grid { grid-template-columns: 1fr; grid-template-rows: 420px 420px auto !important; }
       body[data-view] .map-panel,
       body[data-view] .grid-panel,
+      body[data-view] .camera-feed-panel,
       body[data-view] .middle-column,
       body[data-view] .side-column { grid-column: 1 !important; grid-row: auto !important; display: flex; }
       body[data-view="fleet"] .grid-panel { display: none !important; }
+      body:not([data-view="overview"]) .camera-feed-panel { display: none !important; }
       body[data-view] .side-column { display: grid !important; grid-template-columns: 1fr !important; }
     }
 
@@ -1044,6 +1046,20 @@
 
     .mission-map-view.polygon-drawing {
       cursor: crosshair;
+    }
+
+    .eve-yaw-slider {
+      width: 92px;
+      accent-color: var(--tum-blue-light);
+      vertical-align: middle;
+      cursor: pointer;
+    }
+    #eve-yaw-label {
+      min-width: 32px;
+      display: inline-block;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-soft);
     }
 
 
@@ -1396,6 +1412,129 @@ body.octopus-view-debug .camera-debug-panel .item-card {
 }
 /* --- END CAMERA DEBUG PROMOTED DEBUG VIEW LAYOUT --- */
 
+
+/* --- MISSION OVERVIEW CAMERA FEED PANEL --- */
+    .camera-feed-panel .panel-body {
+      padding: 12px;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .camera-feed-frame {
+      position: relative;
+      flex: 1;
+      min-height: 200px;
+      border-radius: 12px;
+      border: 1px solid rgba(0,101,189,0.36);
+      background:
+        radial-gradient(circle at 50% 40%, rgba(56,189,248,0.06), transparent 60%),
+        #020617;
+      overflow: hidden;
+      display: grid;
+      place-items: center;
+    }
+
+    #camera-feed-image {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      object-fit: contain;
+      display: block;
+    }
+
+    #camera-feed-overlay {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      display: block;
+      pointer-events: none;
+    }
+
+    .camera-feed-placeholder {
+      position: relative;
+      z-index: 1;
+      max-width: 80%;
+      padding: 20px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .camera-feed-placeholder strong {
+      display: block;
+      color: var(--text-soft);
+      font-size: 14px;
+      margin-bottom: 6px;
+      letter-spacing: 0.04em;
+    }
+
+    .camera-feed-meta {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .camera-feed-meta .spacer { flex: 1; }
+
+    .camera-feed-count {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 999px;
+      border: 1px solid rgba(251,146,60,0.42);
+      background: rgba(251,146,60,0.12);
+      color: #fdba74;
+      font-weight: 800;
+      font-size: 11px;
+      padding: 4px 10px;
+    }
+    .camera-feed-count .swatch {
+      width: 10px;
+      height: 10px;
+      border-radius: 3px;
+      background: var(--color-trash);
+      box-shadow: 0 0 0 2px rgba(251,146,60,0.28);
+    }
+    .camera-feed-count.empty {
+      border-color: var(--border-subtle);
+      background: rgba(15,23,42,0.6);
+      color: var(--text-muted);
+    }
+    .camera-feed-count.empty .swatch {
+      background: var(--color-unknown);
+      box-shadow: none;
+    }
+
+    .camera-feed-toolbar {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+    .camera-feed-toolbar label {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .camera-feed-toolbar .small-input { padding: 5px 7px; }
+
+    /* Overview: Mission Map + Camera Feed side by side, replacing the Local Grid Map. */
+    body[data-view="overview"] .grid-panel { display: none !important; }
+    body[data-view="overview"] .camera-feed-panel {
+      grid-column: 2;
+      grid-row: 1;
+      display: flex;
+    }
+    /* The camera feed is an overview-only panel. */
+    body:not([data-view="overview"]) .camera-feed-panel { display: none !important; }
+/* --- END MISSION OVERVIEW CAMERA FEED PANEL --- */
+
 </style>
 </head>
 <body data-view="overview">
@@ -1491,6 +1630,14 @@ body.octopus-view-debug .camera-debug-panel .item-card {
               <span>m</span>
             </label>
             <span id="camera-footprint-summary" class="mini-chip camera-footprint-summary">Camera footprint: --</span>
+            <button id="set-eve-button" class="ghost" title="Place the Eve drone manually: click this, then click a point on the mission map. You can also drag the Eve marker.">Set Eve</button>
+            <button id="clear-eve-button" class="ghost" title="Remove the manual Eve placement and use the live/fallback position">Clear Eve</button>
+            <button id="project-detections-button" class="ghost" title="Project the live camera trash detections onto the map, relative to Eve's position and camera footprint">Project detections</button>
+            <label class="resolution-control" id="eve-yaw-control" title="Eve heading (yaw). 0° = camera looking north, increasing clockwise. Rotates the detection projection and footprint.">
+              <span>Eve yaw</span>
+              <input id="eve-yaw-input" class="eve-yaw-slider" type="range" min="0" max="359" step="1" value="0" aria-label="Eve heading yaw in degrees" />
+              <span id="eve-yaw-label">0°</span>
+            </label>
             <button id="draw-polygon-button" class="ghost" title="Click points on the mission map to define a search polygon">Draw polygon</button>
             <button id="finish-polygon-button" class="ghost" title="Submit the drawn polygon as search/grid area" disabled>Finish</button>
             <button id="clear-area-button" class="ghost" title="Clear the custom search area">Clear</button>
@@ -1559,6 +1706,41 @@ body.octopus-view-debug .camera-debug-panel .item-card {
             <div id="grid-map-info" class="grid-overlay-info">
               <span class="mini-chip">No grid map data yet</span>
             </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel emphasis camera-feed-panel">
+        <div class="panel-header">
+          <div class="panel-title"><strong>Camera Feed</strong><span>Eve detector · trash detection grid</span></div>
+          <div class="grid-toolbar camera-feed-toolbar">
+            <label title="Number of grid columns drawn over the camera image.">
+              Grid
+              <select id="camera-feed-grid-cols" class="small-input" aria-label="Camera grid columns">
+                <option value="0">off</option>
+                <option value="6">6</option>
+                <option value="8" selected>8</option>
+                <option value="10">10</option>
+                <option value="12">12</option>
+              </select>
+            </label>
+            <label title="Highlight the grid cells that contain a detected trash object.">
+              <input type="checkbox" id="camera-feed-highlight" checked /> Trash cells
+            </label>
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="camera-feed-frame" id="camera-feed-frame">
+            <img id="camera-feed-image" alt="Live Eve detector camera frame" />
+            <canvas id="camera-feed-overlay"></canvas>
+            <div class="camera-feed-placeholder" id="camera-feed-placeholder">
+              <strong>Waiting for camera feed</strong>
+              Start the Camera-to-Grid pipeline to stream Eve's detector frames
+              (<code>/detector_node/debug_image</code>) with the trash detection grid.
+            </div>
+          </div>
+          <div class="camera-feed-meta" id="camera-feed-meta">
+            <span class="mini-chip">No camera frame yet</span>
           </div>
         </div>
       </section>
@@ -1711,6 +1893,6 @@ body.octopus-view-debug .camera-debug-panel .item-card {
     </section>
   </main>
 
-  <script src="live_data.js?v=camera-debug-1"></script>
+  <script src="live_data.js?v=camera-feed-10"></script>
 </body>
 </html>
