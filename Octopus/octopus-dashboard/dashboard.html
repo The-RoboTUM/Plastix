@@ -741,9 +741,17 @@
       grid-column: 1 / -1;
       grid-row: 2;
       display: grid;
-      grid-template-columns: 0.85fr 1fr 1fr;
+      grid-template-columns: 1fr 0.85fr 1fr 1fr;
     }
     body[data-view="overview"] .middle-column { display: none !important; }
+    /* Camera & Pipeline control panel lives in the overview side-column only. */
+    body:not([data-view="overview"]) .camera-pipeline-panel { display: none !important; }
+    .camera-pipeline-body {
+      overflow: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
     body[data-view="overview"] .timeline-panel { grid-template-columns: 1fr; }
 
     body[data-view="planning"] .main-grid {
@@ -1570,9 +1578,6 @@ body.octopus-view-debug .camera-debug-panel .item-card {
         <span class="phase-label">View</span>
         <select id="dashboard-view-select" class="phase-select view-select" aria-label="Dashboard view mode">
           <option value="overview">Mission Overview</option>
-          <option value="planning">Mission Planning</option>
-          <option value="mapping">Mapping / Detections</option>
-          <option value="fleet">Robots / Fleet</option>
           <option value="debug">System / Debug</option>
         </select>
       </div>
@@ -1614,15 +1619,6 @@ body.octopus-view-debug .camera-debug-panel .item-card {
               <span>Grid cell size</span>
               <input id="grid-resolution-input" class="small-input resolution-input" type="number" value="0.10" min="0.02" max="2" step="0.05" />
               <span id="grid-resolution-label">m/cell</span>
-            </label>
-            <label class="resolution-control" title="Choose how the local grid dimensions are defined.">
-              <span>Grid mode</span>
-              <select id="grid-mode-select" class="small-input grid-mode-input">
-                <option value="fixed_camera_footprint">Fixed camera footprint</option>
-                <option value="manual_mission_area">Manual mission area</option>
-                <option value="expanding_global_map">Expanding global map</option>
-                <option value="rolling_local_map">Rolling local map</option>
-              </select>
             </label>
             <label id="camera-footprint-height-control" class="resolution-control" title="Drone height above the ground plane used to calculate the camera footprint.">
               <span>Drone height</span>
@@ -1748,32 +1744,6 @@ body.octopus-view-debug .camera-debug-panel .item-card {
       <section class="stack middle-column">
         <section class="panel debug-only system-health-panel" style="flex: 1;">
           <div class="panel-header"><div class="panel-title"><strong>System Health</strong><span>freshness-aware</span></div></div>
-          <div class="eve-controls">
-            <button id="eve-start-camera-btn" type="button">Connect Eve Camera</button>
-            <button id="eve-stop-camera-btn" type="button">Stop Camera</button>
-            <button id="eve-refresh-status-btn" type="button">Refresh Status</button>
-            <button id="eve-show-log-btn" type="button">Show Log</button>
-          </div>
-          <div id="eve-camera-summary" class="muted">Eve camera status: unknown</div>
-          <pre id="eve-camera-log" class="eve-log-box"></pre>
-
-          <div class="pipeline-control-block">
-            <div class="pipeline-control-title">
-              <strong>Camera-to-Grid Pipeline</strong>
-              <span>starts local ROS2 mapping, backend bridge, and camera-marker transform nodes</span>
-            </div>
-            <div class="pipeline-controls">
-              <button id="pipeline-start-btn" type="button">Start Camera-to-Grid Pipeline</button>
-              <button id="pipeline-stop-btn" type="button">Stop Pipeline</button>
-              <button id="pipeline-refresh-btn" type="button">Refresh Pipeline Status</button>
-              <button id="pipeline-log-btn" type="button">Show Pipeline Logs</button>
-            </div>
-            <div id="pipeline-summary" class="muted">Pipeline status: unknown</div>
-            <pre id="pipeline-log" class="pipeline-log-box"></pre>
-
-          </div>
-
-
           <div class="panel-body" id="system-health-content">Checking system health...</div>
         </section>
 
@@ -1846,6 +1816,35 @@ body.octopus-view-debug .camera-debug-panel .item-card {
       </section>
 
       <aside class="stack side-column">
+        <section class="panel camera-pipeline-panel">
+          <div class="panel-header"><div class="panel-title"><strong>Camera &amp; Pipeline</strong><span>start Eve camera + mapping</span></div></div>
+          <div class="panel-body camera-pipeline-body">
+            <div class="eve-controls">
+              <button id="eve-start-camera-btn" type="button">Connect Eve Camera</button>
+              <button id="eve-stop-camera-btn" type="button">Stop Camera</button>
+              <button id="eve-refresh-status-btn" type="button">Refresh Status</button>
+              <button id="eve-show-log-btn" type="button">Show Log</button>
+            </div>
+            <div id="eve-camera-summary" class="muted">Eve camera status: unknown</div>
+            <pre id="eve-camera-log" class="eve-log-box"></pre>
+
+            <div class="pipeline-control-block">
+              <div class="pipeline-control-title">
+                <strong>Camera-to-Grid Pipeline</strong>
+                <span>starts local ROS2 mapping, backend bridge, and camera-marker transform nodes</span>
+              </div>
+              <div class="pipeline-controls">
+                <button id="pipeline-start-btn" type="button">Start Camera-to-Grid Pipeline</button>
+                <button id="pipeline-stop-btn" type="button">Stop Pipeline</button>
+                <button id="pipeline-refresh-btn" type="button">Refresh Pipeline Status</button>
+                <button id="pipeline-log-btn" type="button">Show Pipeline Logs</button>
+              </div>
+              <div id="pipeline-summary" class="muted">Pipeline status: unknown</div>
+              <pre id="pipeline-log" class="pipeline-log-box"></pre>
+            </div>
+          </div>
+        </section>
+
         <section class="panel selected-panel" style="flex: 1.05;">
           <div class="panel-header"><div class="panel-title"><strong>Selected Object</strong><span>click map/grid later</span></div></div>
           <div class="panel-body" id="inspector-content">No object selected.</div>
@@ -1893,6 +1892,6 @@ body.octopus-view-debug .camera-debug-panel .item-card {
     </section>
   </main>
 
-  <script src="live_data.js?v=camera-feed-10"></script>
+  <script src="live_data.js?v=camera-feed-12"></script>
 </body>
 </html>

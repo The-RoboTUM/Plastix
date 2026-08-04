@@ -165,21 +165,6 @@ const DASHBOARD_VIEWS = {
     action: "Operator overview",
     preset: "overview",
   },
-  planning: {
-    label: "Mission Planning",
-    action: "Define area, priors, grid and home station",
-    preset: "osm_priors",
-  },
-  mapping: {
-    label: "Mapping / Detections",
-    action: "Inspect coverage, trash, obstacles and priors",
-    preset: "overview",
-  },
-  fleet: {
-    label: "Robots / Fleet",
-    action: "Monitor Eve, Robby, GripperX and SharX",
-    preset: "overview",
-  },
   debug: {
     label: "System / Debug",
     action: "Inspect ROS/backend/raw data",
@@ -3833,7 +3818,8 @@ const OCTOPUS_GRID_MODE_LABELS = {
 };
 
 function octopusGridMode() {
-  return OCTOPUS.gridMode || localStorage.getItem("octopusGridMode") || "fixed_camera_footprint";
+  // Only the fixed camera-footprint grid is used now; the other modes were removed.
+  return "fixed_camera_footprint";
 }
 
 function octopusCameraFootprintSettings() {
@@ -4020,19 +4006,8 @@ function octopusRefreshGridModeView(announce = false) {
 }
 
 function octopusSetupGridModeControls() {
-  const modeSelect = $("grid-mode-select");
   const heightInput = $("camera-footprint-height-input");
   const resolutionInput = $("grid-resolution-input");
-
-  if (modeSelect) {
-    modeSelect.value = octopusGridMode();
-    modeSelect.addEventListener("change", () => {
-      OCTOPUS.gridMode = modeSelect.value;
-      localStorage.setItem("octopusGridMode", OCTOPUS.gridMode);
-      OCTOPUS.gridView = { ...OCTOPUS.gridView, scale: 1, offsetX: 0, offsetY: 0 };
-      octopusRefreshGridModeView(true);
-    });
-  }
 
   if (heightInput) {
     heightInput.value = safeNumber(OCTOPUS.cameraFootprint?.height_m, 2.5).toFixed(2);
