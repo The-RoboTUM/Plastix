@@ -23,6 +23,26 @@ const GRID_COLORS = {
   unknown: { r: 71, g: 85, b: 105 },
 };
 
+// Camera overlay grid modes. Exactly one grid is active at a time, and the
+// trash-cell marking always follows the active one.
+const CAMERA_GRID_MODES = ["off", "local", "gps"];
+
+// Restores the stored mode, migrating the pre-mode settings: the separate GPS
+// checkbox wins, otherwise "Grid: off" (cols=0) becomes the off mode.
+function initialCameraGridMode() {
+  const stored = localStorage.getItem("octopusCameraGridMode");
+  if (CAMERA_GRID_MODES.includes(stored)) return stored;
+  if (localStorage.getItem("octopusCameraGpsGrid") === "1") return "gps";
+  if (localStorage.getItem("octopusCameraFeedGridCols") === "0") return "off";
+  return "local";
+}
+
+// The local grid needs a real column count now that "off" is its own mode.
+function initialLocalGridCols() {
+  const stored = parseInt(localStorage.getItem("octopusCameraFeedGridCols") ?? "8", 10);
+  return Number.isFinite(stored) && stored >= 2 ? Math.min(stored, 40) : 8;
+}
+
 const OCTOPUS = {
   missionPhase: localStorage.getItem("octopusMissionPhase") || "preflight",
   dashboardView: localStorage.getItem("octopusDashboardView") || "overview",
@@ -69,8 +89,12 @@ const OCTOPUS = {
   gridDisplay: { ...GRID_DISPLAY_DEFAULTS, ...(JSON.parse(localStorage.getItem("octopusGridDisplay") || "{}")) },
   gridView: { scale: 1, offsetX: 0, offsetY: 0, isPanning: false, lastX: 0, lastY: 0, moved: false },
   cameraFeed: {
-    gridCols: parseInt(localStorage.getItem("octopusCameraFeedGridCols") ?? "8", 10),
+    // "off" | "local" | "gps" — see CAMERA_GRID_MODES.
+    overlayGrid: initialCameraGridMode(),
+    gridCols: initialLocalGridCols(),
     highlightCells: (localStorage.getItem("octopusCameraFeedHighlight") ?? "1") === "1",
+    cellNames: (localStorage.getItem("octopusCameraCellNames") ?? "1") === "1",
+    gpsStepDeg: parseFloat(localStorage.getItem("octopusCameraGpsStepDeg") || "0") || 0,
     imageSignature: null,
   },
 };
@@ -160,6 +184,14 @@ const PHASE_INFO = {
  };
 
 const DASHBOARD_VIEWS = {
+  // Audience-facing layout for demos and trade fairs: map + camera, big numbers,
+  // no operator controls. Set the grid mode etc. in the overview first — the show
+  // view deliberately has no knobs on screen.
+  show: {
+    label: "Show / Presentation",
+    action: "Audience view",
+    preset: "overview",
+  },
   overview: {
     label: "Mission Overview",
     action: "Operator overview",
@@ -683,6 +715,10 @@ function initMissionMap() {
 
   map.on("click", (event) => handleMissionMapClick(event));
   map.on("mousemove", (event) => handleMissionMapMouseMove(event));
+  // Both camera grids thin out their labels by zoom level, so redraw after zooming.
+  map.on("zoomend", () => {
+    if (cameraGridMode() !== "off") renderMissionMap();
+  });
   setTimeout(() => map.invalidateSize(), 150);
 }
 
@@ -1415,8 +1451,10 @@ function renderMissionMap() {
     bounds.push([lat, lon]);
   });
 
-  // Live camera detections projected onto the map from Eve's position + footprint.
-  renderProjectedDetections(state, bounds);
+  // Live camera detections projected onto the map from Eve's position + footprint,
+  // plus the active camera grid (local or GPS) shared with the camera overlay.
+  const footprintDrawn = renderProjectedDetections(state, bounds);
+  renderCameraGridOnMap(state, footprintDrawn);
 
   const meta = getActiveGridMeta(OCTOPUS.latest.globalMap);
   bounds.push(localToLatLng(0, 0));
@@ -1484,10 +1522,14 @@ function projectDetectionsToMap() {
   return { eve, corners, points, evePos, headingTip, yawDeg };
 }
 
+// Returns true when the camera footprint outline was drawn, so the GPS grid does
+// not draw a second one on top.
 function renderProjectedDetections(state, bounds) {
-  if (OCTOPUS.projectDetections === false) return;
+  if (OCTOPUS.projectDetections === false) return false;
   const proj = projectDetectionsToMap();
-  if (!proj.eve) return;
+  if (!proj.eve) return false;
+  const gpsGrid = isGpsGridActive() ? octopusGpsGridModel() : null;
+  const localLayout = isLocalGridActive() ? localGridLayout() : null;
 
   // Camera footprint outline on the ground (what Eve currently sees).
   if (proj.corners) {
@@ -1529,21 +1571,232 @@ function renderProjectedDetections(state, bounds) {
   proj.points.forEach(({ det, lat, lon }) => {
     const conf = safeNumber(det.confidence, NaN);
     const confText = Number.isFinite(conf) ? ` ${conf.toFixed(2)}` : "";
+    // With the GPS grid on, the tooltip reads off the coordinate and grid cell;
+    // with the local grid on, the local cell name. Cell names can be switched off,
+    // the GPS coordinate stays either way.
+    const showNames = cellNamesEnabled();
+    const cell = gpsGrid && showNames ? gpsGrid.cellFor(lat, lon) : null;
+    const localName = localLayout && showNames ? activeCellNameForDetection(det, null, localLayout) : null;
+    const geoText = gpsGrid
+      ? `<br>${escapeHtml(gpsGrid.format(lat))}°N ${escapeHtml(gpsGrid.format(lon))}°E` +
+        (cell ? ` · cell <strong>${escapeHtml(cell.name)}</strong>` : "")
+      : localName
+        ? `<br>cell <strong>${escapeHtml(localName)}</strong>`
+        : "";
     const marker = L.circleMarker([lat, lon], {
       radius: 7,
       color: "#0b1220",
       weight: 2,
       fillColor: "#fb923c",
       fillOpacity: 0.95,
-    }).bindTooltip(`🗑 ${escapeHtml(det.class_name || "rubbish")}${escapeHtml(confText)}<br><em>projected from camera</em>`, {
-      direction: "top",
-    });
+    }).bindTooltip(
+      `🗑 ${escapeHtml(det.class_name || "rubbish")}${escapeHtml(confText)}${geoText}<br><em>projected from camera</em>`,
+      { direction: "top" }
+    );
     marker.on("click", () => {
       OCTOPUS.selected = { type: "projected_detection", detection: det, lat, lon, local: latLngToLocal(lat, lon) };
       renderInspector();
     });
     marker.addTo(state.markerLayer);
     bounds.push([lat, lon]);
+  });
+
+  return Boolean(proj.corners);
+}
+
+// The active camera grid on the mission map, drawn with the same cells and cell
+// names as the camera overlay so both views can be read against each other.
+// Both modes need the GPS model: it carries Eve's pose and the footprint
+// projection that turns image coordinates into ground coordinates.
+function renderCameraGridOnMap(state, footprintDrawn) {
+  const mode = cameraGridMode();
+  if (mode === "off" || typeof L === "undefined") return null;
+  const grid = octopusGpsGridModel();
+  if (!grid) return null;
+
+  const layer = state.markerLayer;
+
+  // Footprint outline, unless renderProjectedDetections already drew it.
+  if (!footprintDrawn) {
+    L.polygon(grid.corners.map((c) => [c.lat, c.lon]), {
+      color: "#d4ff00",
+      opacity: 0.85,
+      weight: 1.5,
+      dashArray: "5,5",
+      fillColor: "#d4ff00",
+      fillOpacity: 0.05,
+      interactive: false,
+    }).addTo(layer);
+  }
+
+  const addLabel = (lat, lon, text, extraClass, size, anchor) => {
+    L.marker([lat, lon], {
+      interactive: false,
+      keyboard: false,
+      icon: L.divIcon({
+        className: `gps-grid-label ${extraClass}`,
+        html: escapeHtml(text),
+        iconSize: size,
+        iconAnchor: anchor,
+      }),
+    }).addTo(layer);
+  };
+
+  if (mode === "gps") drawGpsGraticuleOnMap(state, layer, grid, addLabel);
+  else drawLocalGridOnMap(state, layer, grid, addLabel);
+
+  if (markCellsEnabled()) markCameraCellsOnMap(layer, grid, mode);
+
+  return grid;
+}
+
+// Pixel size of one cell at the current zoom, used to thin out the labels.
+function mapCellPixelSize(state, cornerA, cornerB) {
+  if (!state.map) return { w: 999, h: 999 };
+  const p0 = state.map.latLngToLayerPoint(cornerA);
+  const p1 = state.map.latLngToLayerPoint(cornerB);
+  return { w: Math.abs(p1.x - p0.x), h: Math.abs(p1.y - p0.y) };
+}
+
+function drawGpsGraticuleOnMap(state, layer, grid, addLabel) {
+  const b = grid.bounds;
+  const pix = mapCellPixelSize(state, [b.latMin, b.lonMin], [b.latMin + grid.step, b.lonMin + grid.step]);
+  const lonEvery = Math.max(1, Math.ceil(64 / Math.max(pix.w, 1)));
+  const latEvery = Math.max(1, Math.ceil(26 / Math.max(pix.h, 1)));
+
+  grid.lonLines.forEach((lon, i) => {
+    const major = i % lonEvery === 0;
+    L.polyline([[b.latMin, lon], [b.latMax, lon]], {
+      color: "#38bdf8",
+      weight: major ? 1.2 : 0.6,
+      opacity: major ? 0.8 : 0.35,
+      interactive: false,
+    }).addTo(layer);
+    // Longitude values along the southern edge, centered under their line.
+    if (major) addLabel(b.latMin, lon, `${grid.format(lon)}°E`, "axis-lon", [86, 12], [43, -2]);
+  });
+
+  grid.latLines.forEach((lat, j) => {
+    const major = j % latEvery === 0;
+    L.polyline([[lat, b.lonMin], [lat, b.lonMax]], {
+      color: "#38bdf8",
+      weight: major ? 1.2 : 0.6,
+      opacity: major ? 0.8 : 0.35,
+      interactive: false,
+    }).addTo(layer);
+    // Latitude values along the western edge, just inside the region.
+    if (major) addLabel(lat, b.lonMin, `${grid.format(lat)}°N`, "axis-lat", [86, 12], [-3, 6]);
+  });
+
+  // Cell names, only for the cells over the camera footprint and only when
+  // there is room for the text.
+  if (cellNamesEnabled() && Math.min(pix.w, pix.h) >= 26) {
+    for (let r = 0; r < grid.region.rows; r++) {
+      for (let c = 0; c < grid.region.cols; c++) {
+        const center = grid.cellCenter(c, r);
+        if (center.lat < grid.bbox.latMin || center.lat > grid.bbox.latMax) continue;
+        if (center.lon < grid.bbox.lonMin || center.lon > grid.bbox.lonMax) continue;
+        addLabel(center.lat, center.lon, `${gpsColumnLetters(c)}${r + 1}`, "cell", [40, 12], [20, 6]);
+      }
+    }
+  }
+}
+
+// The local grid on the map: the same cols/rows as over the camera image, but
+// projected onto the ground, so it sits rotated inside the footprint outline.
+// Lines of constant u/v stay straight under the projection, so two points each.
+function drawLocalGridOnMap(state, layer, grid, addLabel) {
+  const layout = localGridLayout();
+  if (!layout) return;
+
+  const at = (u, v) => {
+    const geo = grid.uvToGeo(u, v);
+    return [geo.lat, geo.lon];
+  };
+  const pix = mapCellPixelSize(state, at(0, 1), at(1 / layout.cols, 1 - 1 / layout.rows));
+
+  for (let c = 0; c <= layout.cols; c++) {
+    const u = c / layout.cols;
+    L.polyline([at(u, 0), at(u, 1)], {
+      color: "#d4ff00",
+      weight: c === 0 || c === layout.cols ? 1.4 : 0.7,
+      opacity: 0.6,
+      interactive: false,
+    }).addTo(layer);
+  }
+  for (let r = 0; r <= layout.rows; r++) {
+    const v = 1 - r / layout.rows;
+    L.polyline([at(0, v), at(1, v)], {
+      color: "#d4ff00",
+      weight: r === 0 || r === layout.rows ? 1.4 : 0.7,
+      opacity: 0.6,
+      interactive: false,
+    }).addTo(layer);
+  }
+
+  if (cellNamesEnabled() && Math.min(pix.w, pix.h) >= 26) {
+    for (let r = 0; r < layout.rows; r++) {
+      for (let c = 0; c < layout.cols; c++) {
+        const b = layout.cellUvBounds(c, r);
+        const center = at((b.uMin + b.uMax) / 2, (b.vMin + b.vMax) / 2);
+        addLabel(center[0], center[1], localCellName(c, r), "cell", [40, 12], [20, 6]);
+      }
+    }
+  }
+}
+
+// Mark the active grid's cells that contain a detection, as filled polygons in
+// the same orange the camera overlay uses.
+function markCameraCellsOnMap(layer, grid, mode) {
+  const style = {
+    color: "#fb923c",
+    weight: 2.5,
+    opacity: 1,
+    fillColor: "#fb923c",
+    fillOpacity: 0.3,
+    interactive: false,
+  };
+  const addLabel = (lat, lon, text) => {
+    if (!cellNamesEnabled()) return;
+    L.marker([lat, lon], {
+      interactive: false,
+      keyboard: false,
+      icon: L.divIcon({
+        className: "gps-grid-label cell marked",
+        html: escapeHtml(text),
+        iconSize: [40, 12],
+        iconAnchor: [20, 6],
+      }),
+    }).addTo(layer);
+  };
+
+  if (mode === "gps") {
+    gpsCellsForDetections(grid).forEach(({ col, row, name }) => {
+      const b = grid.cellBounds(col, row);
+      L.polygon([
+        [b.latMin, b.lonMin],
+        [b.latMin, b.lonMax],
+        [b.latMax, b.lonMax],
+        [b.latMax, b.lonMin],
+      ], style).addTo(layer);
+      addLabel((b.latMin + b.latMax) / 2, (b.lonMin + b.lonMax) / 2, name);
+    });
+    return;
+  }
+
+  const layout = localGridLayout();
+  if (!layout) return;
+  localCellsForDetections(layout).forEach(({ col, row, name }) => {
+    const b = layout.cellUvBounds(col, row);
+    const corners = [
+      grid.uvToGeo(b.uMin, b.vMin),
+      grid.uvToGeo(b.uMax, b.vMin),
+      grid.uvToGeo(b.uMax, b.vMax),
+      grid.uvToGeo(b.uMin, b.vMax),
+    ];
+    L.polygon(corners.map((c) => [c.lat, c.lon]), style).addTo(layer);
+    const center = grid.uvToGeo((b.uMin + b.uMax) / 2, (b.vMin + b.vMax) / 2);
+    addLabel(center.lat, center.lon, name);
   });
 }
 
@@ -2586,6 +2839,581 @@ function containedImageRect(container, natW, natH) {
   return { x: (cw - w) / 2, y: (ch - h) / 2, w, h, cw, ch };
 }
 
+// -----------------------------------------------------------------------------
+// Camera grid mode — the local (image-aligned) grid and the GPS graticule are
+// mutually exclusive. Whichever is active is drawn on the camera image and on the
+// mission map, and the trash-cell marking always follows it.
+// -----------------------------------------------------------------------------
+
+function cameraGridMode() {
+  const mode = OCTOPUS.cameraFeed?.overlayGrid;
+  return CAMERA_GRID_MODES.includes(mode) ? mode : "off";
+}
+
+function isLocalGridActive() {
+  return cameraGridMode() === "local";
+}
+
+function isGpsGridActive() {
+  return cameraGridMode() === "gps";
+}
+
+function markCellsEnabled() {
+  return Boolean(OCTOPUS.cameraFeed.highlightCells);
+}
+
+// Whether the A1-style cell names are drawn on the camera image and the map. The
+// readout below the feed lists them regardless — it is text, not overlay clutter.
+function cellNamesEnabled() {
+  return Boolean(OCTOPUS.cameraFeed.cellNames);
+}
+
+// Local grid layout: the column count drives roughly square cells, rows follow
+// from the aspect ratio. That ratio comes from the camera FOOTPRINT (not from the
+// image rect), because the camera overlay and the mission map must end up with
+// the exact same cols/rows — otherwise the same cell name would mean different
+// cells in the two views.
+function localGridLayout() {
+  const cols = clamp(parseInt(OCTOPUS.cameraFeed.gridCols, 10) || 0, 0, 40);
+  if (cols < 1) return null;
+  const meta = octopusComputeCameraFootprintMeta();
+  const aspect = meta.width_m > 0 && meta.height_m > 0 ? meta.width_m / meta.height_m : 4 / 3;
+  const rows = Math.max(1, Math.round(cols / aspect));
+  return {
+    cols,
+    rows,
+    // u/v bounds of one cell, in the detector's convention (v=0 at the image
+    // bottom), so the cell can be projected to the map via the GPS model.
+    cellUvBounds: (col, row) => ({
+      uMin: col / cols,
+      uMax: (col + 1) / cols,
+      vMin: 1 - (row + 1) / rows,
+      vMax: 1 - row / rows,
+    }),
+  };
+}
+
+// The same layout plus pixel sizes for one image rect.
+function localGridGeometry(rect) {
+  const layout = localGridLayout();
+  if (!layout || !rect || !(rect.w > 0) || !(rect.h > 0)) return null;
+  return { ...layout, cellW: rect.w / layout.cols, cellH: rect.h / layout.rows };
+}
+
+// Same A1-style naming as the GPS grid: columns A.. left to right, rows 1.. from
+// the top of the image (= north when Eve's yaw is 0).
+function localCellName(col, row) {
+  return `${gpsColumnLetters(col)}${row + 1}`;
+}
+
+// The local grid cells that contain at least one detection, de-duplicated.
+// Indices are image-space: col from the left edge, row from the TOP edge, so the
+// detector's bottom-left v is flipped exactly once, here.
+function localCellsForDetections(geom, detections = cameraFeedDetections()) {
+  if (!geom) return [];
+  const cells = new Map();
+  detections.forEach((det) => {
+    const u = safeNumber(det.u, NaN);
+    const v = safeNumber(det.v, NaN);
+    if (!Number.isFinite(u) || !Number.isFinite(v)) return;
+    const col = Math.floor(clamp(u, 0, 0.999999) * geom.cols);
+    const row = Math.floor((1 - clamp(v, 0, 0.999999)) * geom.rows);
+    const key = `${col},${row}`;
+    if (!cells.has(key)) {
+      cells.set(key, { col, row, name: localCellName(col, row), detections: [] });
+    }
+    cells.get(key).detections.push(det);
+  });
+  return [...cells.values()];
+}
+
+// The GPS grid cells that contain at least one detection, de-duplicated.
+function gpsCellsForDetections(grid, readout = null) {
+  if (!grid) return [];
+  const cells = new Map();
+  (readout || gpsDetectionReadout(grid)).forEach((entry) => {
+    if (!entry.cell) return;
+    const key = `${entry.cell.col},${entry.cell.row}`;
+    if (!cells.has(key)) cells.set(key, { ...entry.cell, detections: [] });
+    cells.get(key).detections.push(entry.det);
+  });
+  return [...cells.values()];
+}
+
+// The active grid's cell name for one detection, for the labels shared by the
+// camera overlay, the map tooltips and the readout. Null when no grid is active.
+function activeCellNameForDetection(det, grid = null, geom = null) {
+  if (isGpsGridActive()) {
+    const model = grid || octopusGpsGridModel();
+    if (!model) return null;
+    const geo = model.uvToGeo(clamp(safeNumber(det.u, 0), 0, 1), clamp(safeNumber(det.v, 0), 0, 1));
+    return model.cellFor(geo.lat, geo.lon)?.name || null;
+  }
+  if (isLocalGridActive() && geom) {
+    const col = Math.floor(clamp(safeNumber(det.u, 0), 0, 0.999999) * geom.cols);
+    const row = Math.floor((1 - clamp(safeNumber(det.v, 0), 0, 0.999999)) * geom.rows);
+    return localCellName(col, row);
+  }
+  return null;
+}
+
+// -----------------------------------------------------------------------------
+// GPS grid — a geographic (lat/lon) graticule drawn both over the camera image
+// and on the mission map, so an operator can read off which coordinate / grid
+// cell a piece of trash sits on.
+//
+// The whole thing is derived from Eve's position on the mission map (drag the
+// marker or use "Set Eve"), her yaw, and the set drone height: height + the
+// HBVCAM intrinsics give the ground footprint, which anchors the camera image
+// in world coordinates. These are demo coordinates, not surveyed GPS.
+// -----------------------------------------------------------------------------
+
+const OCTOPUS_GPS_NICE_STEPS = [
+  0.000001, 0.000002, 0.000005,
+  0.00001, 0.00002, 0.00005,
+  0.0001, 0.0002, 0.0005,
+  0.001, 0.002, 0.005, 0.01,
+];
+const OCTOPUS_GPS_MAX_LINES = 48;
+
+function gpsNiceStep(target) {
+  const found = OCTOPUS_GPS_NICE_STEPS.find((s) => s >= target);
+  return found || OCTOPUS_GPS_NICE_STEPS[OCTOPUS_GPS_NICE_STEPS.length - 1];
+}
+
+function gpsNextNiceStep(step) {
+  const found = OCTOPUS_GPS_NICE_STEPS.find((s) => s > step * 1.0001);
+  return found || step * 2;
+}
+
+// Column letters for the grid cells: 0 -> A, 25 -> Z, 26 -> AA.
+function gpsColumnLetters(index) {
+  let i = index;
+  let out = "";
+  do {
+    out = String.fromCharCode(65 + (i % 26)) + out;
+    i = Math.floor(i / 26) - 1;
+  } while (i >= 0);
+  return out;
+}
+
+function gpsDecimals(step) {
+  return clamp(Math.ceil(-Math.log10(step)), 4, 8);
+}
+
+function formatGpsValue(value, decimals) {
+  return value.toFixed(decimals);
+}
+
+// Liang-Barsky clip of a segment against an axis-aligned rectangle.
+function clipSegmentToRect(p0, p1, rect) {
+  const dx = p1.x - p0.x;
+  const dy = p1.y - p0.y;
+  const edges = [
+    { p: -dx, q: p0.x - rect.x },
+    { p: dx, q: rect.x + rect.w - p0.x },
+    { p: -dy, q: p0.y - rect.y },
+    { p: dy, q: rect.y + rect.h - p0.y },
+  ];
+  let t0 = 0;
+  let t1 = 1;
+  for (const { p, q } of edges) {
+    if (p === 0) {
+      if (q < 0) return null;
+      continue;
+    }
+    const r = q / p;
+    if (p < 0) {
+      if (r > t1) return null;
+      if (r > t0) t0 = r;
+    } else {
+      if (r < t0) return null;
+      if (r < t1) t1 = r;
+    }
+  }
+  return {
+    a: { x: p0.x + t0 * dx, y: p0.y + t0 * dy },
+    b: { x: p0.x + t1 * dx, y: p0.y + t1 * dy },
+  };
+}
+
+// Eve's pose for the GPS grid. Unlike projectDetectionsToMap() this also accepts
+// the configured fallback position, so the grid is demoable before a live fix.
+function eveGeoPose() {
+  const eve = getFleetSnapshot().find((r) => r.key === "eve");
+  if (!eve) return null;
+  const lat = safeNumber(eve.location?.lat, NaN);
+  const lon = safeNumber(eve.location?.lon, NaN);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  return {
+    lat,
+    lon,
+    yawDeg: safeNumber(OCTOPUS.eveYawDeg, 0),
+    manual: Boolean(eve.location?.manual),
+    demo: Boolean(eve.demo),
+  };
+}
+
+function octopusGpsGridModel() {
+  const pose = eveGeoPose();
+  if (!pose) return null;
+
+  const meta = octopusComputeCameraFootprintMeta();
+  const fp = meta.footprint;
+  const widthM = fp.left_m + fp.right_m;
+  const heightM = fp.top_m + fp.bottom_m;
+  const th = (pose.yawDeg * Math.PI) / 180;
+  const cos = Math.cos(th);
+  const sin = Math.sin(th);
+  const mPerDegLon = metersPerDegreeLonForLat(pose.lat);
+
+  // Camera frame (right / forward, in meters on the ground) <-> geographic.
+  const camToGeo = (offRight, offFwd) => ({
+    lat: pose.lat + (-offRight * sin + offFwd * cos) / METERS_PER_DEGREE_LAT,
+    lon: pose.lon + (offRight * cos + offFwd * sin) / mPerDegLon,
+  });
+  const geoToCam = (lat, lon) => {
+    const east = (lon - pose.lon) * mPerDegLon;
+    const north = (lat - pose.lat) * METERS_PER_DEGREE_LAT;
+    return { right: east * cos - north * sin, fwd: east * sin + north * cos };
+  };
+  // Normalized image coordinates: u from the left edge, v from the bottom edge
+  // (matching the detector's u/v convention).
+  const geoToUv = (lat, lon) => {
+    const c = geoToCam(lat, lon);
+    return { u: (c.right + fp.left_m) / widthM, v: (c.fwd + fp.bottom_m) / heightM };
+  };
+  const uvToGeo = (u, v) => camToGeo(u * widthM - fp.left_m, v * heightM - fp.bottom_m);
+
+  const corners = [
+    camToGeo(-fp.left_m, -fp.bottom_m),
+    camToGeo(fp.right_m, -fp.bottom_m),
+    camToGeo(fp.right_m, fp.top_m),
+    camToGeo(-fp.left_m, fp.top_m),
+  ];
+  const bbox = {
+    latMin: Math.min(...corners.map((c) => c.lat)),
+    latMax: Math.max(...corners.map((c) => c.lat)),
+    lonMin: Math.min(...corners.map((c) => c.lon)),
+    lonMax: Math.max(...corners.map((c) => c.lon)),
+  };
+
+  // One degree step for both axes, so the graticule reads like a real one.
+  const requested = safeNumber(OCTOPUS.cameraFeed.gpsStepDeg, 0);
+  const autoStep = gpsNiceStep(Math.max(bbox.latMax - bbox.latMin, bbox.lonMax - bbox.lonMin) / 6);
+  let step = requested > 0 ? requested : autoStep;
+
+  // Region: footprint bbox snapped outward to step multiples, plus one cell of
+  // margin. Cell indices are counted from its north-west corner, so the camera
+  // and the map always agree on cell names.
+  const regionFor = (s) => {
+    const colFrom = Math.floor(bbox.lonMin / s) - 1;
+    const colTo = Math.ceil(bbox.lonMax / s) + 1;
+    const rowFrom = Math.floor(bbox.latMin / s) - 1;
+    const rowTo = Math.ceil(bbox.latMax / s) + 1;
+    return { colFrom, colTo, rowFrom, rowTo, cols: colTo - colFrom, rows: rowTo - rowFrom };
+  };
+  let region = regionFor(step);
+  let clamped = false;
+  while ((region.cols > OCTOPUS_GPS_MAX_LINES || region.rows > OCTOPUS_GPS_MAX_LINES) && step < 0.01) {
+    step = gpsNextNiceStep(step);
+    region = regionFor(step);
+    clamped = true;
+  }
+
+  const decimals = gpsDecimals(step);
+  const lonLines = [];
+  for (let i = 0; i <= region.cols; i++) lonLines.push((region.colFrom + i) * step);
+  const latLines = [];
+  for (let j = 0; j <= region.rows; j++) latLines.push((region.rowTo - j) * step); // north -> south
+
+  // Cell name for a coordinate, e.g. "C3". Null outside the region.
+  const cellFor = (lat, lon) => {
+    const c = Math.floor(lon / step) - region.colFrom;
+    const r = region.rowTo - 1 - Math.floor(lat / step);
+    if (c < 0 || r < 0 || c >= region.cols || r >= region.rows) return null;
+    return { col: c, row: r, name: `${gpsColumnLetters(c)}${r + 1}` };
+  };
+  const cellCenter = (c, r) => ({
+    lat: (region.rowTo - r - 0.5) * step,
+    lon: (region.colFrom + c + 0.5) * step,
+  });
+  // Geographic extent of one cell, so it can be filled as an area on either view.
+  const cellBounds = (c, r) => ({
+    latMin: (region.rowTo - r - 1) * step,
+    latMax: (region.rowTo - r) * step,
+    lonMin: (region.colFrom + c) * step,
+    lonMax: (region.colFrom + c + 1) * step,
+  });
+
+  return {
+    pose,
+    footprint: fp,
+    widthM,
+    heightM,
+    heightAboveGround: meta.camera_height_m,
+    corners,
+    bbox,
+    step,
+    stepAuto: requested <= 0,
+    clamped,
+    decimals,
+    stepLatMeters: step * METERS_PER_DEGREE_LAT,
+    stepLonMeters: step * mPerDegLon,
+    region,
+    lonLines,
+    latLines,
+    bounds: {
+      latMin: region.rowFrom * step,
+      latMax: region.rowTo * step,
+      lonMin: region.colFrom * step,
+      lonMax: region.colTo * step,
+    },
+    camToGeo,
+    geoToCam,
+    geoToUv,
+    uvToGeo,
+    cellFor,
+    cellCenter,
+    cellBounds,
+    format: (value) => formatGpsValue(value, decimals),
+  };
+}
+
+// The geo coordinate + grid cell of every current camera detection.
+function gpsDetectionReadout(model, detections = null) {
+  const grid = model || octopusGpsGridModel();
+  if (!grid) return [];
+  return (detections || cameraFeedDetections())
+    .map((det) => {
+      const u = safeNumber(det.u, NaN);
+      const v = safeNumber(det.v, NaN);
+      if (!Number.isFinite(u) || !Number.isFinite(v)) return null;
+      const geo = grid.uvToGeo(clamp(u, 0, 1), clamp(v, 0, 1));
+      return { det, ...geo, cell: grid.cellFor(geo.lat, geo.lon) };
+    })
+    .filter(Boolean);
+}
+
+// Draw the graticule over the camera image rect. Lines of constant lat/lon are
+// straight in image space (the mapping is a rotation + scale), so two projected
+// points per line, clipped to the image rect, are enough.
+function drawCameraGpsGrid(ctx, rect, grid) {
+  const toPixel = (lat, lon) => {
+    const { u, v } = grid.geoToUv(lat, lon);
+    return { x: rect.x + u * rect.w, y: rect.y + (1 - v) * rect.h };
+  };
+
+  // Pixel size of one cell, used to decide how much labelling fits. The camera
+  // image is rotated against the graticule, so measure along both axes.
+  const origin = toPixel(grid.bbox.latMin, grid.bbox.lonMin);
+  const eastStep = toPixel(grid.bbox.latMin, grid.bbox.lonMin + grid.step);
+  const northStep = toPixel(grid.bbox.latMin + grid.step, grid.bbox.lonMin);
+  const cellPixW = Math.hypot(eastStep.x - origin.x, eastStep.y - origin.y);
+  const cellPixH = Math.hypot(northStep.x - origin.x, northStep.y - origin.y);
+  const lonEvery = Math.max(1, Math.ceil(52 / Math.max(cellPixW, 1)));
+  const latEvery = Math.max(1, Math.ceil(30 / Math.max(cellPixH, 1)));
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(rect.x, rect.y, rect.w, rect.h);
+  ctx.clip();
+
+  const drawLine = (p0, p1, major) => {
+    const clipped = clipSegmentToRect(p0, p1, rect);
+    if (!clipped) return null;
+    ctx.beginPath();
+    ctx.moveTo(clipped.a.x, clipped.a.y);
+    ctx.lineTo(clipped.b.x, clipped.b.y);
+    ctx.strokeStyle = major ? "rgba(56,189,248,0.85)" : "rgba(56,189,248,0.34)";
+    ctx.lineWidth = major ? 1.4 : 0.8;
+    ctx.stroke();
+    return clipped;
+  };
+
+  const labels = [];
+  ctx.font = "700 10px ui-monospace, SFMono-Regular, Menlo, monospace";
+  ctx.textBaseline = "middle";
+
+  grid.lonLines.forEach((lon, i) => {
+    const major = i % lonEvery === 0;
+    const clipped = drawLine(
+      toPixel(grid.bounds.latMin, lon),
+      toPixel(grid.bounds.latMax, lon),
+      major
+    );
+    if (!clipped || !major) return;
+    // Label at whichever end of the visible segment sits lower in the frame.
+    const at = clipped.a.y > clipped.b.y ? clipped.a : clipped.b;
+    labels.push({ text: `${grid.format(lon)}°E`, x: at.x, y: at.y, align: "center", dy: -8 });
+  });
+
+  grid.latLines.forEach((lat, j) => {
+    const major = j % latEvery === 0;
+    const clipped = drawLine(
+      toPixel(lat, grid.bounds.lonMin),
+      toPixel(lat, grid.bounds.lonMax),
+      major
+    );
+    if (!clipped || !major) return;
+    const at = clipped.a.x < clipped.b.x ? clipped.a : clipped.b;
+    labels.push({ text: `${grid.format(lat)}°N`, x: at.x, y: at.y, align: "left", dy: 0, dx: 4 });
+  });
+
+  // Cell names at the cell centers, once they are big enough to read.
+  if (cellNamesEnabled() && Math.min(cellPixW, cellPixH) >= 24) {
+    ctx.fillStyle = "rgba(212,255,0,0.72)";
+    ctx.font = "800 10px ui-sans-serif, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    for (let r = 0; r < grid.region.rows; r++) {
+      for (let c = 0; c < grid.region.cols; c++) {
+        const center = grid.cellCenter(c, r);
+        const p = toPixel(center.lat, center.lon);
+        if (p.x < rect.x + 6 || p.x > rect.x + rect.w - 6) continue;
+        if (p.y < rect.y + 6 || p.y > rect.y + rect.h - 6) continue;
+        ctx.fillText(`${gpsColumnLetters(c)}${r + 1}`, p.x, p.y);
+      }
+    }
+  }
+
+  // Axis value labels on top, each on its own dark plate for legibility.
+  ctx.font = "700 10px ui-monospace, SFMono-Regular, Menlo, monospace";
+  labels.forEach((label) => {
+    ctx.textAlign = label.align;
+    const w = ctx.measureText(label.text).width;
+    const x = clamp(label.x + (label.dx || 0), rect.x + 2, rect.x + rect.w - 2);
+    const y = clamp(label.y + (label.dy || 0), rect.y + 8, rect.y + rect.h - 8);
+    const plateX = label.align === "center" ? x - w / 2 : x;
+    ctx.fillStyle = "rgba(2,6,23,0.72)";
+    ctx.fillRect(plateX - 3, y - 7, w + 6, 14);
+    ctx.fillStyle = "#7dd3fc";
+    ctx.fillText(label.text, x, y);
+  });
+
+  ctx.restore();
+  ctx.textAlign = "left";
+}
+
+const CAMERA_MARK_COLOR = "251,146,60";
+
+// Neon-yellow local grid over the camera image footprint.
+function drawLocalGridOnCamera(ctx, rect, geom) {
+  ctx.strokeStyle = "rgba(212,255,0,0.8)";
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  for (let c = 0; c <= geom.cols; c++) {
+    const x = Math.round(rect.x + geom.cellW * c) + 0.5;
+    ctx.moveTo(x, rect.y);
+    ctx.lineTo(x, rect.y + rect.h);
+  }
+  for (let r = 0; r <= geom.rows; r++) {
+    const y = Math.round(rect.y + geom.cellH * r) + 0.5;
+    ctx.moveTo(rect.x, y);
+    ctx.lineTo(rect.x + rect.w, y);
+  }
+  ctx.stroke();
+
+  // Frame border around the camera footprint.
+  ctx.strokeStyle = "rgba(212,255,0,1)";
+  ctx.lineWidth = 2;
+  ctx.strokeRect(rect.x + 1, rect.y + 1, rect.w - 2, rect.h - 2);
+
+  // Cell names, once the cells are big enough to read them.
+  if (cellNamesEnabled() && Math.min(geom.cellW, geom.cellH) >= 26) {
+    ctx.save();
+    ctx.fillStyle = "rgba(212,255,0,0.6)";
+    ctx.font = "800 10px ui-sans-serif, system-ui, sans-serif";
+    ctx.textAlign = "center";
+    ctx.textBaseline = "top";
+    for (let r = 0; r < geom.rows; r++) {
+      for (let c = 0; c < geom.cols; c++) {
+        ctx.fillText(localCellName(c, r), rect.x + (c + 0.5) * geom.cellW, rect.y + r * geom.cellH + 3);
+      }
+    }
+    ctx.restore();
+  }
+}
+
+// Mark the local grid cells that contain a detection. Drawn on top of the grid so
+// the trash cells stand out against the neon lines.
+function markLocalCellsOnCamera(ctx, rect, geom, detections) {
+  const cells = localCellsForDetections(geom, detections);
+  if (!cells.length) return;
+
+  ctx.save();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = "800 11px ui-sans-serif, system-ui, sans-serif";
+  cells.forEach(({ col, row, name }) => {
+    const x = rect.x + col * geom.cellW;
+    const y = rect.y + row * geom.cellH;
+    ctx.fillStyle = `rgba(${CAMERA_MARK_COLOR},0.30)`;
+    ctx.fillRect(x, y, geom.cellW, geom.cellH);
+    ctx.strokeStyle = `rgba(${CAMERA_MARK_COLOR},1)`;
+    ctx.lineWidth = 2.5;
+    ctx.strokeRect(x + 1.5, y + 1.5, geom.cellW - 3, geom.cellH - 3);
+    if (cellNamesEnabled() && Math.min(geom.cellW, geom.cellH) >= 26) {
+      drawCellNamePlate(ctx, name, x + geom.cellW / 2, y + geom.cellH / 2);
+    }
+  });
+  ctx.restore();
+}
+
+// Mark the GPS grid cells that contain a detection. A GPS cell is a rotated
+// rectangle in image space, so it is filled as a quad through geoToUv.
+function markGpsCellsOnCamera(ctx, rect, grid, detections) {
+  const cells = gpsCellsForDetections(grid, gpsDetectionReadout(grid, detections));
+  if (!cells.length) return;
+
+  const toPixel = (lat, lon) => {
+    const { u, v } = grid.geoToUv(lat, lon);
+    return { x: rect.x + u * rect.w, y: rect.y + (1 - v) * rect.h };
+  };
+
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(rect.x, rect.y, rect.w, rect.h);
+  ctx.clip();
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = "800 11px ui-sans-serif, system-ui, sans-serif";
+
+  cells.forEach(({ col, row, name }) => {
+    const b = grid.cellBounds(col, row);
+    const quad = [
+      toPixel(b.latMin, b.lonMin),
+      toPixel(b.latMin, b.lonMax),
+      toPixel(b.latMax, b.lonMax),
+      toPixel(b.latMax, b.lonMin),
+    ];
+    ctx.beginPath();
+    ctx.moveTo(quad[0].x, quad[0].y);
+    quad.slice(1).forEach((p) => ctx.lineTo(p.x, p.y));
+    ctx.closePath();
+    ctx.fillStyle = `rgba(${CAMERA_MARK_COLOR},0.30)`;
+    ctx.fill();
+    ctx.strokeStyle = `rgba(${CAMERA_MARK_COLOR},1)`;
+    ctx.lineWidth = 2.5;
+    ctx.stroke();
+
+    const center = toPixel((b.latMin + b.latMax) / 2, (b.lonMin + b.lonMax) / 2);
+    const cellPix = Math.hypot(quad[1].x - quad[0].x, quad[1].y - quad[0].y);
+    if (cellNamesEnabled() && cellPix >= 26) drawCellNamePlate(ctx, name, center.x, center.y);
+  });
+
+  ctx.restore();
+  ctx.textAlign = "left";
+}
+
+// Cell name on a dark plate, so it stays readable over the marked cell's fill.
+function drawCellNamePlate(ctx, name, x, y) {
+  const w = ctx.measureText(name).width;
+  ctx.fillStyle = "rgba(2,6,23,0.72)";
+  ctx.fillRect(x - w / 2 - 4, y - 8, w + 8, 16);
+  ctx.fillStyle = "#fdba74";
+  ctx.fillText(name, x, y);
+}
+
 function drawCameraFeedOverlay() {
   const frame = $("camera-feed-frame");
   const img = $("camera-feed-image");
@@ -2607,62 +3435,32 @@ function drawCameraFeedOverlay() {
   ctx.clearRect(0, 0, cw, ch);
 
   const hasImage = !!(img && img.src && img.complete && img.naturalWidth > 0);
-  if (!hasImage) return;
+  const gpsEnabled = isGpsGridActive();
+  if (!hasImage && !gpsEnabled) return;
 
-  const rect = containedImageRect(frame, img.naturalWidth, img.naturalHeight);
-  const cols = clamp(parseInt(OCTOPUS.cameraFeed.gridCols, 10) || 0, 0, 40);
-  const rows = cols > 0 ? Math.max(1, Math.round(cols * (rect.h / rect.w))) : 0;
+  // Without a frame the GPS grid still draws, over the area the camera image
+  // would occupy (sensor aspect ratio), so the feature is usable without the
+  // pipeline running.
+  const rect = hasImage
+    ? containedImageRect(frame, img.naturalWidth, img.naturalHeight)
+    : containedImageRect(frame, OCTOPUS_HBVCAM_640X480.image_width, OCTOPUS_HBVCAM_640X480.image_height);
+
   const detections = cameraFeedDetections();
-  const trashColor = "251,146,60";
 
-  // Neon-yellow grid over the camera image footprint.
-  if (cols > 0 && rows > 0) {
-    ctx.strokeStyle = "rgba(212,255,0,0.8)";
-    ctx.lineWidth = 1;
-    ctx.beginPath();
-    for (let c = 0; c <= cols; c++) {
-      const x = Math.round(rect.x + (rect.w / cols) * c) + 0.5;
-      ctx.moveTo(x, rect.y);
-      ctx.lineTo(x, rect.y + rect.h);
-    }
-    for (let r = 0; r <= rows; r++) {
-      const y = Math.round(rect.y + (rect.h / rows) * r) + 0.5;
-      ctx.moveTo(rect.x, y);
-      ctx.lineTo(rect.x + rect.w, y);
-    }
-    ctx.stroke();
-
-    // Frame border around the camera footprint.
-    ctx.strokeStyle = "rgba(212,255,0,1)";
-    ctx.lineWidth = 2;
-    ctx.strokeRect(rect.x + 1, rect.y + 1, rect.w - 2, rect.h - 2);
+  // GPS mode: the graticule, plus the cells that carry a detection.
+  const gpsGrid = gpsEnabled ? octopusGpsGridModel() : null;
+  if (gpsGrid) {
+    drawCameraGpsGrid(ctx, rect, gpsGrid);
+    if (markCellsEnabled()) markGpsCellsOnCamera(ctx, rect, gpsGrid, detections);
   }
 
-  // Highlight the grid cells that contain a detection. Drawn on top of the grid
-  // so the trash cells stand out against the neon lines.
-  // The detector publishes v with a bottom-left origin (v=0 at the image bottom),
-  // while the frame pixels are top-left, so flip v to line the cells up with the
-  // detector's own bounding boxes baked into the debug frame.
-  if (cols > 0 && rows > 0 && OCTOPUS.cameraFeed.highlightCells && detections.length) {
-    const cellW = rect.w / cols;
-    const cellH = rect.h / rows;
-    const seen = new Set();
-    detections.forEach((det) => {
-      const u = clamp(safeNumber(det.u, 0), 0, 0.999999);
-      const v = clamp(safeNumber(det.v, 0), 0, 0.999999);
-      const cx = Math.floor(u * cols);
-      const cy = Math.floor((1 - v) * rows);
-      const key = `${cx},${cy}`;
-      if (seen.has(key)) return;
-      seen.add(key);
-      const x = rect.x + cx * cellW;
-      const y = rect.y + cy * cellH;
-      ctx.fillStyle = `rgba(${trashColor},0.30)`;
-      ctx.fillRect(x, y, cellW, cellH);
-      ctx.strokeStyle = `rgba(${trashColor},1)`;
-      ctx.lineWidth = 2.5;
-      ctx.strokeRect(x + 1.5, y + 1.5, cellW - 3, cellH - 3);
-    });
+  if (!hasImage) return;
+
+  // Local mode: the image-aligned grid, plus the cells that carry a detection.
+  const localGeom = isLocalGridActive() ? localGridGeometry(rect) : null;
+  if (localGeom) {
+    drawLocalGridOnCamera(ctx, rect, localGeom);
+    if (markCellsEnabled()) markLocalCellsOnCamera(ctx, rect, localGeom, detections);
   }
 
   // Green bounding box + center dot + label per detection. The detector no longer
@@ -2727,9 +3525,13 @@ function drawCameraFeedOverlay() {
       ctx.stroke();
 
       // Label chip: "class 0.80" (no id, decimal confidence), above the box.
+      // With a grid active, the cell the object sits in is appended — the GPS cell
+      // in GPS mode, the local cell in local mode.
       const parts = [det.class_name || "rubbish"];
       const conf = safeNumber(det.confidence, NaN);
       if (Number.isFinite(conf)) parts.push(conf.toFixed(2));
+      const cellName = cellNamesEnabled() ? activeCellNameForDetection(det, gpsGrid, localGeom) : null;
+      if (cellName) parts.push(`· ${cellName}`);
       const label = parts.join(" ");
       const padX = 5;
       const chipH = 18;
@@ -2796,6 +3598,96 @@ function renderCameraFeed() {
     <span class="spacer"></span>
     <span class="mini-chip">frame: ${escapeHtml(image?.frame_id || detectionPayload?.frame_id || "camera")}</span>
   `;
+
+  renderCameraGridReadout();
+}
+
+// Readout below the camera feed, for whichever grid is active: cell size, Eve's
+// own position, and the cell (plus coordinate, in GPS mode) of every detection
+// currently in frame.
+function renderCameraGridReadout() {
+  const box = $("camera-gps-readout");
+  if (!box) return;
+
+  const mode = cameraGridMode();
+  if (mode === "off") {
+    box.hidden = true;
+    box.innerHTML = "";
+    return;
+  }
+
+  box.hidden = false;
+  box.innerHTML = (mode === "gps" ? gpsReadoutChips() : localReadoutChips()).join("");
+}
+
+function gpsReadoutChips() {
+  const grid = octopusGpsGridModel();
+  if (!grid) {
+    return [`<span class="gps-chip hint">No Eve position yet — place Eve on the mission map to anchor the GPS grid.</span>`];
+  }
+
+  const chips = [];
+  chips.push(
+    `<span class="gps-chip">GPS grid <b>${escapeHtml(grid.format(grid.step))}°</b> ≈ ` +
+    `${grid.stepLonMeters.toFixed(2)} m × ${grid.stepLatMeters.toFixed(2)} m / cell` +
+    `${grid.clamped ? " (coarsened to fit)" : grid.stepAuto ? " (auto)" : ""}</span>`
+  );
+  chips.push(
+    `<span class="gps-chip">Eve <b>${escapeHtml(grid.format(grid.pose.lat))}°N ` +
+    `${escapeHtml(grid.format(grid.pose.lon))}°E</b> · h=${grid.heightAboveGround.toFixed(2)} m · ` +
+    `yaw ${Math.round(grid.pose.yawDeg)}°${grid.pose.manual ? " · dragged" : grid.pose.demo ? " · fallback" : ""}</span>`
+  );
+
+  const readout = gpsDetectionReadout(grid);
+  if (readout.length) {
+    readout.forEach(({ det, lat, lon, cell }) => {
+      const conf = safeNumber(det.confidence, NaN);
+      chips.push(
+        `<span class="gps-chip trash">🗑 <b>${escapeHtml(cell ? cell.name : "--")}</b> ` +
+        `${escapeHtml(grid.format(lat))}°N ${escapeHtml(grid.format(lon))}°E` +
+        `${Number.isFinite(conf) ? ` · ${conf.toFixed(2)}` : ""}</span>`
+      );
+    });
+  } else {
+    chips.push(
+      `<span class="gps-chip hint">No trash in frame — drag Eve on the map to move the footprint.</span>`
+    );
+  }
+  return chips;
+}
+
+// The local grid is defined in image space, so it needs no Eve position — only
+// the footprint size, to say how big one cell is on the ground.
+function localReadoutChips() {
+  const layout = localGridLayout();
+  if (!layout) {
+    return [`<span class="gps-chip hint">Local grid has no columns configured.</span>`];
+  }
+
+  const meta = octopusComputeCameraFootprintMeta();
+  const chips = [
+    `<span class="gps-chip">Local grid <b>${layout.cols}×${layout.rows}</b> cells ≈ ` +
+    `${(meta.width_m / layout.cols).toFixed(2)} m × ${(meta.height_m / layout.rows).toFixed(2)} m / cell ` +
+    `· footprint ${meta.width_m.toFixed(2)} m × ${meta.height_m.toFixed(2)} m at h=${meta.camera_height_m.toFixed(2)} m</span>`,
+  ];
+
+  const cells = localCellsForDetections(layout);
+  if (cells.length) {
+    cells.forEach(({ name, detections }) => {
+      const best = detections.reduce(
+        (acc, det) => Math.max(acc, safeNumber(det.confidence, 0)),
+        0
+      );
+      const count = detections.length > 1 ? ` ×${detections.length}` : "";
+      chips.push(
+        `<span class="gps-chip trash">🗑 <b>${escapeHtml(name)}</b>${escapeHtml(count)}` +
+        `${best > 0 ? ` · ${best.toFixed(2)}` : ""}</span>`
+      );
+    });
+  } else {
+    chips.push(`<span class="gps-chip hint">No trash in frame.</span>`);
+  }
+  return chips;
 }
 
 async function refreshCameraDebug() {
@@ -3095,13 +3987,41 @@ function onGridKeyDown(event) {
 }
 
 function setupCameraFeedControls() {
+  const modeSelect = $("camera-grid-mode");
+  const colsControl = $("camera-feed-cols-control");
   const colsSelect = $("camera-feed-grid-cols");
+  const stepControl = $("camera-gps-step-control");
+  const gpsStep = $("camera-gps-step");
+  const namesControl = $("camera-cell-names-control");
+
+  // Only the active mode's own controls are shown. Cell names exist in both grid
+  // modes, so that one is hidden only when no grid is drawn at all.
+  const syncModeControls = () => {
+    const mode = cameraGridMode();
+    if (colsControl) colsControl.hidden = mode !== "local";
+    if (stepControl) stepControl.hidden = mode !== "gps";
+    if (namesControl) namesControl.hidden = mode === "off";
+  };
+
+  if (modeSelect) {
+    modeSelect.value = cameraGridMode();
+    modeSelect.addEventListener("change", () => {
+      OCTOPUS.cameraFeed.overlayGrid = CAMERA_GRID_MODES.includes(modeSelect.value)
+        ? modeSelect.value
+        : "off";
+      localStorage.setItem("octopusCameraGridMode", OCTOPUS.cameraFeed.overlayGrid);
+      syncModeControls();
+      redrawCameraGrid();
+      addTimeline(cameraGridModeMessage(), "info");
+    });
+  }
+
   if (colsSelect) {
     colsSelect.value = String(OCTOPUS.cameraFeed.gridCols);
     colsSelect.addEventListener("change", () => {
-      OCTOPUS.cameraFeed.gridCols = parseInt(colsSelect.value, 10) || 0;
+      OCTOPUS.cameraFeed.gridCols = parseInt(colsSelect.value, 10) || 8;
       localStorage.setItem("octopusCameraFeedGridCols", String(OCTOPUS.cameraFeed.gridCols));
-      drawCameraFeedOverlay();
+      redrawCameraGrid();
     });
   }
 
@@ -3111,9 +4031,29 @@ function setupCameraFeedControls() {
     highlight.addEventListener("change", () => {
       OCTOPUS.cameraFeed.highlightCells = highlight.checked;
       localStorage.setItem("octopusCameraFeedHighlight", highlight.checked ? "1" : "0");
-      drawCameraFeedOverlay();
+      redrawCameraGrid();
     });
   }
+
+  const cellNames = $("camera-cell-names");
+  if (cellNames) {
+    cellNames.checked = OCTOPUS.cameraFeed.cellNames;
+    cellNames.addEventListener("change", () => {
+      OCTOPUS.cameraFeed.cellNames = cellNames.checked;
+      localStorage.setItem("octopusCameraCellNames", cellNames.checked ? "1" : "0");
+      redrawCameraGrid();
+    });
+  }
+
+  if (gpsStep) {
+    gpsStep.value = String(OCTOPUS.cameraFeed.gpsStepDeg || 0);
+    gpsStep.addEventListener("change", () => {
+      OCTOPUS.cameraFeed.gpsStepDeg = parseFloat(gpsStep.value) || 0;
+      localStorage.setItem("octopusCameraGpsStepDeg", String(OCTOPUS.cameraFeed.gpsStepDeg));
+      redrawCameraGrid();
+    });
+  }
+  syncModeControls();
 
   const frame = $("camera-feed-frame");
   if (frame && typeof ResizeObserver !== "undefined") {
@@ -3121,6 +4061,34 @@ function setupCameraFeedControls() {
     observer.observe(frame);
   }
   window.addEventListener("resize", drawCameraFeedOverlay);
+}
+
+// Timeline line for a mode switch, naming the cell size the operator now reads.
+function cameraGridModeMessage() {
+  const mode = cameraGridMode();
+  if (mode === "off") return "Camera grid off.";
+
+  if (mode === "local") {
+    const layout = localGridLayout();
+    const meta = octopusComputeCameraFootprintMeta();
+    return layout
+      ? `Local grid on: ${layout.cols}×${layout.rows} cells over the camera footprint ` +
+        `(~${(meta.width_m / layout.cols).toFixed(2)} m per cell).`
+      : "Local grid on, but no columns are configured.";
+  }
+
+  const grid = octopusGpsGridModel();
+  return grid
+    ? `GPS grid on: ${grid.format(grid.step)}° per cell (~${grid.stepLonMeters.toFixed(2)} m) around Eve.`
+    : "GPS grid on, but Eve has no position yet. Place Eve on the mission map.";
+}
+
+// The active grid lives on the camera overlay and on the mission map, so anything
+// that changes it (mode, cells, step, drone height, Eve position, yaw) redraws both.
+function redrawCameraGrid() {
+  drawCameraFeedOverlay();
+  renderCameraGridReadout();
+  if (OCTOPUS.missionMap?.map) renderMissionMap();
 }
 
 function setupEventListeners() {
@@ -3186,7 +4154,9 @@ function setupEventListeners() {
         yawRafPending = true;
         requestAnimationFrame(() => {
           yawRafPending = false;
-          renderMissionMap();
+          // Yaw rotates the camera footprint, so the active grid follows it.
+          if (cameraGridMode() !== "off") redrawCameraGrid();
+          else renderMissionMap();
         });
       }
     });
@@ -3992,6 +4962,9 @@ function octopusRefreshGridModeView(announce = false) {
   }
 
   if (typeof renderKpis === "function") renderKpis();
+
+  // Drone height changes the footprint, and with it the active grid on both views.
+  if (cameraGridMode() !== "off" && typeof redrawCameraGrid === "function") redrawCameraGrid();
 
   if (announce && typeof addTimeline === "function") {
     const mode = octopusGridMode();

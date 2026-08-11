@@ -355,6 +355,9 @@
       flex-wrap: wrap;
     }
 
+    /* Controls that only apply to one grid mode are hidden in the others. */
+    .grid-toolbar label[hidden] { display: none; }
+
     select, button, .small-input {
       background: #0f172a;
       border: 1px solid var(--border-subtle);
@@ -864,7 +867,7 @@
       body[data-view] .middle-column,
       body[data-view] .side-column { grid-column: 1 !important; grid-row: auto !important; display: flex; }
       body[data-view="fleet"] .grid-panel { display: none !important; }
-      body:not([data-view="overview"]) .camera-feed-panel { display: none !important; }
+      body:not([data-view="overview"]):not([data-view="show"]) .camera-feed-panel { display: none !important; }
       body[data-view] .side-column { display: grid !important; grid-template-columns: 1fr !important; }
     }
 
@@ -1532,6 +1535,73 @@ body.octopus-view-debug .camera-debug-panel .item-card {
     }
     .camera-feed-toolbar .small-input { padding: 5px 7px; }
 
+    /* GPS grid readout: which coordinate / grid cell each detection sits on. */
+    .camera-gps-readout {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 6px;
+      max-height: 62px;
+      overflow-y: auto;
+      padding-top: 2px;
+    }
+    .gps-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      border-radius: 8px;
+      border: 1px solid rgba(56,189,248,0.42);
+      background: rgba(56,189,248,0.10);
+      color: #bae6fd;
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      padding: 3px 8px;
+      white-space: nowrap;
+    }
+    .gps-chip.trash {
+      border-color: rgba(251,146,60,0.5);
+      background: rgba(251,146,60,0.12);
+      color: #fed7aa;
+    }
+    .gps-chip.hint {
+      border-color: var(--border-subtle);
+      background: rgba(15,23,42,0.6);
+      color: var(--text-muted);
+      font-weight: 500;
+    }
+    .gps-chip b {
+      font-weight: 800;
+      color: #f8fafc;
+    }
+    .gps-chip code {
+      font-size: 10.5px;
+      color: inherit;
+    }
+
+    /* Leaflet labels for the GPS graticule on the mission map. Leaflet drives the
+       transform of these elements, so alignment comes from iconSize + text-align. */
+    .gps-grid-label {
+      color: #7dd3fc;
+      font-size: 9.5px;
+      font-weight: 700;
+      line-height: 12px;
+      letter-spacing: 0.02em;
+      text-shadow: 0 0 3px #020617, 0 0 3px #020617, 0 1px 2px #020617;
+      white-space: nowrap;
+      pointer-events: none;
+    }
+    .gps-grid-label.axis-lon { text-align: center; }
+    .gps-grid-label.axis-lat { text-align: left; }
+    .gps-grid-label.cell {
+      color: rgba(212,255,0,0.85);
+      font-size: 10.5px;
+      font-weight: 800;
+      text-align: center;
+    }
+    /* Cell name of a marked (trash-carrying) cell, in the same orange as the marker. */
+    .gps-grid-label.cell.marked { color: #fdba74; }
+
     /* Overview: Mission Map + Camera Feed side by side, replacing the Local Grid Map. */
     body[data-view="overview"] .grid-panel { display: none !important; }
     body[data-view="overview"] .camera-feed-panel {
@@ -1539,8 +1609,97 @@ body.octopus-view-debug .camera-debug-panel .item-card {
       grid-row: 1;
       display: flex;
     }
-    /* The camera feed is an overview-only panel. */
-    body:not([data-view="overview"]) .camera-feed-panel { display: none !important; }
+    /* The camera feed belongs to the overview and the show view. */
+    body:not([data-view="overview"]):not([data-view="show"]) .camera-feed-panel { display: none !important; }
+
+    /* ----------------------------------------------------------------------
+       Show / Presentation view — the audience-facing layout for demos and
+       trade fairs. Same map + camera split as the overview, but every operator
+       control is off screen and the type scale goes up, so the screen reads
+       from a few meters away instead of from a chair.
+
+       Deliberate trade-off: there are no knobs here. Grid mode, drone height,
+       Eve placement and the pipeline controls are set in Mission Overview
+       first; the show view only displays the result.
+       ---------------------------------------------------------------------- */
+
+    /* Layout: Mission Map and Camera Feed side by side over the full height —
+       both list panels are gone, so the main grid is a single row and the two
+       visuals get the whole space. */
+    body[data-view="show"] .dashboard {
+      grid-template-rows: 132px minmax(0, 1fr) 150px;
+    }
+    body[data-view="show"] .main-grid {
+      grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+      grid-template-rows: minmax(0, 1fr);
+    }
+    body[data-view="show"] .grid-panel { display: none !important; }
+    body[data-view="show"] .camera-feed-panel {
+      grid-column: 2;
+      grid-row: 1;
+      display: flex;
+    }
+    /* Both panel columns go entirely: .middle-column carries the mapping and
+       planning settings, .side-column the pipeline controls, the click-inspector,
+       Fleet Status and the Detection/Task Queue. The headline numbers already
+       live in the KPI row and the narrative in the timeline, so the lists would
+       only be small print on stage. */
+    body[data-view="show"] .middle-column,
+    body[data-view="show"] .side-column { display: none !important; }
+    body[data-view="show"] .timeline-panel { grid-template-columns: 1fr; }
+
+    /* The two toolbars keep exactly the controls a presenter drives live; the
+       rest of each toolbar is hidden per child. Written as :not() exclusions so
+       the kept elements never need an explicit display value — a button and a
+       .resolution-control label do not share one. The JS mode gating still works
+       on top of this: syncModeControls() sets [hidden] on Cells/Step/Cell names,
+       and .grid-toolbar label[hidden] wins over nothing here. */
+    body[data-view="show"] .camera-feed-toolbar > *:not(#camera-grid-mode-control):not(#camera-gps-step-control):not(#camera-highlight-control):not(#camera-cell-names-control),
+    body[data-view="show"] .map-control-group > *:not(#set-eve-button):not(#clear-eve-button):not(#eve-yaw-control) {
+      display: none !important;
+    }
+
+    /* No other knobs on stage. The Abort button is a wired-to-nothing
+       placeholder, so it must not be clickable in front of an audience. The
+       technical status pills and KPIs go too — #backend-status-pill and
+       #mission-next-action stay as the one honest "is it alive / what is it
+       doing" signal. */
+    body[data-view="show"] .danger-button,
+    body[data-view="show"] #ros-status-pill,
+    body[data-view="show"] #pipeline-status-pill,
+    body[data-view="show"] #camera-transform-status-pill,
+    body[data-view="show"] #eve-camera-status-pill,
+    body[data-view="show"] #last-refresh-pill,
+    body[data-view="show"] .kpi-technical { display: none !important; }
+    body[data-view="show"] .kpi-row {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
+
+    /* Type scale. Values use clamp() so the numbers grow on a big fair screen
+       without overflowing .kpi on a laptop. */
+    body[data-view="show"] .kpi { padding: 16px 18px; }
+    body[data-view="show"] .kpi .label {
+      font-size: 13px;
+      letter-spacing: 0.12em;
+    }
+    body[data-view="show"] .kpi .value { font-size: clamp(30px, 2.8vw, 48px); }
+    body[data-view="show"] .kpi .sub { font-size: 14px; margin-top: 8px; }
+
+    body[data-view="show"] .panel-header { min-height: 56px; }
+    body[data-view="show"] .panel-title strong {
+      font-size: 17px;
+      letter-spacing: 0.08em;
+    }
+    body[data-view="show"] .panel-title span { font-size: 14px; }
+    body[data-view="show"] .timeline-list { font-size: 15px; }
+    /* The 58px time column is sized for 12px text — widen it with the type. */
+    body[data-view="show"] .timeline-event { grid-template-columns: 74px 1fr; }
+    body[data-view="show"] .pill { font-size: 14px; }
+    body[data-view="show"] .mini-chip { font-size: 13px; }
+    body[data-view="show"] .gps-chip { font-size: 13px; }
+    body[data-view="show"] .camera-gps-readout { max-height: 84px; }
+    body[data-view="show"] .brand-title strong { font-size: 19px; }
+    body[data-view="show"] .brand-title span { font-size: 13px; }
 /* --- END MISSION OVERVIEW CAMERA FEED PANEL --- */
 
 </style>
@@ -1577,6 +1736,7 @@ body.octopus-view-debug .camera-debug-panel .item-card {
       <div class="phase-box view-box">
         <span class="phase-label">View</span>
         <select id="dashboard-view-select" class="phase-select view-select" aria-label="Dashboard view mode">
+          <option value="show">Show / Presentation</option>
           <option value="overview">Mission Overview</option>
           <option value="debug">System / Debug</option>
         </select>
@@ -1601,8 +1761,8 @@ body.octopus-view-debug .camera-debug-panel .item-card {
       <div class="kpi"><div class="label">Detections / Tasks</div><div class="value" id="kpi-detections">--</div><div class="sub" id="kpi-detections-sub">Waiting</div></div>
       <div class="kpi"><div class="label">Confirmed trash</div><div class="value" id="kpi-confirmed">--</div><div class="sub">Collected / completed</div></div>
       <div class="kpi"><div class="label">Fleet online</div><div class="value" id="kpi-fleet">--</div><div class="sub" id="kpi-fleet-sub">Drone + robots</div></div>
-      <div class="kpi"><div class="label">Map patch</div><div class="value" id="kpi-map-patch">--</div><div class="sub" id="kpi-map-patch-sub">No patch yet</div></div>
-      <div class="kpi"><div class="label">System health</div><div class="value" id="kpi-health">--</div><div class="sub" id="kpi-health-sub">Checking pipeline</div></div>
+      <div class="kpi kpi-technical"><div class="label">Map patch</div><div class="value" id="kpi-map-patch">--</div><div class="sub" id="kpi-map-patch-sub">No patch yet</div></div>
+      <div class="kpi kpi-technical"><div class="label">System health</div><div class="value" id="kpi-health">--</div><div class="sub" id="kpi-health-sub">Checking pipeline</div></div>
     </section>
 
     <section class="main-grid">
@@ -1710,18 +1870,39 @@ body.octopus-view-debug .camera-debug-panel .item-card {
         <div class="panel-header">
           <div class="panel-title"><strong>Camera Feed</strong><span>Eve detector · trash detection grid</span></div>
           <div class="grid-toolbar camera-feed-toolbar">
-            <label title="Number of grid columns drawn over the camera image.">
+            <label id="camera-grid-mode-control" title="Which grid to draw. Local: image-aligned grid over the camera footprint. GPS: geographic lat/lon grid derived from Eve's position, yaw and drone height (demo values, not surveyed GPS). Only one grid is active at a time, and 'Trash cells' marks the cells of whichever is active.">
               Grid
-              <select id="camera-feed-grid-cols" class="small-input" aria-label="Camera grid columns">
-                <option value="0">off</option>
+              <select id="camera-grid-mode" class="small-input" aria-label="Camera grid mode">
+                <option value="off">off</option>
+                <option value="local" selected>local</option>
+                <option value="gps">GPS</option>
+              </select>
+            </label>
+            <label id="camera-feed-cols-control" title="Number of columns of the local grid drawn over the camera image.">
+              Cells
+              <select id="camera-feed-grid-cols" class="small-input" aria-label="Local grid columns">
                 <option value="6">6</option>
                 <option value="8" selected>8</option>
                 <option value="10">10</option>
                 <option value="12">12</option>
               </select>
             </label>
-            <label title="Highlight the grid cells that contain a detected trash object.">
+            <label id="camera-gps-step-control" title="Spacing of the GPS grid in degrees. Auto picks a fine step that fits the current camera footprint.">
+              Step
+              <select id="camera-gps-step" class="small-input" aria-label="GPS grid step in degrees">
+                <option value="0" selected>auto</option>
+                <option value="0.000005">0.000005°</option>
+                <option value="0.00001">0.00001°</option>
+                <option value="0.00002">0.00002°</option>
+                <option value="0.00005">0.00005°</option>
+                <option value="0.0001">0.0001°</option>
+              </select>
+            </label>
+            <label id="camera-highlight-control" title="Mark the cells of the active grid that contain a detected trash object, on the camera image and on the mission map.">
               <input type="checkbox" id="camera-feed-highlight" checked /> Trash cells
+            </label>
+            <label id="camera-cell-names-control" title="Draw the A1-style cell names on the camera image and on the mission map. The coordinate readout below the feed keeps them either way.">
+              <input type="checkbox" id="camera-cell-names" checked /> Cell names
             </label>
           </div>
         </div>
@@ -1738,6 +1919,7 @@ body.octopus-view-debug .camera-debug-panel .item-card {
           <div class="camera-feed-meta" id="camera-feed-meta">
             <span class="mini-chip">No camera frame yet</span>
           </div>
+          <div class="camera-gps-readout" id="camera-gps-readout" hidden></div>
         </div>
       </section>
 
@@ -1892,6 +2074,6 @@ body.octopus-view-debug .camera-debug-panel .item-card {
     </section>
   </main>
 
-  <script src="live_data.js?v=camera-feed-12"></script>
+  <script src="live_data.js?v=camera-feed-15"></script>
 </body>
 </html>
