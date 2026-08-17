@@ -242,10 +242,26 @@ class FlightCameraTransformNode(Node):
         require_z = bool(self.get_parameter("require_local_z_valid").value)
 
         pose_ready = bool(odom_fresh and odom_position_valid and odom_quaternion_valid)
+
+        # vehicle_local_position is only needed if a require_* flag asks for it, or if the
+        # ground plane is derived from dist_bottom. With manual height and both flags off
+        # (indoor static demo) the message is never read, so a missing publisher must not
+        # gate the transform.
+        needs_local = bool(
+            require_xy
+            or require_z
+            or (
+                bool(self.get_parameter("use_dist_bottom_if_valid").value)
+                and not bool(self.get_parameter("use_manual_height_above_ground").value)
+            )
+        )
         local_valid_enough = bool(
-            local_fresh
-            and (local_xy_valid or not require_xy)
-            and (local_z_valid or not require_z)
+            not needs_local
+            or (
+                local_fresh
+                and (local_xy_valid or not require_xy)
+                and (local_z_valid or not require_z)
+            )
         )
 
         projection_enabled = bool(self.get_parameter("projection_enabled").value)

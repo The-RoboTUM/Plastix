@@ -33,7 +33,7 @@ sleep 1
 
 echo "Starting FastAPI dashboard backend..."
 cd "$DASH"
-python3 -m uvicorn api:app --host 0.0.0.0 --port 8000 > "$LOG_DIR/backend.log" 2>&1 &
+setsid python3 -m uvicorn api:app --host 0.0.0.0 --port 8000 > "$LOG_DIR/backend.log" 2>&1 < /dev/null &
 echo $! > "$LOG_DIR/backend.pid"
 
 sleep 2
@@ -47,7 +47,7 @@ source "$ROS_WS/install/setup.bash"
 export ROS_DOMAIN_ID=0
 export ROS_LOCALHOST_ONLY=0
 
-ros2 run octopus_camera_transform flight_camera_transform_node --ros-args \
+setsid ros2 run octopus_camera_transform flight_camera_transform_node --ros-args \
   -p projection_enabled:=true \
   -p require_local_xy_valid:=false \
   -p require_local_z_valid:=false \
@@ -65,7 +65,7 @@ ros2 run octopus_camera_transform flight_camera_transform_node --ros-args \
   > "$LOG_DIR/flight_camera_transform.log" 2>&1 &
 echo $! > "$LOG_DIR/flight_camera_transform.pid"
 
-ros2 run octopus_camera_transform world_posearray_to_json_bridge_node --ros-args \
+setsid ros2 run octopus_camera_transform world_posearray_to_json_bridge_node --ros-args \
   -p relative_mode:=${OCTOPUS_JSON_RELATIVE_MODE} \
   -p relative_origin_x:=2.5 \
   -p relative_origin_y:=1.5 \
@@ -73,13 +73,13 @@ ros2 run octopus_camera_transform world_posearray_to_json_bridge_node --ros-args
 echo $! > "$LOG_DIR/world_posearray_to_json_bridge.pid"
 
 echo "Starting local camera grid node..."
-ros2 run octopus_camera_transform local_camera_grid_node --ros-args \
+setsid ros2 run octopus_camera_transform local_camera_grid_node --ros-args \
   -p footprint_width_m:=4.46 \
   -p footprint_height_m:=3.34 \
   -p resolution_m:=0.10 \
   > "$LOG_DIR/local_camera_grid.log" 2>&1 &
 
-ros2 run octopus_mapping grid_map_builder_node --ros-args \
+setsid ros2 run octopus_mapping grid_map_builder_node --ros-args \
   -p width_m:=4.46 \
   -p height_m:=3.34 \
   -p resolution:=0.10 \
@@ -88,15 +88,15 @@ ros2 run octopus_mapping grid_map_builder_node --ros-args \
   > "$LOG_DIR/grid_map_builder.log" 2>&1 &
 echo $! > "$LOG_DIR/grid_map_builder.pid"
 
-ros2 run octopus_backend_bridge map_patch_backend_bridge_node \
+setsid ros2 run octopus_backend_bridge map_patch_backend_bridge_node \
   > "$LOG_DIR/map_patch_backend_bridge.log" 2>&1 &
 echo $! > "$LOG_DIR/map_patch_backend_bridge.pid"
 
 echo "Starting local camera grid backend bridge node..."
-ros2 run octopus_backend_bridge local_camera_grid_backend_bridge_node \
+setsid ros2 run octopus_backend_bridge local_camera_grid_backend_bridge_node \
   > "$LOG_DIR/local_camera_grid_backend_bridge.log" 2>&1 &
 
-ros2 run octopus_backend_bridge camera_debug_backend_bridge_node \
+setsid ros2 run octopus_backend_bridge camera_debug_backend_bridge_node \
   > "$LOG_DIR/camera_debug_backend_bridge.log" 2>&1 &
 echo $! > "$LOG_DIR/camera_debug_backend_bridge.pid"
 

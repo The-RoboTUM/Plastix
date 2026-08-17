@@ -411,7 +411,10 @@ from datetime import datetime as _octopus_pipeline_datetime
 import time
 
 
-OCTOPUS_ROOT = "/home/dominik/projects/PlastiX/Octopus"
+OCTOPUS_ROOT = os.getenv(
+    "OCTOPUS_ROOT",
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+)
 
 
 def _octopus_run_local_pipeline_command(command: str, timeout: int = 15):
