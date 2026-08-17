@@ -78,3 +78,13 @@ eve/Software/detect-and-localize/**/__pycache__/
 
 # Local PX4 ROS2 message dependency
 Octopus/ros2_ws/src/px4_msgs/
+eve/Software/ros2_ws/src/px4_msgs/
+
+# Python virtual environments (never commit these - they are multi-GB and
+# contain absolute paths that break as soon as the repo is moved)
+.venv/
+venv/
+env/
+
+# pip bootstrap script
+get-pip.py
