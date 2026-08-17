@@ -276,6 +276,9 @@ function clamp(value, min, max) {
 }
 
 function safeNumber(value, fallback = 0) {
+  // Number(null) and Number("") are 0, so a missing confidence would render as
+  // "0.00" instead of being left out. Treat empty values as the fallback.
+  if (value === null || value === undefined || value === "") return fallback;
   const number = Number(value);
   return Number.isFinite(number) ? number : fallback;
 }
@@ -853,6 +856,7 @@ function placeEveAt(lat, lon) {
   setEvePlacementMode(false);
   const { x, y } = latLngToLocal(lat, lon);
   addTimeline(`Eve placed manually at x=${x.toFixed(2)} m, y=${y.toFixed(2)} m (local).`, "success");
+  syncEveFakeGps();
   renderAll();
 }
 
@@ -865,7 +869,67 @@ function clearManualEve() {
   OCTOPUS.manualEve = null;
   localStorage.removeItem("octopusManualEve");
   addTimeline("Manual Eve placement cleared. Using live/fallback position.", "warning");
+  syncEveFakeGps();
   renderAll();
+}
+
+// --- Eve fake GPS start coordinate -> backend -> ROS ---
+// Eve's placement only exists in this browser, but the collector robot needs it:
+// it starts at the same spot, so this coordinate is the datum every trash GPS goal
+// is relative to. Pushing it to the backend is what lets
+// /octopus/fake_eve_gps_start follow the marker when it is dragged.
+const EVE_FAKE_GPS_HEARTBEAT_SEC = 10;
+
+async function syncEveFakeGps(force = false) {
+  const pose = eveGeoPose();
+  if (!pose) return;
+
+  const last = OCTOPUS.lastEveFakeGps;
+  const moved =
+    !last ||
+    Math.abs(last.lat - pose.lat) > 1e-9 ||
+    Math.abs(last.lon - pose.lon) > 1e-9 ||
+    Math.abs(last.yawDeg - pose.yawDeg) > 1e-6;
+  // Resend periodically even when nothing moved, so a backend that was restarted
+  // picks the coordinate up again without the operator touching the marker.
+  const stale = !last || (Date.now() - last.postedAt) / 1000 > EVE_FAKE_GPS_HEARTBEAT_SEC;
+  if (!force && !moved && !stale) return;
+
+  const payload = {
+    lat: pose.lat,
+    lon: pose.lon,
+    yaw_deg: pose.yawDeg,
+    manual: Boolean(pose.manual),
+    demo: Boolean(pose.demo),
+    source: "dashboard",
+    ts: new Date().toISOString(),
+  };
+
+  try {
+    const response = await fetch("/api/eve/fake_gps", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    OCTOPUS.lastEveFakeGps = { lat: pose.lat, lon: pose.lon, yawDeg: pose.yawDeg, postedAt: Date.now() };
+    if (moved && last) {
+      addTimeline(`Eve start coordinate sent to ROS: ${pose.lat.toFixed(7)}, ${pose.lon.toFixed(7)}`, "info");
+    }
+  } catch (error) {
+    console.warn("Eve fake GPS sync failed", error);
+  }
+}
+
+function initEveFakeGpsSync() {
+  syncEveFakeGps(true);
+  setInterval(() => syncEveFakeGps(), 2000);
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initEveFakeGpsSync);
+} else {
+  initEveFakeGpsSync();
 }
 
 function finishPolygonArea() {
@@ -2128,16 +2192,11 @@ function computeHealthItems() {
     ? Math.min(...OCTOPUS.latest.battery.map((b) => ageSeconds(b.ts)).filter((x) => x !== null))
     : null;
 
-  const transform = OCTOPUS.latest.cameraTransformStatus || {};
-  const transformStateRaw = String(transform.state || "unknown").toLowerCase();
-  const transformAllowed = Boolean(transform.is_transform_allowed);
-  const transformDetected = Array.isArray(transform.detected_marker_ids) ? transform.detected_marker_ids : [];
-  const transformMissing = Array.isArray(transform.missing_marker_ids) ? transform.missing_marker_ids : [];
-  const transformRequired = Array.isArray(transform.required_marker_ids) ? transform.required_marker_ids : [61, 65, 57, 11];
-  const transformUiState = cameraTransformUiState(transformStateRaw, transformAllowed);
-  const transformDetail = transform.error
-    ? transform.error
-    : `${transformStateRaw} · ${transformDetected.length}/${transformRequired.length} markers · ${transformAllowed ? "allowed" : "blocked"}`;
+  const transformView = cameraTransformView(
+    OCTOPUS.latest.cameraTransformStatus,
+    OCTOPUS.latest.cameraTransformError || ""
+  );
+  const transformMarkers = cameraTransformMarkerRow(transformView);
 
   return [
     {
@@ -2157,13 +2216,13 @@ function computeHealthItems() {
     },
     {
       name: "Camera transform",
-      state: transformUiState,
-      detail: transformDetail,
+      state: transformView.uiState,
+      detail: transformView.detail,
     },
     {
       name: "AprilTags",
-      state: transformDetected.length === transformRequired.length && transformRequired.length > 0 ? "fresh" : "warning",
-      detail: transformMissing.length ? `missing ${transformMissing.join(", ")}` : "all required markers visible",
+      state: transformMarkers.state,
+      detail: transformMarkers.detail,
     },
     {
       name: "Fleet telemetry",
@@ -2554,22 +2613,19 @@ function renderReadiness() {
   const patchFresh = freshnessFromAge(ageSeconds(OCTOPUS.latest.patch?.received_at), 2, 10);
   const mapCells = Object.keys(OCTOPUS.latest.globalMap?.cells || {}).length;
 
-  const transform = OCTOPUS.latest.cameraTransformStatus || {};
-  const transformStateRaw = String(transform.state || "unknown").toLowerCase();
-  const transformAllowed = Boolean(transform.is_transform_allowed);
-  const transformDetected = Array.isArray(transform.detected_marker_ids) ? transform.detected_marker_ids : [];
-  const transformMissing = Array.isArray(transform.missing_marker_ids) ? transform.missing_marker_ids : [];
-  const transformRequired = Array.isArray(transform.required_marker_ids) ? transform.required_marker_ids : [61, 65, 57, 11];
-  const transformState = cameraTransformUiState(transformStateRaw, transformAllowed);
-  const markerState = transformDetected.length === transformRequired.length && transformRequired.length > 0 ? "fresh" : "warning";
+  const transformView = cameraTransformView(
+    OCTOPUS.latest.cameraTransformStatus,
+    OCTOPUS.latest.cameraTransformError || ""
+  );
+  const transformMarkers = cameraTransformMarkerRow(transformView);
 
   const rows = [
     ["Mission polygon defined", "unknown", "planning tool later"],
     ["Home position set", "unknown", "planning tool later"],
     ["Backend API", OCTOPUS.backendOk ? "fresh" : "offline", OCTOPUS.backendOk ? "OK" : "offline"],
     ["ROS map patch bridge", patchFresh.state, patchFresh.label],
-    ["Camera transform", transformState, `${transformStateRaw} · ${transformAllowed ? "transform allowed" : "transform blocked"}`],
-    ["AprilTags visible", markerState, transformMissing.length ? `${transformDetected.length}/${transformRequired.length} visible · missing ${transformMissing.join(", ")}` : `${transformDetected.length}/${transformRequired.length} visible`],
+    ["Camera transform", transformView.uiState, transformView.detail],
+    ["AprilTags visible", transformMarkers.state, transformMarkers.detail],
     ["Local grid map", mapCells > 0 ? "fresh" : "warning", mapCells > 0 ? `${mapCells} cells` : "empty"],
     ["Eve drone available", eve?.online ? "fresh" : "warning", eve?.online ? "scan/detect role configured" : "waiting"],
     ["Land collection available", landReady ? "fresh" : "warning", landReady ? "Robby/GripperX ready" : "waiting"],
@@ -4626,13 +4682,24 @@ if (document.readyState === "loading") {
 
 
 // --- Camera transform status UI ---
+// The status can come from either transform pipeline and the two payloads differ:
+// camera_marker_transform_node reports AprilTag visibility ("ok" / "stale_*",
+// is_transform_allowed, *_marker_ids), flight_camera_transform_node reports drone
+// pose readiness ("ready" / "pose_only" / …, transform_ready, reason). Everything
+// below normalizes both into one shape so no panel claims "0/4 markers" while the
+// flight path is the one running.
+const CAMERA_TRANSFORM_STALE_SEC = 6;
+
 function cameraTransformUiState(state, transformAllowed) {
   const value = String(state || "unknown").toLowerCase();
 
   if (value === "ok" && transformAllowed) return "fresh";
+  if (value === "ready" && transformAllowed) return "fresh";
   if (value === "stale_warning") return "warning";
   if (value === "stale_drop") return "error";
   if (value === "not_ready") return "warning";
+  if (value === "pose_only") return "warning";
+  if (value === "pose_ready_projection_disabled") return "warning";
   if (value === "unknown") return "unknown";
 
   return transformAllowed ? "fresh" : "warning";
@@ -4642,10 +4709,98 @@ function cameraTransformLabel(state) {
   const value = String(state || "unknown").toLowerCase();
 
   if (value === "ok") return "Transform OK";
+  if (value === "ready") return "Transform OK";
   if (value === "not_ready") return "Transform not ready";
+  if (value === "pose_only") return "Transform pose only";
+  if (value === "pose_ready_projection_disabled") return "Projection disabled";
   if (value === "stale_warning") return "Transform stale";
   if (value === "stale_drop") return "Transform blocked";
   return "Transform unknown";
+}
+
+// Single source of truth for every panel that shows the transform state.
+function cameraTransformView(status, errorMessage = "") {
+  const payload = status || {};
+  // Only the AprilTag pipeline knows about markers. Without that field the
+  // marker rows are not "0 of 4 visible", they are simply not applicable.
+  const markerBased = Array.isArray(payload.required_marker_ids);
+  const detected = Array.isArray(payload.detected_marker_ids) ? payload.detected_marker_ids : [];
+  const missing = Array.isArray(payload.missing_marker_ids) ? payload.missing_marker_ids : [];
+  const required = markerBased ? payload.required_marker_ids : [];
+  const allowed = markerBased
+    ? Boolean(payload.is_transform_allowed)
+    : Boolean(payload.transform_ready);
+
+  const state = String(payload.state || "unknown").toLowerCase();
+  // Both nodes publish at 1 Hz. If nothing new arrived the backend still serves the
+  // last payload forever, so age is what tells us the bridge or node died.
+  const age = ageSeconds(payload.backend_received_at);
+  const stale = age !== null && age > CAMERA_TRANSFORM_STALE_SEC;
+  const hasStatus = Boolean(payload.state);
+
+  let uiState;
+  let label;
+  if (errorMessage) {
+    uiState = "offline";
+    label = "Transform offline";
+  } else if (!hasStatus) {
+    uiState = "unknown";
+    label = "Transform unknown";
+  } else if (stale) {
+    uiState = "error";
+    label = "Transform stale";
+  } else {
+    uiState = cameraTransformUiState(state, allowed);
+    label = cameraTransformLabel(state);
+  }
+
+  let detail;
+  if (errorMessage) {
+    detail = errorMessage;
+  } else if (!hasStatus) {
+    detail = "no status received yet";
+  } else if (stale) {
+    detail = `${state} · last update ${formatAge(age)}`;
+  } else if (markerBased) {
+    detail = `${state} · ${detected.length}/${required.length} markers · ${allowed ? "allowed" : "blocked"}`;
+  } else {
+    detail = `${state} · ${payload.reason || (allowed ? "transform allowed" : "transform blocked")}`;
+  }
+
+  return {
+    status: payload,
+    state,
+    hasStatus,
+    stale,
+    age,
+    uiState,
+    label,
+    detail,
+    allowed,
+    markerBased,
+    detected,
+    missing,
+    required,
+    mode: payload.mode || null,
+  };
+}
+
+// Marker readiness as its own row: not applicable on the flight path.
+function cameraTransformMarkerRow(view) {
+  if (!view.markerBased) {
+    return {
+      state: "unknown",
+      detail: view.hasStatus
+        ? `not applicable · ${view.mode || "flight pose path"}`
+        : "no status received yet",
+    };
+  }
+  return {
+    state: view.detected.length === view.required.length && view.required.length > 0 ? "fresh" : "warning",
+    detail: view.missing.length
+      ? `${view.detected.length}/${view.required.length} visible · missing ${view.missing.join(", ")}`
+      : `${view.detected.length}/${view.required.length} visible`,
+  };
 }
 
 function cameraTransformAgeText(age) {
@@ -4663,49 +4818,38 @@ function setCameraTransformText(id, value) {
 
 function setCameraTransformUi(status, errorMessage = "") {
   const currentStatus = errorMessage
-    ? {
-        state: "offline",
-        has_homography: false,
-        is_transform_allowed: false,
-        detected_marker_ids: [],
-        missing_marker_ids: [],
-        required_marker_ids: [61, 65, 57, 11],
-        error: errorMessage,
-      }
+    ? { state: "offline", error: errorMessage }
     : (status || {});
 
   OCTOPUS.latest.cameraTransformStatus = currentStatus;
+  OCTOPUS.latest.cameraTransformError = errorMessage || "";
 
-  const state = currentStatus?.state || "unknown";
-  const transformAllowed = Boolean(currentStatus?.is_transform_allowed);
-  const detected = Array.isArray(currentStatus?.detected_marker_ids) ? currentStatus.detected_marker_ids : [];
-  const missing = Array.isArray(currentStatus?.missing_marker_ids) ? currentStatus.missing_marker_ids : [];
-  const required = Array.isArray(currentStatus?.required_marker_ids) ? currentStatus.required_marker_ids : [61, 65, 57, 11];
-
-  const uiState = errorMessage ? "offline" : cameraTransformUiState(state, transformAllowed);
-  const label = errorMessage ? "Transform offline" : cameraTransformLabel(state);
+  const view = cameraTransformView(currentStatus, errorMessage);
+  const markerRow = cameraTransformMarkerRow(view);
 
   const pill = document.getElementById("camera-transform-status-pill");
   if (pill) {
-    pill.className = `pill ${uiState}`;
-    pill.innerHTML = `<span class="dot"></span><span>${label}</span>`;
+    pill.className = `pill ${view.uiState}`;
+    pill.innerHTML = `<span class="dot"></span><span>${view.label}</span>`;
   }
 
   const summary = document.getElementById("camera-transform-summary");
   if (summary) {
-    const markerText = `${detected.length}/${required.length} markers`;
-    const missingText = missing.length ? `missing ${missing.join(", ")}` : "all required markers visible";
-    const allowedText = transformAllowed ? "transform allowed" : "transform blocked";
-    summary.textContent = errorMessage
-      ? `Camera transform status: ${errorMessage}`
-      : `Camera transform status: ${state} · ${markerText} · ${missingText} · ${allowedText}`;
+    summary.textContent = `Camera transform status: ${view.detail}`;
   }
 
-  setCameraTransformText("camera-transform-state", state);
-  setCameraTransformText("camera-transform-markers", `${detected.length}/${required.length} visible`);
-  setCameraTransformText("camera-transform-missing", missing.length ? missing.join(", ") : "none");
-  setCameraTransformText("camera-transform-age", cameraTransformAgeText(status?.homography_age_sec));
-  setCameraTransformText("camera-transform-allowed", transformAllowed ? "yes" : "no");
+  setCameraTransformText("camera-transform-state", view.state);
+  setCameraTransformText("camera-transform-markers", markerRow.detail);
+  setCameraTransformText("camera-transform-missing", view.missing.length ? view.missing.join(", ") : "none");
+  setCameraTransformText(
+    "camera-transform-age",
+    // Homography age is AprilTag-only; on the flight path the age that matters is
+    // how long ago the status itself arrived.
+    view.markerBased
+      ? cameraTransformAgeText(currentStatus?.homography_age_sec)
+      : cameraTransformAgeText(view.age)
+  );
+  setCameraTransformText("camera-transform-allowed", view.allowed ? "yes" : "no");
   setCameraTransformText(
     "camera-transform-detections",
     `${currentStatus?.last_input_detection_count ?? 0} in / ${currentStatus?.last_transformed_detection_count ?? 0} out`

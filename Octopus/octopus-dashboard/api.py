@@ -218,6 +218,38 @@ def octopus_eve_camera_log():
 # --- END OCTOPUS EVE CAMERA ROUTES ---
 
 
+# --- OCTOPUS EVE FAKE GPS START COORDINATE ---
+# Eve's placement on the mission map lives in the browser (localStorage), but the
+# collector robot needs it in ROS: it is started at the same physical spot, so
+# Eve's fake coordinate is the shared datum every trash goal is relative to.
+# The dashboard posts it here on every placement, eve_fake_gps_bridge_node polls
+# it and publishes /octopus/fake_eve_gps_start.
+EVE_FAKE_GPS = None
+
+
+@app.post("/api/eve/fake_gps")
+def post_eve_fake_gps(payload: Dict[str, Any]):
+    global EVE_FAKE_GPS
+
+    EVE_FAKE_GPS = dict(payload)
+    EVE_FAKE_GPS["backend_received_at"] = _now_ts()
+
+    return {"status": "ok", "eve_fake_gps": EVE_FAKE_GPS}
+
+
+@app.get("/api/eve/fake_gps")
+def get_eve_fake_gps():
+    if EVE_FAKE_GPS is None:
+        return {
+            "status": "empty",
+            "message": "No Eve position posted by the dashboard yet.",
+            "eve_fake_gps": None,
+        }
+
+    return {"status": "ok", "eve_fake_gps": EVE_FAKE_GPS}
+# --- END OCTOPUS EVE FAKE GPS START COORDINATE ---
+
+
 
 # Store server start time
 SERVER_START_TIME = datetime.now()

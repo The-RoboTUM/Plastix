@@ -5,6 +5,7 @@ This README explains how to set up the `eve-octopus` branch on a new laptop, con
 > **Nur starten?** Der Startablauf steht in **[docs/SETUP.md](docs/SETUP.md)**. Diese README
 > deckt Konzepte, Erstinstallation, Presentation Flow und weiteres Troubleshooting ab.
 > Dashboard-Test ohne Drohne: [octopus-dashboard/SETUP_NO_DRONE.md](octopus-dashboard/SETUP_NO_DRONE.md).
+> Übersicht über alle weiteren Dokumente: [docs/README.md](docs/README.md).
 
 The current indoor demo pipeline is:
 

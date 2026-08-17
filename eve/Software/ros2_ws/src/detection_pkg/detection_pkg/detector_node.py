@@ -376,30 +376,72 @@ class DetectorNode(Node):
             # TODO: join camera debug detections with map/world detections in dashboard.
         }
 
+    def _merge_distance(self):
+        """Radius (in normalized u/v units) for matching a confirmed track to the
+        raw detection it belongs to. The tracker uses the same threshold to decide
+        whether a detection updates an existing track, so anything further apart is
+        a different object as far as the tracker is concerned.
+
+        Only meaningful in normalized mode: with AprilTags the track position is in
+        world coordinates while the detection u/v stays in image space, so no match
+        is found and confirmed tracks simply do not appear on the camera feed."""
+        tracker = getattr(self.pipeline, "tracker", None)
+        return float(getattr(tracker, "dist_thresh", 0.05) or 0.05)
+
+    @staticmethod
+    def _nearest_detection(track_det, candidates, radius, claimed=()):
+        """Closest unclaimed candidate within `radius` of a confirmed track, or None."""
+        tu, tv = track_det.get("u"), track_det.get("v")
+        if tu is None or tv is None:
+            return None
+
+        best = None
+        best_dist = radius
+        for candidate in candidates:
+            if id(candidate) in claimed:
+                continue
+            cu, cv = candidate.get("u"), candidate.get("v")
+            if cu is None or cv is None:
+                continue
+            dist = float(np.hypot(cu - tu, cv - tv))
+            if dist <= best_dist:
+                best = candidate
+                best_dist = dist
+        return best
+
     def _build_debug_detections(self, result, frame_shape):
         confirmed_items = self._as_list(result.get("confirmed", []))
         confirmed_debug = [
             self._debug_detection_from_candidate(item, index, frame_shape, "confirmed")
             for index, item in enumerate(confirmed_items)
         ]
-        confirmed_ids = {det["id"] for det in confirmed_debug}
 
         current_items = self._as_list(result.get("detections", None))
         if not current_items:
             current_items = self._as_list(getattr(self.pipeline, "detections", []))
 
-        current_debug = []
-        for index, item in enumerate(current_items):
-            det = self._debug_detection_from_candidate(item, index, frame_shape, "detected")
-            if det["id"] in confirmed_ids:
-                det["status"] = "confirmed"
-            current_debug.append(det)
+        current_debug = [
+            self._debug_detection_from_candidate(item, index, frame_shape, "detected")
+            for index, item in enumerate(current_items)
+        ]
 
         if current_debug:
-            seen = {det["id"] for det in current_debug}
+            # A confirmed track and the YOLO detection it came from are the same
+            # physical object, but the track carries only a locked position — no
+            # bbox, no confidence — and its own tracker id, so emitting both drew a
+            # second, confidence-less box next to the real one. Fold each track into
+            # the nearest detection and keep the (stable) tracker id. A track with no
+            # detection nearby is a leftover the tracker holds for `max_lost` frames;
+            # ~/confirmed still carries it to the map, so it is dropped here.
+            radius = self._merge_distance()
+            claimed = set()
             for det in confirmed_debug:
-                if det["id"] not in seen:
-                    current_debug.append(det)
+                nearest = self._nearest_detection(det, current_debug, radius, claimed)
+                if nearest is None:
+                    continue
+                claimed.add(id(nearest))
+                nearest["id"] = det["id"]
+                nearest["status"] = "confirmed"
             return current_debug
 
         if confirmed_debug:

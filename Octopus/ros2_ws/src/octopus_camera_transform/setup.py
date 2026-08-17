@@ -24,6 +24,7 @@ setup(
             'flight_camera_transform_node = octopus_camera_transform.flight_camera_transform_node:main',
             'world_posearray_to_json_bridge_node = octopus_camera_transform.world_posearray_to_json_bridge_node:main',
             'local_camera_grid_node = octopus_camera_transform.local_camera_grid_node:main',
+            'trash_gps_goal_node = octopus_camera_transform.trash_gps_goal_node:main',
         ],
     },
 )

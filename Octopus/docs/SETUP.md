@@ -51,7 +51,11 @@ printf 'Host eve-pi\n  HostName <PI-IP>\n  User eve\n  IdentityFile ~/.ssh/id_ed
 Testen:
 
 ```bash
-ssh eve-pi 'hostname; ls ~/PlastiX/eve/Software/ros2_ws'
+ssh eve-pi
+```
+
+```bash
+hostname; ls ~/PlastiX/eve/Software/ros2_ws
 ```
 
 ## Einmalig: Workspaces neu bauen
@@ -84,7 +88,11 @@ das venv neu anlegen oder die Pfade in `.venv/bin/` umschreiben.
 ## Terminal 1 — Pi: PX4-Brücke
 
 ```bash
-ssh eve-pi 'sudo pkill -f MicroXRCEAgent; export ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0; sudo --preserve-env=ROS_DOMAIN_ID,ROS_LOCALHOST_ONLY MicroXRCEAgent serial --dev /dev/serial0 -b 921600 -v 6'
+ssh eve-pi
+```
+
+```bash
+sudo pkill -f "[M]icroXRCEAgent"; export ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0; sudo --preserve-env=ROS_DOMAIN_ID,ROS_LOCALHOST_ONLY MicroXRCEAgent serial --dev /dev/serial0 -b 921600 -v 6
 ```
 
 **Terminal offen lassen.** Danach publiziert `/fmu/out/vehicle_odometry` mit ca. 70–100 Hz.
@@ -92,7 +100,11 @@ ssh eve-pi 'sudo pkill -f MicroXRCEAgent; export ROS_DOMAIN_ID=0 ROS_LOCALHOST_O
 ## Terminal 2 — Pi: Kamera
 
 ```bash
-ssh eve-pi 'pkill -f camera_node; cd ~/PlastiX/eve/Software/ros2_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 && ros2 run camera_pkg camera_node --ros-args -p publish_raw:=false -p device_index:=0'
+ssh eve-pi
+```
+
+```bash
+pkill -f "[c]amera_node"; cd ~/PlastiX/eve/Software/ros2_ws && source /opt/ros/humble/setup.bash && source install/setup.bash && export ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 && ros2 run camera_pkg camera_node --ros-args -p publish_raw:=false -p device_index:=0
 ```
 
 **Terminal offen lassen.** Danach publiziert `/camera/image_raw/compressed` mit ca. 7–15 Hz.
@@ -223,8 +235,9 @@ Kamerabild des Dashboards erscheinen dagegen alle Klassen des Modells — bei
 cd ~/projects/PlastiX && ./Octopus/scripts/stop_octopus_debug_stack.sh
 ```
 
-Terminals 1–3 mit Ctrl+C beenden. Das Stop-Skript lässt gelegentlich Nodes stehen; dann
-hinterher:
+Terminals 1–3 mit Ctrl+C beenden. In den beiden Pi-Terminals danach `exit`, um die
+SSH-Sitzung zu schließen. Das Stop-Skript lässt gelegentlich Nodes stehen; dann hinterher
+**auf dem Laptop**:
 
 ```bash
 pkill -9 -f "[g]rid_map_builder_node"; pkill -9 -f "[m]ap_patch_backend_bridge_node"; pkill -9 -f "[u]vicorn api:app"
@@ -308,14 +321,23 @@ alte annotierte Bild wiederverwendet, das Bild käme also nur öfter mit veralte
 
 ## Robot-relevante Ausgaben
 
-Andere Roboter sollen die globalen Topics benutzen:
+Ein Sammelroboter, der Müll anfahren soll, benutzt die GPS-Topics:
 
 ```text
-/octopus/detections_world
-/octopus/global_map
-/octopus/coverage_grid
-/octopus/trash_grid
+/octopus/fake_eve_gps_start    gemeinsamer Startpunkt (Datum)
+/octopus/trash_goal            nächstes Ziel als NavSatFix
+/octopus/trash_gps             alle Ziele als JSON
+/octopus/trash_goal_done       Rückkanal: erledigte Ziel-id
 ```
+
+Vollständiger Vertrag mit Payload-Schema, Parametern und Testkommandos:
+[`octopus_to_robot_interface.md`](octopus_to_robot_interface.md).
+
+Wer stattdessen direkt in Map-Metern arbeitet, nimmt `/octopus/detections_world`.
+
+`/octopus/global_map`, `/octopus/coverage_grid` und `/octopus/trash_grid` werden zwar
+publiziert, haben aber aktuell **keine Subscriber** — das Dashboard baut seine Karte im
+Backend aus den Map-Patches. Nutzbar sind sie für RViz.
 
 **Nicht** für Navigation benutzen: `/api/local_camera_grid/latest`, `Local Camera Grid`,
 Frame `camera_footprint`. Das ist reine Kamera-/Debug-Visualisierung.

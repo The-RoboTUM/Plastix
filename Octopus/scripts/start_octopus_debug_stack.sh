@@ -27,6 +27,9 @@ pkill -f "map_patch_backend_bridge_node" || true
 pkill -f "camera_debug_backend_bridge_node" || true
 pkill -f "local_camera_grid_backend_bridge_node" || true
 pkill -f "local_camera_grid_node" || true
+pkill -f "camera_transform_status_backend_bridge_node" || true
+pkill -f "trash_gps_goal_node" || true
+pkill -f "eve_fake_gps_bridge_node" || true
 pkill -f "uvicorn api:app" || true
 
 sleep 1
@@ -99,6 +102,21 @@ setsid ros2 run octopus_backend_bridge local_camera_grid_backend_bridge_node \
 setsid ros2 run octopus_backend_bridge camera_debug_backend_bridge_node \
   > "$LOG_DIR/camera_debug_backend_bridge.log" 2>&1 &
 echo $! > "$LOG_DIR/camera_debug_backend_bridge.pid"
+
+echo "Starting Eve fake GPS bridge node..."
+setsid ros2 run octopus_backend_bridge eve_fake_gps_bridge_node \
+  > "$LOG_DIR/eve_fake_gps_bridge.log" 2>&1 &
+echo $! > "$LOG_DIR/eve_fake_gps_bridge.pid"
+
+echo "Starting trash GPS goal node..."
+setsid ros2 run octopus_camera_transform trash_gps_goal_node \
+  > "$LOG_DIR/trash_gps_goal.log" 2>&1 &
+echo $! > "$LOG_DIR/trash_gps_goal.pid"
+
+echo "Starting camera transform status backend bridge node..."
+setsid ros2 run octopus_backend_bridge camera_transform_status_backend_bridge_node \
+  > "$LOG_DIR/camera_transform_status_backend_bridge.log" 2>&1 &
+echo $! > "$LOG_DIR/camera_transform_status_backend_bridge.pid"
 
 echo ""
 echo "Started Octopus debug stack."

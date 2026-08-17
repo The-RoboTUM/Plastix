@@ -16,15 +16,18 @@ Observed components:
 - coordinate transformation code exists
 - px4_msgs exists in the drone ROS2 workspace
 
-Open issue:
+## Status: erledigt
 
-The output interface is not standardized yet.
+Historische Momentaufnahme. Die offene Frage dieses Dokuments — welches Topic, welcher
+Nachrichtentyp, welcher Frame — ist entschieden:
 
-Current conflicting ideas:
+- Topic: `/detector_node/confirmed` (zusätzlich `/detector_node/detections` pro Frame)
+- Typ: `geometry_msgs/PoseArray`
+- Frame: normalisierte Bildkoordinaten, danach von `flight_camera_transform_node` in
+  Map-Koordinaten projiziert
 
-- /Camera_Coordinates_Octopus as Float32MultiArray
-- /Camera_Coordinates_Octopus as geometry_msgs/Polygon
+Die verworfenen Ideen `/Camera_Coordinates_Octopus` als `Float32MultiArray` oder
+`geometry_msgs/Polygon` wurden nie umgesetzt.
 
-Decision needed:
-
-Agree on one detection topic, one message type, and one coordinate frame before Octopus depends on Eve output.
+Aktueller Vertrag: [`drone_to_octopus_interface.md`](drone_to_octopus_interface.md) und
+[`coordinate_frames.md`](coordinate_frames.md).
