@@ -12,10 +12,12 @@ This guide explains how to prepare the SharX Raspberry Pi for:
 The current setup has been tested with:
 
 * Raspberry Pi 5
-* Ubuntu 24.04
+* Ubuntu 24.04.4 LTS
 * ROS 2 Jazzy
 * Python 3.12
-* USB Logitech C270 webcam
+* Raspberry Pi Camera Module 3 (`IMX708`)
+* Raspberry Pi 5 `PiSP` camera pipeline
+* `rpicam-apps` + Raspberry Pi `libcamera`
 * `aarch64` architecture
 
 ---
@@ -27,7 +29,8 @@ Required hardware:
 * Raspberry Pi 5
 * Ubuntu 24.04
 * internet connection
-* USB webcam
+* Raspberry Pi Camera Module 3 (`IMX708`)
+* Raspberry Pi 5-compatible camera ribbon cable
 * keyboard and monitor, or SSH/VNC access
 * microSD card or SSD with sufficient free space
 
@@ -57,7 +60,7 @@ Expected Ubuntu version:
 Ubuntu 24.04
 ```
 
----
+The camera setup in this guide is for the Raspberry Pi CSI camera stack. It does **not** use a Raspberry Pi Camera Module 3 or `cv2.VideoCapture(0)` for the final SharX detector.
 
 # 2. Update the Raspberry Pi
 
@@ -120,38 +123,36 @@ sudo add-apt-repository universe
 
 ## 3.3 Add the ROS 2 repository
 
-Install required tools:
-
-```bash
-sudo apt update
-sudo apt install -y curl gnupg lsb-release
-```
-
-Download the ROS signing key:
-
-```bash
-sudo curl -sSL \
-  https://raw.githubusercontent.com/ros/rosdistro/master/ros.key \
-  -o /usr/share/keyrings/ros-archive-keyring.gpg
-```
-
-Add the ROS 2 repository:
-
-```bash
-echo \
-  "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/ros-archive-keyring.gpg] \
-  http://packages.ros.org/ros2/ubuntu \
-  $(. /etc/os-release && echo $UBUNTU_CODENAME) main" \
-  | sudo tee /etc/apt/sources.list.d/ros2.list > /dev/null
-```
-
-Update package information:
+First check whether the ROS 2 repository is already configured:
 
 ```bash
 sudo apt update
 ```
 
----
+If the output already contains something similar to:
+
+```text
+http://packages.ros.org/ros2/ubuntu noble InRelease
+```
+
+do **not** add a second ROS source entry.
+
+If the ROS repository is not configured, use the ROS apt-source package method rather than creating multiple manual source files.
+
+A duplicate ROS source can cause an error similar to:
+
+```text
+Conflicting values set for option Signed-By
+```
+
+If that happens and `/etc/apt/sources.list.d/ros2.list` was manually created while another ROS source already exists, remove only the duplicate manual file:
+
+```bash
+sudo rm /etc/apt/sources.list.d/ros2.list
+sudo apt update
+```
+
+Do not remove an existing working ROS source configuration unless you know it is the duplicate.
 
 ## 3.4 Install ROS 2 Jazzy
 
@@ -227,13 +228,27 @@ Go to the home directory:
 cd ~
 ```
 
-Clone:
+Clone over HTTPS:
 
 ```bash
 git clone https://gitex.itq.de/cirqmind/PlastiX.git
 ```
 
-Enter the GitEx username and password when requested.
+If GitEx rejects the normal account password with:
+
+```text
+HTTP Basic: Access denied
+```
+
+use a GitEx/GitLab Personal Access Token as the HTTPS password. The token needs at least `read_repository`; add `write_repository` if the Pi must push changes.
+
+SSH is also possible if the network permits outbound port 22:
+
+```bash
+git clone git@gitex.itq.de:cirqmind/PlastiX.git
+```
+
+On the ITQ guest network, SSH port 22 may time out. In that case, use HTTPS + token.
 
 Open the repository:
 
@@ -284,8 +299,6 @@ Expected folders:
 sharx_communication
 sharx_vision
 ```
-
----
 
 # 6. Create the SharX ROS 2 workspace
 
@@ -377,6 +390,17 @@ Install YOLO and OpenCV:
 pip install ultralytics opencv-python
 ```
 
+This can take a long time on the Pi because PyTorch and related ARM64 wheels are large.
+
+If pip reports:
+
+```text
+Temporary failure in name resolution
+Failed to resolve 'pypi.org'
+```
+
+fix the Pi's network/DNS connection before retrying. This is not an Ultralytics error.
+
 Verify:
 
 ```bash
@@ -389,16 +413,20 @@ Expected:
 YOLO and OpenCV ready
 ```
 
----
+Deactivate the environment before building ROS packages:
+
+```bash
+deactivate
+```
 
 # 9. Copy the trained model to the Pi
 
 The trained model is not stored in Git.
 
-The model file should be copied to:
+The model file on the current Pi is:
 
 ```text
-/home/vineeth/sharx_yolo_pi/best.pt
+/home/itq/sharx_yolo_pi/best.pt
 ```
 
 From another computer on the same network:
@@ -406,7 +434,7 @@ From another computer on the same network:
 ```bash
 scp \
   /path/to/best.pt \
-  vineeth@<PI_IP_ADDRESS>:~/sharx_yolo_pi/best.pt
+  itq@<PI_IP_ADDRESS>:~/sharx_yolo_pi/best.pt
 ```
 
 Example:
@@ -414,7 +442,7 @@ Example:
 ```bash
 scp \
   ~/sharx_yolo_project/runs/detect/runs/floating_waste_v1/weights/best.pt \
-  vineeth@192.168.0.105:~/sharx_yolo_pi/best.pt
+  itq@192.168.0.105:~/sharx_yolo_pi/best.pt
 ```
 
 Verify on the Pi:
@@ -423,58 +451,258 @@ Verify on the Pi:
 ls -lh ~/sharx_yolo_pi/best.pt
 ```
 
----
+Verify that Ultralytics can load it:
 
-# 10. Verify the USB webcam
+```bash
+cd ~/sharx_yolo_pi
+source .venv/bin/activate
 
-List camera devices:
+python -c "from ultralytics import YOLO; YOLO('best.pt'); print('Model loaded successfully')"
+
+deactivate
+```
+
+# 10. Set up and verify Raspberry Pi Camera Module 3
+
+The final SharX setup uses a Raspberry Pi Camera Module 3 (`IMX708`), not a Raspberry Pi Camera Module 3.
+
+## 10.1 Check kernel detection
+
+Check video/media devices:
 
 ```bash
 v4l2-ctl --list-devices
 ```
 
-A Logitech C270 webcam should appear similar to:
-
-```text
-C270 HD WEBCAM:
-    /dev/video0
-    /dev/video1
-```
-
-Check supported formats:
+Check for the IMX708 sensor:
 
 ```bash
-v4l2-ctl \
-  --device=/dev/video0 \
-  --list-formats-ext
+sudo dmesg | grep -i imx708
 ```
 
-Test the webcam:
+A successful detection contains lines similar to:
+
+```text
+imx708 ... camera module ID 0x0301
+rp1-cfe ... Using sensor imx708 for capture
+```
+
+The Pi 5 also exposes many PiSP video devices. Their presence alone does not prove that the camera sensor is detected.
+
+## 10.2 Camera boot configuration
+
+Check:
 
 ```bash
-ffplay \
-  -f v4l2 \
-  -video_size 640x480 \
-  -i /dev/video0
+grep -Ei "camera|imx|overlay" /boot/firmware/config.txt
+ls /boot/firmware/overlays/ | grep imx708
 ```
 
-Press `Q` to close the window.
-
-Do not use Raspberry Pi ISP devices such as:
+The system should contain:
 
 ```text
-/dev/video20
-/dev/video21
-...
+camera_auto_detect=1
+imx708.dtbo
 ```
 
-The USB webcam stream is normally:
+On this Ubuntu 24.04 Pi 5 setup, automatic detection initially did not bind the sensor correctly. The working configuration used an explicit IMX708 overlay.
+
+Edit:
+
+```bash
+sudo nano /boot/firmware/config.txt
+```
+
+For the camera connector in use, add the appropriate explicit overlay. The tested setup used:
 
 ```text
-/dev/video0
+camera_auto_detect=0
+dtoverlay=imx708
 ```
 
----
+If the camera is on the connector that requires the `cam0` selector, use:
+
+```text
+dtoverlay=imx708,cam0
+```
+
+Power off before changing the physical ribbon cable:
+
+```bash
+sudo poweroff
+```
+
+After reboot, verify again:
+
+```bash
+sudo dmesg | grep -i imx708
+v4l2-ctl --list-devices
+```
+
+The working camera interface should include an `rp1-cfe` device and `/dev/video0` through related capture nodes.
+
+## 10.3 Build Raspberry Pi libcamera with PiSP support on Ubuntu 24.04
+
+Ubuntu's stock `cam -l` may show no cameras and an IPA warning. The tested solution is to build the Raspberry Pi libcamera fork with the Pi 5 `rpi/pisp` pipeline.
+
+Install build dependencies:
+
+```bash
+sudo apt update
+
+sudo apt install -y \
+  git meson ninja-build pkg-config g++ \
+  libyaml-dev python3-yaml python3-ply python3-jinja2 \
+  libgnutls28-dev openssl \
+  libboost-dev \
+  libtiff-dev pybind11-dev \
+  libevent-dev libdrm-dev libjpeg-dev
+```
+
+Clone and configure:
+
+```bash
+cd ~
+git clone https://github.com/raspberrypi/libcamera.git
+cd ~/libcamera
+```
+
+```bash
+meson setup build \
+  --prefix=/usr/local \
+  --buildtype=release \
+  -Dpipelines=rpi/pisp \
+  -Dipas=rpi/pisp \
+  -Dv4l2=true \
+  -Dtest=false \
+  -Dlc-compliance=disabled
+```
+
+Build and install:
+
+```bash
+ninja -C build -j$(nproc)
+sudo ninja -C build install
+sudo ldconfig
+```
+
+The successful installation should include the PiSP IPA and IMX708 tuning files under `/usr/local`, including:
+
+```text
+/usr/local/lib/aarch64-linux-gnu/libcamera/ipa/ipa_rpi_pisp.so
+/usr/local/share/libcamera/ipa/rpi/pisp/imx708.json
+```
+
+## 10.4 Build rpicam-apps
+
+Clone:
+
+```bash
+cd ~
+git clone https://github.com/raspberrypi/rpicam-apps.git
+cd ~/rpicam-apps
+```
+
+Install dependencies:
+
+```bash
+sudo apt install -y \
+  meson ninja-build \
+  libboost-program-options-dev \
+  libdrm-dev \
+  libexif-dev \
+  libjpeg-dev \
+  libtiff-dev \
+  libpng-dev
+```
+
+Make sure the build sees the `/usr/local` libcamera:
+
+```bash
+export PKG_CONFIG_PATH=/usr/local/lib/aarch64-linux-gnu/pkgconfig:$PKG_CONFIG_PATH
+export LD_LIBRARY_PATH=/usr/local/lib/aarch64-linux-gnu:$LD_LIBRARY_PATH
+```
+
+Verify:
+
+```bash
+pkg-config --modversion libcamera
+```
+
+The tested build reported:
+
+```text
+0.7.2
+```
+
+Configure and build `rpicam-apps`:
+
+```bash
+meson setup build --buildtype=release
+meson compile -C build -j$(nproc)
+sudo meson install -C build
+sudo ldconfig
+```
+
+Verify:
+
+```bash
+which rpicam-hello
+rpicam-hello --list-cameras
+```
+
+Expected camera:
+
+```text
+0 : imx708 [4608x2592 10-bit RGGB]
+```
+
+## 10.5 Fix DMA heap permissions
+
+If `rpicam-hello` reports:
+
+```text
+Could not open any dmaHeap device
+dmaHeap allocation failure
+```
+
+check:
+
+```bash
+ls -l /dev/dma_heap/*
+```
+
+On the tested Pi the devices are owned by `root:video`.
+
+Add the current user to the `video` group:
+
+```bash
+sudo usermod -aG video "$USER"
+sudo reboot
+```
+
+After reboot, camera capture should work without `sudo`.
+
+## 10.6 Capture a test image
+
+```bash
+rpicam-still -o ~/camera_test.jpg
+```
+
+A successful run ends with:
+
+```text
+Still capture image received
+```
+
+Verify:
+
+```bash
+ls -lh ~/camera_test.jpg
+xdg-open ~/camera_test.jpg
+```
+
+`Failed to create drm preview` or `Preview window unavailable` can appear even when capture itself is working.
 
 # 11. Test YOLO directly on the Pi
 
@@ -485,49 +713,68 @@ cd ~/sharx_yolo_pi
 source .venv/bin/activate
 ```
 
-Run:
+Verify the model:
 
 ```bash
-yolo detect predict \
-  model=best.pt \
-  source=/dev/video0 \
-  imgsz=320 \
-  conf=0.25 \
-  device=cpu \
-  show=True
+python -c "from ultralytics import YOLO; YOLO('best.pt'); print('Model loaded successfully')"
 ```
 
-Press `Q` to stop.
-
-The Raspberry Pi uses CPU inference, so:
+The Camera Module 3 should not be treated as a normal Raspberry Pi Camera Module 3 with:
 
 ```text
-device=cpu
+cv2.VideoCapture(0)
 ```
 
-is required.
-
-For better detection accuracy, use:
+The working camera path is:
 
 ```text
-imgsz=512
+IMX708
+  -> rpicam-vid / libcamera
+  -> MJPEG frames
+  -> OpenCV
+  -> Ultralytics YOLO
 ```
 
-For better speed, use:
+A standalone `camera_yolo.py` test can launch `rpicam-vid` and read MJPEG frames through stdout before running `YOLO('best.pt')`.
 
-```text
-imgsz=320
+For the production ROS pipeline, this same camera path is implemented directly inside `sharx_vision/waste_detector`, so the standalone script is only a diagnostic test.
+
+Deactivate before building ROS:
+
+```bash
+deactivate
 ```
-
----
 
 # 12. Build the ROS 2 workspace
 
-Activate ROS 2 and the YOLO environment:
+**Important:** do not build the ROS workspace while the YOLO virtual environment is active.
+
+The ROS CMake build must use:
+
+```text
+/usr/bin/python3
+```
+
+not:
+
+```text
+~/sharx_yolo_pi/.venv/bin/python3
+```
+
+Prepare a clean build shell:
 
 ```bash
+deactivate 2>/dev/null || true
+unset PYTHONPATH
+
 source /opt/ros/jazzy/setup.bash
-source ~/sharx_yolo_pi/.venv/bin/activate
+which python3
+```
+
+Expected:
+
+```text
+/usr/bin/python3
 ```
 
 Build:
@@ -575,23 +822,31 @@ sharx_vision waste_detector
 sharx_vision waste_follower
 ```
 
----
+If the build fails with:
 
-# 13. Allow ROS 2 Python nodes to access YOLO packages
+```text
+ModuleNotFoundError: No module named 'catkin_pkg'
+```
 
-The generated ROS 2 Python executable currently uses:
+and the error points to `~/sharx_yolo_pi/.venv/bin/python3`, the virtual environment is still influencing the build. Deactivate it, clear the failed package build directories, and rebuild with `/usr/bin/python3`.
+
+# 13. Allow ROS 2 Python nodes to access YOLO packages at runtime
+
+The generated ROS 2 Python executable uses:
 
 ```text
 /usr/bin/python3
 ```
 
-Ultralytics is installed inside:
+Ultralytics, OpenCV and PyTorch are installed inside:
 
 ```text
 ~/sharx_yolo_pi/.venv
 ```
 
-Export the virtual-environment package path:
+Do **not** activate the virtual environment for `colcon build`.
+
+At runtime, expose only its site-packages directory:
 
 ```bash
 export PYTHONPATH="$HOME/sharx_yolo_pi/.venv/lib/python3.12/site-packages:$PYTHONPATH"
@@ -600,22 +855,20 @@ export PYTHONPATH="$HOME/sharx_yolo_pi/.venv/lib/python3.12/site-packages:$PYTHO
 Verify:
 
 ```bash
-/usr/bin/python3 -c "import ultralytics, cv2, torch; print('ROS Python can access YOLO')"
+/usr/bin/python3 -c "import ultralytics, cv2, torch, numpy; print('ROS + YOLO ready')"
 ```
 
 Expected:
 
 ```text
-ROS Python can access YOLO
+ROS + YOLO ready
 ```
 
-This export is required before running `waste_detector`.
+This export is required before running `waste_detector` with the current package layout.
 
----
+# 14. Recommended runtime environment script
 
-# 14. Recommended environment script
-
-Create a setup script:
+Create:
 
 ```bash
 nano ~/sharx_setup.sh
@@ -626,20 +879,20 @@ Paste:
 ```bash
 #!/bin/bash
 
+# ROS 2
 source /opt/ros/jazzy/setup.bash
 
-if [ -f "$HOME/sharx_yolo_pi/.venv/bin/activate" ]; then
-  source "$HOME/sharx_yolo_pi/.venv/bin/activate"
-fi
-
+# SharX workspace
 if [ -f "$HOME/plastix_sharx_ws/install/setup.bash" ]; then
-  source "$HOME/plastix_sharx_ws/install/setup.bash"
+    source "$HOME/plastix_sharx_ws/install/setup.bash"
 fi
 
+# ROS network configuration
 export ROS_DOMAIN_ID=10
 export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 unset ROS_LOCALHOST_ONLY
 
+# Allow ROS system Python to import YOLO dependencies
 export PYTHONPATH="$HOME/sharx_yolo_pi/.venv/lib/python3.12/site-packages:$PYTHONPATH"
 
 echo "SharX environment loaded"
@@ -652,19 +905,23 @@ Save and make it executable:
 chmod +x ~/sharx_setup.sh
 ```
 
-Use it in every terminal:
+Use it in each **runtime** terminal:
 
 ```bash
 source ~/sharx_setup.sh
 ```
 
-Optional automatic setup:
+Do **not** automatically activate the YOLO `.venv` inside this script. Doing so can cause `colcon` to use the wrong Python interpreter.
+
+For builds, use a clean shell:
 
 ```bash
-echo "source ~/sharx_setup.sh" >> ~/.bashrc
+deactivate 2>/dev/null || true
+unset PYTHONPATH
+source /opt/ros/jazzy/setup.bash
 ```
 
----
+It is better not to add `sharx_setup.sh` to `.bashrc` while the system is still under active development.
 
 # 15. Test Octopus-to-SharX communication
 
@@ -739,23 +996,35 @@ ping <PI_IP_ADDRESS>
 
 # 17. Run the ROS 2 YOLO detector
 
+The detector now uses the Raspberry Pi Camera Module 3 through `rpicam-vid`. It no longer uses `camera_index` or `cv2.VideoCapture(0)`.
+
 Load the environment:
 
 ```bash
 source ~/sharx_setup.sh
 ```
 
-Run:
+Verify Python access:
+
+```bash
+/usr/bin/python3 -c "import ultralytics, cv2, torch, numpy; print('ROS + YOLO ready')"
+```
+
+Run the tested detector configuration:
 
 ```bash
 ros2 run sharx_vision waste_detector \
   --ros-args \
-  -p model_path:=/home/vineeth/sharx_yolo_pi/best.pt \
-  -p camera_index:=0 \
+  -p model_path:=/home/itq/sharx_yolo_pi/best.pt \
   -p image_size:=320 \
   -p device:=cpu \
-  -p show_image:=true
+  -p show_image:=false \
+  -p camera_width:=640 \
+  -p camera_height:=480 \
+  -p camera_fps:=30
 ```
+
+`show_image:=false` is recommended for the reliable headless/runtime test. `show_image:=true` can be used on the desktop, but OpenCV/Qt may print font or Wayland warnings.
 
 Detection topic:
 
@@ -767,27 +1036,26 @@ Check it in another terminal:
 
 ```bash
 source ~/sharx_setup.sh
-
 ros2 topic echo /sharx/waste_detection
 ```
 
-Example:
+Example detection:
 
 ```json
 {
   "detected": true,
   "class_name": "floating_waste",
-  "confidence": 0.88,
-  "center_x": 430,
-  "center_y": 280,
-  "box_width": 120,
-  "box_height": 240,
+  "confidence": 0.293,
+  "center_x": 326,
+  "center_y": 290,
+  "box_width": 29,
+  "box_height": 0,
   "image_width": 640,
   "image_height": 480
 }
 ```
 
----
+The exact box values depend on the observed target. A stream alternating between `detected: true` and `detected: false` is normal when the target is near the confidence threshold.
 
 # 18. Run the waste follower
 
@@ -869,6 +1137,8 @@ These values are normalized software commands, not ESC PWM values.
 
 # 20. Run movement status
 
+Load:
+
 ```bash
 source ~/sharx_setup.sh
 ```
@@ -881,13 +1151,25 @@ ros2 run sharx_communication movement_status \
   -p mode:=autonomous
 ```
 
-Inspect status:
+Inspect:
 
 ```bash
 ros2 topic echo /sharx/status
 ```
 
-Expected:
+Expected moving status:
+
+```json
+{
+  "device_id": "sharx_1",
+  "left_thruster": -0.22,
+  "mode": "autonomous",
+  "right_thruster": 0.22,
+  "status": "moving"
+}
+```
+
+Forward motion can appear as approximately:
 
 ```json
 {
@@ -911,7 +1193,7 @@ When stopped:
 }
 ```
 
-Verify the mode parameter:
+Verify:
 
 ```bash
 ros2 param get /movement_status mode
@@ -923,11 +1205,60 @@ Expected:
 String value is: autonomous
 ```
 
----
+## Required `movement_status.cpp` fix
+
+The original source hardcoded:
+
+```cpp
+{"mode", "teleop"},
+```
+
+so the ROS parameter had no effect.
+
+The node must declare and store the parameter:
+
+```cpp
+mode_ = declare_parameter<std::string>(
+    "mode",
+    "teleop"
+);
+```
+
+Use it in the JSON:
+
+```cpp
+{"mode", mode_},
+```
+
+and declare a class member:
+
+```cpp
+std::string mode_;
+```
+
+After changing the source, rebuild cleanly:
+
+```bash
+cd ~/plastix_sharx_ws
+
+deactivate 2>/dev/null || true
+unset PYTHONPATH
+source /opt/ros/jazzy/setup.bash
+
+colcon build \
+  --packages-select sharx_communication \
+  --symlink-install
+```
+
+Then reload:
+
+```bash
+source ~/sharx_setup.sh
+```
 
 # 21. Full autonomous software test
 
-Use separate terminals.
+Use separate terminals. The Pi-only software pipeline has been validated with this sequence.
 
 ## Terminal 1: detector
 
@@ -936,11 +1267,13 @@ source ~/sharx_setup.sh
 
 ros2 run sharx_vision waste_detector \
   --ros-args \
-  -p model_path:=/home/vineeth/sharx_yolo_pi/best.pt \
-  -p camera_index:=0 \
+  -p model_path:=/home/itq/sharx_yolo_pi/best.pt \
   -p image_size:=320 \
   -p device:=cpu \
-  -p show_image:=true
+  -p show_image:=false \
+  -p camera_width:=640 \
+  -p camera_height:=480 \
+  -p camera_fps:=30
 ```
 
 ## Terminal 2: follower
@@ -977,20 +1310,52 @@ ros2 run sharx_communication movement_status \
 
 ```bash
 source ~/sharx_setup.sh
-
-ros2 topic echo /sharx/thruster_command
 ```
 
-or:
+Check each stage as needed:
+
+```bash
+ros2 topic echo /sharx/waste_detection
+```
+
+```bash
+ros2 topic echo /sharx/cmd_vel_auto
+```
+
+```bash
+ros2 topic echo /sharx/thruster_command
+```
 
 ```bash
 ros2 topic echo /sharx/status
 ```
 
+Validated behaviour:
+
+```text
+Target centered
+  -> /sharx/cmd_vel_auto linear.x ~= 0.18
+  -> thrusters ~= [0.18, 0.18]
+
+Target off-center
+  -> angular.z ~= +/-0.22
+  -> thrusters ~= [-0.22, 0.22] or [0.22, -0.22]
+
+No valid detection / stop condition
+  -> thrusters [0.0, 0.0]
+
+movement_status
+  -> mode = autonomous
+  -> status = moving/stopped
+```
+
 Full pipeline:
 
 ```text
-USB webcam
+Raspberry Pi Camera Module 3 (IMX708)
+    |
+    v
+rpicam-vid / libcamera / PiSP
     |
     v
 YOLO waste detector
@@ -1009,21 +1374,21 @@ Movement status
     |
     | /sharx/status
     v
-Octopus
+Octopus / downstream control
 ```
 
----
+At this stage, the complete **Pi-only autonomous software pipeline is validated**. Network integration with the other computer/Octopus should be tested next.
 
 # 22. Update the Pi from Git
 
-Before pulling updates, check for local modifications:
+Before pulling updates:
 
 ```bash
 cd ~/PlastiX
 git status
 ```
 
-Pull the latest branch:
+Pull:
 
 ```bash
 git switch SharX_ros2
@@ -1044,11 +1409,13 @@ rsync -av --delete \
   ~/plastix_sharx_ws/src/sharx_vision/
 ```
 
-Rebuild:
+Rebuild in a **clean build environment**:
 
 ```bash
-source ~/sharx_setup.sh
+deactivate 2>/dev/null || true
+unset PYTHONPATH
 
+source /opt/ros/jazzy/setup.bash
 cd ~/plastix_sharx_ws
 
 colcon build \
@@ -1056,13 +1423,11 @@ colcon build \
   --symlink-install
 ```
 
-Reload:
+Reload for runtime:
 
 ```bash
-source ~/plastix_sharx_ws/install/setup.bash
+source ~/sharx_setup.sh
 ```
-
----
 
 # 23. Save Pi changes to Git
 
@@ -1125,7 +1490,43 @@ source ~/plastix_sharx_ws/install/setup.bash
 
 ---
 
-## Ultralytics module not found
+## `catkin_pkg` missing during `colcon build`
+
+Error:
+
+```text
+ModuleNotFoundError: No module named 'catkin_pkg'
+```
+
+If CMake reports that it is using:
+
+```text
+/home/itq/sharx_yolo_pi/.venv/bin/python3
+```
+
+the YOLO environment is incorrectly active during the ROS build.
+
+Fix:
+
+```bash
+deactivate 2>/dev/null || true
+unset PYTHONPATH
+source /opt/ros/jazzy/setup.bash
+
+which python3
+```
+
+Expected:
+
+```text
+/usr/bin/python3
+```
+
+Then rebuild.
+
+---
+
+## Ultralytics module not found at ROS runtime
 
 Error:
 
@@ -1142,85 +1543,120 @@ export PYTHONPATH="$HOME/sharx_yolo_pi/.venv/lib/python3.12/site-packages:$PYTHO
 Verify:
 
 ```bash
-/usr/bin/python3 -c "import ultralytics"
+/usr/bin/python3 -c "import ultralytics, cv2, torch, numpy"
 ```
 
 ---
 
-## Webcam does not open
+## Camera Module 3 is not detected
 
 Check:
 
 ```bash
+sudo dmesg | grep -i imx708
 v4l2-ctl --list-devices
 ```
 
-Confirm `/dev/video0` belongs to the USB webcam.
+If there is no IMX708 entry, check the ribbon cable with the Pi powered off and verify `/boot/firmware/config.txt`.
 
-Check permissions:
+The working kernel log contains:
 
-```bash
-groups
+```text
+camera module ID 0x0301
+Using sensor imx708 for capture
 ```
 
-Add the user to the video group:
+---
+
+## `rpicam-hello` command not found
+
+On this Ubuntu 24.04 setup, Raspberry Pi `libcamera` and `rpicam-apps` were built from source. Follow Section 10.
+
+---
+
+## DMA heap allocation failure
+
+Error:
+
+```text
+Could not open any dmaHeap device
+dmaHeap allocation failure
+```
+
+Check:
+
+```bash
+ls -l /dev/dma_heap/*
+```
+
+If the devices are owned by `root:video`, add the user:
 
 ```bash
 sudo usermod -aG video "$USER"
-```
-
-Then reboot:
-
-```bash
 sudo reboot
 ```
 
 ---
 
+## `Failed to create drm preview`
+
+This can occur even when the camera is streaming successfully.
+
+Test capture directly:
+
+```bash
+rpicam-still -o ~/camera_test.jpg
+```
+
+If the command ends with:
+
+```text
+Still capture image received
+```
+
+the camera capture path is working.
+
+---
+
 ## No detection topic
 
-Check nodes:
+First make sure `waste_detector` is still running.
+
+Check:
 
 ```bash
 ros2 node list
 ```
 
-Check topics:
+Expected:
 
-```bash
-ros2 topic list
+```text
+/waste_detector
 ```
 
-Check the detector output:
+Then:
+
+```bash
+ros2 topic list -t | grep sharx
+```
+
+and:
 
 ```bash
 ros2 topic echo /sharx/waste_detection
+```
+
+If OpenCV/Qt display problems occur, run the detector with:
+
+```text
+-p show_image:=false
 ```
 
 ---
 
-## Thruster output is always zero
+## `/sharx/cmd_vel_auto` does not exist
 
-Check detection:
-
-```bash
-ros2 topic echo /sharx/waste_detection
-```
-
-Check follower output:
-
-```bash
-ros2 topic echo /sharx/cmd_vel_auto
-```
-
-The follower intentionally publishes zero when:
-
-* no object is detected
-* the object is too close
-* image dimensions are invalid
-* the detection stream stops
-
-Increase the indoor test stop threshold:
+The topic is published by `waste_follower`. Start the follower before echoing the topic:
 
 ```bash
 ros2 run sharx_vision waste_follower \
@@ -1230,9 +1666,34 @@ ros2 run sharx_vision waste_follower \
 
 ---
 
-## Status shows teleop during autonomous operation
+## Thruster output is always zero
 
-Run:
+Check the pipeline in order:
+
+```bash
+ros2 topic echo /sharx/waste_detection
+```
+
+```bash
+ros2 topic echo /sharx/cmd_vel_auto
+```
+
+```bash
+ros2 topic echo /sharx/thruster_command
+```
+
+The follower intentionally stops when:
+
+* no object is detected
+* the object is too close
+* image dimensions are invalid
+* the detection stream stops
+
+---
+
+## Status still shows `teleop` in autonomous mode
+
+If this command:
 
 ```bash
 ros2 run sharx_communication movement_status \
@@ -1240,11 +1701,26 @@ ros2 run sharx_communication movement_status \
   -p mode:=autonomous
 ```
 
-Verify:
+still publishes:
+
+```text
+"mode":"teleop"
+```
+
+inspect:
 
 ```bash
-ros2 param get /movement_status mode
+grep -Rni "teleop\|declare_parameter\|mode" \
+  ~/plastix_sharx_ws/src/sharx_communication
 ```
+
+The source must not hardcode:
+
+```cpp
+{"mode", "teleop"},
+```
+
+It must publish the `mode_` parameter as described in Section 20.
 
 ---
 
@@ -1258,19 +1734,19 @@ export ROS_AUTOMATIC_DISCOVERY_RANGE=SUBNET
 unset ROS_LOCALHOST_ONLY
 ```
 
-Check IP addresses:
+Check IPs:
 
 ```bash
 hostname -I
 ```
 
-Test connection:
+Test:
 
 ```bash
 ping <OTHER_DEVICE_IP>
 ```
 
----
+Both machines must be on a network that allows peer-to-peer traffic.
 
 # 25. Current limitations
 
@@ -1280,10 +1756,9 @@ ping <OTHER_DEVICE_IP>
 * GPS and IMU navigation are not yet implemented.
 * The current stop distance is estimated from bounding-box area.
 * The trained YOLO model is stored outside Git.
-* The Python environment currently requires a `PYTHONPATH` export.
+* The Python environment currently requires a runtime `PYTHONPATH` export.
+* The Pi Camera Module 3 userspace stack is installed from `/usr/local` and should be documented when updating Ubuntu/libcamera.
 * Physical emergency-stop behaviour must be implemented and tested before water operation.
-
----
 
 # 26. Safety
 
@@ -1306,6 +1781,8 @@ Always test software output before attaching propellers.
 ---
 
 # 27. Next milestone
+
+The Pi-only perception and autonomous command pipeline is now validated.
 
 The next integration stage is:
 
@@ -1342,3 +1819,5 @@ ESC PWM
         v
 Left and right thrusters
 ```
+
+````
