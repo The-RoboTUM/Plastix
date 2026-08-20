@@ -109,6 +109,20 @@ pkill -f "[c]amera_node"; cd ~/PlastiX/eve/Software/ros2_ws && source /opt/ros/h
 
 **Terminal offen lassen.** Danach publiziert `/camera/image_raw/compressed` mit ca. 7–15 Hz.
 
+`camera_node` kennt `device_index`, `frame_rate`, `frame_width` und `frame_height`. Die
+Auflösung ist die einzige Stelle, an der echte Bildschärfe entsteht — Default ist 640×480:
+
+```bash
+ros2 run camera_pkg camera_node --ros-args -p publish_raw:=false -p device_index:=0 -p frame_width:=1280 -p frame_height:=960
+```
+
+⚠️ Nur ändern, wenn die Kamera dabei denselben Bildwinkel behält. Viele USB-Kameras
+wechseln mit der Auflösung den Sensor-Ausschnitt; dann stimmen die Intrinsics
+(`OCTOPUS_HBVCAM_640X480` in `octopus-dashboard/live_data.js`) nicht mehr und Footprint,
+Grid und Projektion sind falsch. Bei gleichem Bildwinkel ist keine Anpassung nötig: das
+Dashboard rechnet nur mit Verhältnissen (`cx/fx`), die sich beim proportionalen Skalieren
+nicht ändern.
+
 ## Terminal 3 — Laptop: Detektor
 
 ```bash
@@ -118,6 +132,17 @@ cd ~/projects/PlastiX/eve/Software/detect-and-localize && source .venv/bin/activ
 **Terminal offen lassen.** Danach publiziert `/detector_node/confirmed` mit ca. 1 Hz.
 
 Zur Wahl von `thresh` und `confirm_frames` siehe „Detektions-Schwelle einstellen" weiter unten.
+
+Sieht das Bild im Dashboard klotzig aus, ist die JPEG-Kompression schuld, nicht die
+Auflösung. `debug_image_jpeg_quality` (1–100, Default 80) steuert sie und wird an den
+Detektor gehängt, **nicht** an `camera_node`:
+
+```bash
+... -p confirmed_republish_period_sec:=1.0 -p debug_image_jpeg_quality:=95
+```
+
+Betrifft nur `/detector_node/debug_image/compressed`, also ausschließlich die Anzeige —
+Detektion, `confirmed` und Mapping bleiben unberührt.
 
 ## Terminal 4 — Laptop: Octopus-Stack
 
@@ -316,6 +341,46 @@ mehrere Detektoren parallel laufen oder ein Training die CPU belegt.
 
 `yolo_frameskip` hilft hier **nicht**: bei übersprungenen Frames wird in `pipeline.py` das
 alte annotierte Bild wiederverwendet, das Bild käme also nur öfter mit veraltetem Inhalt.
+
+### Kamerabild ist pixelig
+
+Nichts in der Kette skaliert das Bild runter — `yolo_detector.py` gibt das Originalbild
+zurück, der Detektor und die Bridge ändern die Auflösung nicht. Es sind drei andere Ursachen,
+in dieser Reihenfolge zu prüfen:
+
+1. **Klotzige 8×8-Blöcke** → JPEG-Kompression. `debug_image_jpeg_quality:=95` am Detektor
+   (siehe Terminal 3). Billigster Gewinn, kostet nur Bandbreite.
+2. **Grundsätzlich grob** → die Quelle ist nur 640×480 und wird im Dashboard-Panel auf ein
+   Mehrfaches aufgeblasen. Nur über `frame_width`/`frame_height` am `camera_node` zu lösen
+   (siehe Terminal 2, mit der Warnung dort).
+3. **Erst seit dem Croppen grob** → unvermeidbar. Ein Crop auf 512×384 im selben Panel
+   bedeutet 25 % mehr Vergrößerung pro Pixel.
+
+Das zweite JPEG-Encoding im Crop-Pfad ist **nicht** die Ursache: bei Quality 85 liegt die
+zweite Generation bei ~49 dB PSNR, also unsichtbar. Höher zu gehen ist kontraproduktiv — bei
+95 wird der beschnittene Frame größer als der ungeschnittene, den er ersetzt.
+
+---
+
+## Kamera-Crop
+
+Im Dashboard unter *Camera & Pipeline* → **Camera Crop**: vier Slider für Top/Bottom/Left/
+Right in Prozent (max. 45 % pro Seite), „Reset Crop", plus Anzeige der effektiven Auflösung
+und des Footprints. Der Wert wird im Browser gespeichert.
+
+Der Schnitt passiert **an der Quelle**, nicht erst im Browser: das Dashboard postet den Crop
+an `POST /api/camera_debug/crop`, `camera_debug_backend_bridge_node` pollt ihn alle 2 s und
+schneidet die Ränder ab, bevor der Frame rausgeht. Bei 10 % rundum sind das 512×384 statt
+640×480, also deutlich weniger Bytes über die Leitung.
+
+Der Kamera-Footprint wird über die beschnittene Sensorfläche gerechnet, damit Local-/GPS-Grid,
+Zellennamen, Footprint-Umriss auf der Karte und die Detection-Projektion alle zur kleineren
+Sicht passen. Detektionen in den weggeschnittenen Rändern werden verworfen — der Detektor läuft
+weiter auf dem Vollbild — und als „N hidden" am Feed angezeigt.
+
+Fällt der Crop an der Quelle aus (kein cv2, kaputtes JPEG, Crop lässt nichts übrig), geht der
+Frame unverändert raus und der Browser schneidet selbst. Es fällt also nichts aus, das Bild
+wird nur nicht kleiner. Das *Camera Debug*-Panel zeigt bewusst weiter das rohe Vollbild.
 
 ---
 

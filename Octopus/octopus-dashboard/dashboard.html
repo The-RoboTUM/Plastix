@@ -1221,6 +1221,82 @@
       background: rgba(30, 41, 59, 0.9);
     }
 
+    /* OCTOPUS CAMERA CROP CONTROLS */
+    .camera-crop-grid {
+      display: grid;
+      gap: 6px;
+      margin-bottom: 10px;
+    }
+
+    .camera-crop-row {
+      display: grid;
+      grid-template-columns: 48px minmax(50px, 1fr) 56px;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+
+    .camera-crop-row input[type="range"] {
+      width: 100%;
+      min-width: 0;
+      accent-color: #38bdf8;
+      background: transparent;
+      cursor: pointer;
+    }
+
+    .camera-crop-row .camera-crop-number {
+      width: 100%;
+      min-width: 0;
+      padding: 4px 6px;
+      text-align: right;
+    }
+
+    .camera-crop-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+    }
+
+    .camera-crop-actions button {
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: rgba(15, 23, 42, 0.72);
+      color: var(--text-main);
+      cursor: pointer;
+      font-weight: 600;
+    }
+
+    .camera-crop-actions button:hover {
+      border-color: rgba(56, 189, 248, 0.65);
+      background: rgba(30, 41, 59, 0.9);
+    }
+
+    /* Crop chip: neutral while off, cyan once the crop actually cuts something. */
+    #camera-crop-chip.active,
+    .camera-crop-chip {
+      border-color: rgba(56, 189, 248, 0.5);
+      background: rgba(56, 189, 248, 0.14);
+      color: #7dd3fc;
+    }
+
+    .camera-crop-summary {
+      font-size: 11px;
+      line-height: 1.6;
+    }
+    .camera-crop-summary b { color: var(--text-soft); }
+
+    .camera-crop-note {
+      margin-top: 6px;
+      font-size: 10px;
+      line-height: 1.5;
+      color: var(--text-muted);
+      opacity: 0.85;
+    }
+
     .pipeline-log-box {
       display: none;
       margin-top: 10px;
@@ -2024,6 +2100,53 @@ body.octopus-view-debug .camera-debug-panel .item-card {
               <div id="pipeline-summary" class="muted">Pipeline status: unknown</div>
               <pre id="pipeline-log" class="pipeline-log-box"></pre>
             </div>
+
+            <div class="pipeline-control-block camera-crop-block">
+              <div class="pipeline-control-title">
+                <strong>Camera Crop</strong>
+                <span>cut the unusable frame edges away — the feed, both grids, the cell names and the projected footprint all follow the cropped region</span>
+              </div>
+              <div class="camera-crop-grid">
+                <div class="camera-crop-row">
+                  <span>Top</span>
+                  <input type="range" id="camera-crop-top" min="0" max="45" step="1" value="0"
+                         aria-label="Crop from the top edge, in percent of the frame" />
+                  <input type="number" id="camera-crop-top-num" class="small-input camera-crop-number"
+                         min="0" max="45" step="1" value="0"
+                         aria-label="Crop from the top edge, in percent of the frame" />
+                </div>
+                <div class="camera-crop-row">
+                  <span>Bottom</span>
+                  <input type="range" id="camera-crop-bottom" min="0" max="45" step="1" value="0"
+                         aria-label="Crop from the bottom edge, in percent of the frame" />
+                  <input type="number" id="camera-crop-bottom-num" class="small-input camera-crop-number"
+                         min="0" max="45" step="1" value="0"
+                         aria-label="Crop from the bottom edge, in percent of the frame" />
+                </div>
+                <div class="camera-crop-row">
+                  <span>Left</span>
+                  <input type="range" id="camera-crop-left" min="0" max="45" step="1" value="0"
+                         aria-label="Crop from the left edge, in percent of the frame" />
+                  <input type="number" id="camera-crop-left-num" class="small-input camera-crop-number"
+                         min="0" max="45" step="1" value="0"
+                         aria-label="Crop from the left edge, in percent of the frame" />
+                </div>
+                <div class="camera-crop-row">
+                  <span>Right</span>
+                  <input type="range" id="camera-crop-right" min="0" max="45" step="1" value="0"
+                         aria-label="Crop from the right edge, in percent of the frame" />
+                  <input type="number" id="camera-crop-right-num" class="small-input camera-crop-number"
+                         min="0" max="45" step="1" value="0"
+                         aria-label="Crop from the right edge, in percent of the frame" />
+                </div>
+              </div>
+              <div class="camera-crop-actions">
+                <button id="camera-crop-reset-btn" type="button">Reset Crop</button>
+                <span id="camera-crop-chip" class="mini-chip">Crop off</span>
+              </div>
+              <div id="camera-crop-summary" class="muted camera-crop-summary"></div>
+              <div class="camera-crop-note">Detections in the cut-away edges are ignored. The Camera Debug panel keeps the raw, uncropped frame.</div>
+            </div>
           </div>
         </section>
 
@@ -2074,6 +2197,6 @@ body.octopus-view-debug .camera-debug-panel .item-card {
     </section>
   </main>
 
-  <script src="live_data.js?v=camera-feed-15"></script>
+  <script src="live_data.js?v=camera-crop-1"></script>
 </body>
 </html>

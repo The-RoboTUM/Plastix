@@ -27,6 +27,71 @@ def _now_ts() -> float:
     return datetime.now().timestamp()
 
 
+# --- CAMERA CROP CONFIG ---
+# The operator sets the crop in the dashboard's "Camera & Pipeline" panel. The
+# dashboard POSTs it here, the ROS camera-debug bridge polls it, and the bridge
+# cuts the frame edges away BEFORE the frame is sent — so Eve only ships the part
+# of the feed the operator actually wants, instead of a full frame that the
+# browser then hides.
+#
+# Each side is a fraction of the full frame (0.0 .. 0.45), capped so the cropped
+# region always still contains the camera's principal point.
+CAMERA_CROP_SIDES = ("top", "right", "bottom", "left")
+CAMERA_CROP_MAX_SIDE = 0.45
+
+CAMERA_CROP: Dict[str, Any] = {
+    "top": 0.0,
+    "right": 0.0,
+    "bottom": 0.0,
+    "left": 0.0,
+    # Bumped on every real change, so the bridge can log only actual switches.
+    "revision": 0,
+    "updated_at": None,
+}
+
+
+def _camera_crop_side(value: Any) -> float:
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return 0.0
+    if number != number:  # NaN
+        return 0.0
+    return max(0.0, min(number, CAMERA_CROP_MAX_SIDE))
+
+
+def _camera_crop_public() -> Dict[str, Any]:
+    crop = {side: CAMERA_CROP[side] for side in CAMERA_CROP_SIDES}
+    crop["revision"] = CAMERA_CROP["revision"]
+    crop["updated_at"] = CAMERA_CROP["updated_at"]
+    crop["active"] = any(CAMERA_CROP[side] > 0.0 for side in CAMERA_CROP_SIDES)
+    crop["max_side"] = CAMERA_CROP_MAX_SIDE
+    return crop
+
+
+@app.get("/api/camera_debug/crop")
+def get_camera_debug_crop():
+    return {"status": "ok", "crop": _camera_crop_public()}
+
+
+@app.post("/api/camera_debug/crop")
+def post_camera_debug_crop(payload: Dict[str, Any]):
+    changed = False
+    for side in CAMERA_CROP_SIDES:
+        if side not in payload:
+            continue
+        value = _camera_crop_side(payload[side])
+        if abs(value - CAMERA_CROP[side]) > 1e-9:
+            CAMERA_CROP[side] = value
+            changed = True
+
+    if changed:
+        CAMERA_CROP["revision"] += 1
+        CAMERA_CROP["updated_at"] = _now_ts()
+
+    return {"status": "ok", "changed": changed, "crop": _camera_crop_public()}
+
+
 @app.post("/api/camera_debug/frame")
 def post_camera_debug_frame(payload: Dict[str, Any]):
     received_at = _now_ts()
@@ -39,12 +104,25 @@ def post_camera_debug_frame(payload: Dict[str, Any]):
     if not data_url and data_base64:
         data_url = f"data:image/{image_format};base64,{data_base64}"
 
+    # The crop the bridge actually applied to THIS frame, so the dashboard knows
+    # whether the image it got is already cut (draw it as-is) or still full
+    # (crop it in the browser as a fallback).
+    applied_crop = payload.get("crop")
+    if isinstance(applied_crop, dict):
+        applied_crop = {side: _camera_crop_side(applied_crop.get(side)) for side in CAMERA_CROP_SIDES}
+    else:
+        applied_crop = None
+
     LATEST_CAMERA_DEBUG["image"] = {
         "received_at": received_at,
         "format": image_format,
         "stamp": payload.get("stamp"),
         "frame_id": payload.get("frame_id", "camera"),
         "data_url": data_url,
+        "crop": applied_crop,
+        "source_size": payload.get("source_size"),
+        "cropped_size": payload.get("cropped_size"),
+        "bytes": len(data_base64) if isinstance(data_base64, str) else None,
     }
     LATEST_CAMERA_DEBUG["received_at"] = received_at
 
@@ -52,6 +130,9 @@ def post_camera_debug_frame(payload: Dict[str, Any]):
         "status": "ok",
         "received_at": received_at,
         "has_image": bool(data_url),
+        # Piggy-back the current crop config on the response, so a bridge that
+        # posts often does not need a separate poll to stay current.
+        "crop": _camera_crop_public(),
     }
 
 
@@ -96,6 +177,9 @@ def get_latest_camera_debug():
         "received_at": LATEST_CAMERA_DEBUG["received_at"],
         "image": LATEST_CAMERA_DEBUG["image"],
         "detections": LATEST_CAMERA_DEBUG["detections"],
+        # So the dashboard can tell whether the backend already knows its crop —
+        # after a backend restart the dashboard re-POSTs it from localStorage.
+        "crop": _camera_crop_public(),
     }
 # --- END CAMERA DEBUG / DETECTION INSPECTOR ROUTES ---
 

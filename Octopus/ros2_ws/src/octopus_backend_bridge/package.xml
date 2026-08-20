@@ -10,6 +10,9 @@
   <depend>rclpy</depend>
   <depend>std_msgs</depend>
   <depend>sensor_msgs</depend>
+  <!-- Used by the camera debug bridge to crop frames before sending them. -->
+  <depend>python3-numpy</depend>
+  <depend>python3-opencv</depend>
 
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>

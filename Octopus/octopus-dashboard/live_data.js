@@ -43,6 +43,22 @@ function initialLocalGridCols() {
   return Number.isFinite(stored) && stored >= 2 ? Math.min(stored, 40) : 8;
 }
 
+// Camera crop: how much of each frame edge the operator cuts away, as a fraction
+// of the full frame. Capped per side so the cropped region always still contains
+// the principal point (cx/cy) — the footprint model is measured from it.
+const CAMERA_CROP_SIDES = ["top", "right", "bottom", "left"];
+const CAMERA_CROP_MAX_SIDE = 0.45;
+
+function initialCameraCrop() {
+  const stored = JSON.parse(localStorage.getItem("octopusCameraCrop") || "null") || {};
+  const crop = {};
+  CAMERA_CROP_SIDES.forEach((side) => {
+    const value = parseFloat(stored[side]);
+    crop[side] = Number.isFinite(value) ? Math.min(Math.max(value, 0), CAMERA_CROP_MAX_SIDE) : 0;
+  });
+  return crop;
+}
+
 const OCTOPUS = {
   missionPhase: localStorage.getItem("octopusMissionPhase") || "preflight",
   dashboardView: localStorage.getItem("octopusDashboardView") || "overview",
@@ -97,6 +113,8 @@ const OCTOPUS = {
     gpsStepDeg: parseFloat(localStorage.getItem("octopusCameraGpsStepDeg") || "0") || 0,
     imageSignature: null,
   },
+  // Fraction of each frame edge cut away — see the camera crop section below.
+  cameraCrop: initialCameraCrop(),
 };
 
 const DEMO_MAP_ORIGIN = { lat: 48.2513611, lon: 11.6359722 };
@@ -2858,7 +2876,10 @@ function mergeDetectionCluster(items) {
   };
 }
 
-function cameraFeedDetections() {
+// Every detection the feed could draw, in FULL-frame u/v — before the camera
+// crop is applied. Used for the crop's own bookkeeping (how many detections it
+// currently hides); everything else wants cameraFeedDetections().
+function cameraFeedDetectionsUncropped() {
   const payload = OCTOPUS.latest.cameraDebug?.detections || null;
   const list = Array.isArray(payload?.detections) ? payload.detections : [];
   // Only detections with usable normalized image coordinates can be placed on the feed.
@@ -2884,6 +2905,15 @@ function cameraFeedDetections() {
   return clusters.map((c) => mergeDetectionCluster(c.items));
 }
 
+// The detections the dashboard works with: re-normalized into the cropped frame,
+// with everything that sits in a cut-away edge dropped.
+function cameraFeedDetections() {
+  const crop = cameraCropSettings();
+  const list = cameraFeedDetectionsUncropped();
+  if (!crop.active) return list;
+  return list.map((det) => cropDetection(det, crop)).filter(Boolean);
+}
+
 // Compute the rectangle occupied by an object-fit:contain image inside its container.
 function containedImageRect(container, natW, natH) {
   const cw = container.clientWidth;
@@ -2893,6 +2923,153 @@ function containedImageRect(container, natW, natH) {
   const w = natW * scale;
   const h = natH * scale;
   return { x: (cw - w) / 2, y: (ch - h) / 2, w, h, cw, ch };
+}
+
+// -----------------------------------------------------------------------------
+// Camera crop — the operator cuts the unusable frame edges away (drone legs in
+// view, lens vignette, ground outside the area of interest). This is a region of
+// interest, not just a zoom: the camera footprint, both grids, the cell names and
+// the map projection are all computed from the cropped region, and detections
+// that land in a cut-away edge are dropped instead of mapped.
+//
+// u runs from the left frame edge, v from the BOTTOM one (the detector's
+// convention), so the bottom crop is v's lower bound and the top crop is v's
+// upper bound.
+// -----------------------------------------------------------------------------
+
+// Validated crop, plus the kept fraction of each axis. kx/ky are never 0 because
+// each side is capped at CAMERA_CROP_MAX_SIDE.
+function cameraCropSettings() {
+  const stored = OCTOPUS.cameraCrop || {};
+  const crop = {};
+  CAMERA_CROP_SIDES.forEach((side) => {
+    crop[side] = clamp(safeNumber(stored[side], 0), 0, CAMERA_CROP_MAX_SIDE);
+  });
+  crop.kx = 1 - crop.left - crop.right;
+  crop.ky = 1 - crop.top - crop.bottom;
+  crop.active = crop.kx < 0.9999 || crop.ky < 0.9999;
+  return crop;
+}
+
+function setCameraCropSide(side, fraction) {
+  if (!CAMERA_CROP_SIDES.includes(side)) return;
+  const next = {};
+  const current = cameraCropSettings();
+  CAMERA_CROP_SIDES.forEach((key) => { next[key] = current[key]; });
+  next[side] = clamp(safeNumber(fraction, 0), 0, CAMERA_CROP_MAX_SIDE);
+  OCTOPUS.cameraCrop = next;
+  localStorage.setItem("octopusCameraCrop", JSON.stringify(next));
+}
+
+function resetCameraCrop() {
+  const next = {};
+  CAMERA_CROP_SIDES.forEach((side) => { next[side] = 0; });
+  OCTOPUS.cameraCrop = next;
+  localStorage.setItem("octopusCameraCrop", JSON.stringify(next));
+}
+
+// Rects for the camera overlay under the active crop:
+//  - `rect` is the visible (cropped) region, letterboxed inside the container —
+//    everything in normalized u/v maps into it;
+//  - `full` is where the whole frame would sit at the same scale, for the values
+//    that stay in full-frame pixel space (the detector bounding boxes).
+function croppedImageRects(container, natW, natH) {
+  const crop = cameraCropSettings();
+  // When the ROS bridge already cut this frame (Eve sends only the crop), the
+  // image IS the visible region — cropping it again in the browser would cut
+  // twice. Otherwise the frame is still full and the browser does the cut.
+  const preCropped = cameraFrameIsPreCropped(crop);
+  const rect = preCropped
+    ? containedImageRect(container, natW, natH)
+    : containedImageRect(container, natW * crop.kx, natH * crop.ky);
+  const full = { w: rect.w / crop.kx, h: rect.h / crop.ky };
+  full.x = rect.x - crop.left * full.w;
+  full.y = rect.y - crop.top * full.h;
+  return { rect, full, crop, preCropped };
+}
+
+// Whether the frame that arrived was already cropped at the source with exactly
+// the crop the operator asked for.
+function cameraFrameIsPreCropped(crop = cameraCropSettings()) {
+  if (!crop.active) return false;
+  const applied = OCTOPUS.latest.cameraDebug?.image?.crop;
+  if (!applied) return false;
+  return CAMERA_CROP_SIDES.every(
+    (side) => Math.abs(safeNumber(applied[side], -1) - crop[side]) <= 0.005
+  );
+}
+
+// Re-normalize one detection into the cropped frame, or null when it sits in a
+// cut-away edge.
+function cropDetection(det, crop = cameraCropSettings()) {
+  if (!crop.active) return det;
+  const uFull = safeNumber(det.u, NaN);
+  const vFull = safeNumber(det.v, NaN);
+  const u = (uFull - crop.left) / crop.kx;
+  const v = (vFull - crop.bottom) / crop.ky;
+  if (!(u >= 0 && u <= 1) || !(v >= 0 && v <= 1)) return null;
+  return { ...det, u, v, u_full: uFull, v_full: vFull };
+}
+
+// How many detections the crop currently hides, for the feed's status chips.
+function cameraCropHiddenCount() {
+  const crop = cameraCropSettings();
+  if (!crop.active) return 0;
+  const total = cameraFeedDetectionsUncropped().length;
+  return Math.max(0, total - cameraFeedDetections().length);
+}
+
+// The cropped frame in sensor pixels, used both for the footprint model and for
+// the "effective resolution" readout in the Camera & Pipeline panel.
+function croppedSensorRegion(cam = OCTOPUS_HBVCAM_640X480, crop = cameraCropSettings()) {
+  const x0 = crop.left * cam.image_width;
+  const y0 = crop.top * cam.image_height;
+  return {
+    x0,
+    y0,
+    x1: cam.image_width - crop.right * cam.image_width,
+    y1: cam.image_height - crop.bottom * cam.image_height,
+    width_px: cam.image_width * crop.kx,
+    height_px: cam.image_height * crop.ky,
+    crop,
+  };
+}
+
+// Position and clip the camera <img> so the cropped region alone fills the frame
+// (object-fit:contain on the cropped region). The overlay uses the same rects, so
+// image and overlay stay pixel-aligned.
+function applyCameraCropToImage(img, container) {
+  if (!img || !container) return;
+  const crop = cameraCropSettings();
+  const natW = img.naturalWidth;
+  const natH = img.naturalHeight;
+
+  if (!crop.active || !natW || !natH) {
+    // Back to the stylesheet's plain contained image.
+    ["left", "top", "right", "bottom", "width", "height", "clip-path", "object-fit"]
+      .forEach((prop) => img.style.removeProperty(prop));
+    return;
+  }
+
+  const rects = croppedImageRects(container, natW, natH);
+  if (rects.preCropped) {
+    // Already cut at the source: plain contained image, nothing to clip.
+    ["left", "top", "right", "bottom", "width", "height", "clip-path", "object-fit"]
+      .forEach((prop) => img.style.removeProperty(prop));
+    return;
+  }
+
+  const full = rects.full;
+  img.style.left = `${full.x}px`;
+  img.style.top = `${full.y}px`;
+  img.style.right = "auto";
+  img.style.bottom = "auto";
+  img.style.width = `${full.w}px`;
+  img.style.height = `${full.h}px`;
+  img.style.objectFit = "fill";
+  img.style.clipPath =
+    `inset(${(crop.top * 100).toFixed(4)}% ${(crop.right * 100).toFixed(4)}% ` +
+    `${(crop.bottom * 100).toFixed(4)}% ${(crop.left * 100).toFixed(4)}%)`;
 }
 
 // -----------------------------------------------------------------------------
@@ -3492,14 +3669,30 @@ function drawCameraFeedOverlay() {
 
   const hasImage = !!(img && img.src && img.complete && img.naturalWidth > 0);
   const gpsEnabled = isGpsGridActive();
+
+  // Keep the <img> itself in sync with the crop before the early exits, so a
+  // reset still un-crops a frame that no longer draws an overlay.
+  applyCameraCropToImage(img, frame);
+
   if (!hasImage && !gpsEnabled) return;
 
   // Without a frame the GPS grid still draws, over the area the camera image
   // would occupy (sensor aspect ratio), so the feature is usable without the
   // pipeline running.
-  const rect = hasImage
-    ? containedImageRect(frame, img.naturalWidth, img.naturalHeight)
-    : containedImageRect(frame, OCTOPUS_HBVCAM_640X480.image_width, OCTOPUS_HBVCAM_640X480.image_height);
+  // `rect` is the visible cropped region — everything normalized maps into it.
+  // `fullRect` is the whole frame at the same scale, for detector bboxes, which
+  // stay in full-frame pixel space.
+  const rects = hasImage
+    ? croppedImageRects(frame, img.naturalWidth, img.naturalHeight)
+    : croppedImageRects(frame, OCTOPUS_HBVCAM_640X480.image_width, OCTOPUS_HBVCAM_640X480.image_height);
+  const rect = rects.rect;
+  const fullRect = rects.full;
+
+  // Nothing may spill into the cut-away edges.
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(rect.x, rect.y, rect.w, rect.h);
+  ctx.clip();
 
   const detections = cameraFeedDetections();
 
@@ -3510,7 +3703,10 @@ function drawCameraFeedOverlay() {
     if (markCellsEnabled()) markGpsCellsOnCamera(ctx, rect, gpsGrid, detections);
   }
 
-  if (!hasImage) return;
+  if (!hasImage) {
+    ctx.restore();
+    return;
+  }
 
   // Local mode: the image-aligned grid, plus the cells that carry a detection.
   const localGeom = isLocalGridActive() ? localGridGeometry(rect) : null;
@@ -3540,10 +3736,10 @@ function drawCameraFeedOverlay() {
         // bbox is in the detector debug frame's own pixel space (top-left origin),
         // exactly like the baked-in green box — scale into the contained rect, no v flip.
         const normalized = Math.max(x2, y2) <= 1.5;
-        const sx = normalized ? rect.w : rect.w / (img.naturalWidth || 1);
-        const sy = normalized ? rect.h : rect.h / (img.naturalHeight || 1);
-        bx = rect.x + x1 * sx;
-        by = rect.y + y1 * sy;
+        const sx = normalized ? fullRect.w : fullRect.w / (img.naturalWidth || 1);
+        const sy = normalized ? fullRect.h : fullRect.h / (img.naturalHeight || 1);
+        bx = fullRect.x + x1 * sx;
+        by = fullRect.y + y1 * sy;
         bw = (x2 - x1) * sx;
         bh = (y2 - y1) * sy;
       } else {
@@ -3605,6 +3801,8 @@ function drawCameraFeedOverlay() {
       ctx.fillText(label, lx + padX, ly + chipH / 2);
     });
   }
+
+  ctx.restore(); // end of the crop clip
 }
 
 function renderCameraFeed() {
@@ -3647,10 +3845,20 @@ function renderCameraFeed() {
   const countLabel = detections.length
     ? `${detections.length} trash detection${detections.length === 1 ? "" : "s"}`
     : "No trash detected";
+
+  // Crop chip, so the operator can never mistake a cropped feed for the full one.
+  const crop = cameraCropSettings();
+  const hidden = cameraCropHiddenCount();
+  const cropChip = crop.active
+    ? `<span class="mini-chip camera-crop-chip" title="${escapeHtml(cameraCropTooltip())}">Crop ${escapeHtml(cameraCropShortLabel())}` +
+      `${hidden ? ` · ${hidden} hidden` : ""}</span>`
+    : "";
+
   meta.innerHTML = `
     ${statusPill(escapeHtml(`Frame ${frameFresh.label}`), frameFresh.state)}
     ${statusPill(escapeHtml(`Detections ${detectionFresh.label}`), detectionFresh.state)}
     <span class="camera-feed-count ${countClass}"><span class="swatch"></span>${escapeHtml(countLabel)}</span>
+    ${cropChip}
     <span class="spacer"></span>
     <span class="mini-chip">frame: ${escapeHtml(image?.frame_id || detectionPayload?.frame_id || "camera")}</span>
   `;
@@ -3750,6 +3958,7 @@ async function refreshCameraDebug() {
   try {
     const data = await apiGet("/api/camera_debug/latest");
     OCTOPUS.latest.cameraDebug = data.status === "ok" ? data : null;
+    resyncCameraCropIfNeeded(data?.crop);
   } catch (error) {
     OCTOPUS.latest.cameraDebug = null;
     console.warn("Camera debug refresh failed", error);
@@ -4962,12 +5171,16 @@ function octopusComputeCameraFootprintMeta() {
   const h = settings.height_m;
   const resolution = settings.resolution;
 
-  // Ground-plane footprint for a downward-looking pinhole camera.
-  // Left/right/top/bottom are asymmetric because cx/cy are not exactly centered.
-  const leftM = h * cam.cx / cam.fx;
-  const rightM = h * (cam.image_width - cam.cx) / cam.fx;
-  const topM = h * cam.cy / cam.fy;
-  const bottomM = h * (cam.image_height - cam.cy) / cam.fy;
+  // Ground-plane footprint for a downward-looking pinhole camera, measured over
+  // the CROPPED sensor region — cutting a frame edge away really does narrow the
+  // field of view, so the footprint (and with it the grids and the map
+  // projection) has to shrink with it.
+  // Left/right/top/bottom stay asymmetric because cx/cy are not exactly centered.
+  const region = croppedSensorRegion(cam);
+  const leftM = h * (cam.cx - region.x0) / cam.fx;
+  const rightM = h * (region.x1 - cam.cx) / cam.fx;
+  const topM = h * (cam.cy - region.y0) / cam.fy;
+  const bottomM = h * (region.y1 - cam.cy) / cam.fy;
 
   const widthM = leftM + rightM;
   const heightM = topM + bottomM;
@@ -4981,10 +5194,12 @@ function octopusComputeCameraFootprintMeta() {
     width_m: widthM,
     height_m: heightM,
     resolution,
-    source: "fixed camera footprint",
+    source: region.crop.active ? "cropped camera footprint" : "fixed camera footprint",
     mode: "fixed_camera_footprint",
     camera_height_m: h,
     camera_model: cam,
+    crop: region.crop,
+    sensor_region: region,
     footprint: {
       left_m: leftM,
       right_m: rightM,
@@ -5065,12 +5280,15 @@ function octopusUpdateCameraFootprintSummary() {
   let meta;
   if (mode === "fixed_camera_footprint") {
     meta = octopusComputeCameraFootprintMeta();
+    const crop = meta.crop || cameraCropSettings();
     summary.textContent =
       `Camera footprint: ${meta.width_m.toFixed(2)} m × ${meta.height_m.toFixed(2)} m · ` +
-      `${meta.cols}×${meta.rows} cells · h=${meta.camera_height_m.toFixed(2)} m`;
+      `${meta.cols}×${meta.rows} cells · h=${meta.camera_height_m.toFixed(2)} m` +
+      (crop.active ? ` · crop ${cameraCropShortLabel(crop)}` : "");
     summary.title =
       `HBVCAM 640x480, fx=${meta.camera_model.fx.toFixed(1)}, fy=${meta.camera_model.fy.toFixed(1)}, ` +
-      `cx=${meta.camera_model.cx.toFixed(1)}, cy=${meta.camera_model.cy.toFixed(1)}`;
+      `cx=${meta.camera_model.cx.toFixed(1)}, cy=${meta.camera_model.cy.toFixed(1)}` +
+      (crop.active ? `\n${cameraCropTooltip(crop)}` : "");
     return;
   }
 
@@ -5152,6 +5370,175 @@ if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", octopusSetupGridModeControls);
 } else {
   octopusSetupGridModeControls();
+}
+
+
+// -----------------------------------------------------------------------------
+// Camera crop controls — the sliders in the Camera & Pipeline panel. Changing a
+// side changes the camera footprint, so the whole footprint-derived view is
+// refreshed with it (grid map, camera overlay, mission map, KPIs).
+// -----------------------------------------------------------------------------
+
+function cameraCropShortLabel(crop = cameraCropSettings()) {
+  const pct = (value) => `${Math.round(value * 100)}%`;
+  return `T${pct(crop.top)} B${pct(crop.bottom)} L${pct(crop.left)} R${pct(crop.right)}`;
+}
+
+function cameraCropTooltip(crop = cameraCropSettings()) {
+  const cam = OCTOPUS_HBVCAM_640X480;
+  if (!crop.active) return `No camera crop — the full ${cam.image_width} × ${cam.image_height} frame is used.`;
+  const region = croppedSensorRegion(cam, crop);
+  return `Camera crop ${cameraCropShortLabel(crop)} — effective frame ` +
+    `${Math.round(region.width_px)} × ${Math.round(region.height_px)} px of ` +
+    `${cam.image_width} × ${cam.image_height}. The camera footprint, both grids, the cell ` +
+    `names and the map projection all follow the cropped region; detections in the ` +
+    `cut-away edges are ignored.`;
+}
+
+function renderCameraCropSummary() {
+  const crop = cameraCropSettings();
+  const cam = OCTOPUS_HBVCAM_640X480;
+  const region = croppedSensorRegion(cam, crop);
+  const meta = octopusComputeCameraFootprintMeta();
+
+  const chip = $("camera-crop-chip");
+  if (chip) {
+    chip.textContent = crop.active ? `Crop ${cameraCropShortLabel(crop)}` : "Crop off";
+    chip.classList.toggle("active", crop.active);
+    chip.title = cameraCropTooltip(crop);
+  }
+
+  const summary = $("camera-crop-summary");
+  if (!summary) return;
+
+  const lines = [
+    `Effective frame <b>${Math.round(region.width_px)} × ${Math.round(region.height_px)} px</b>` +
+    ` · ${Math.round(crop.kx * crop.ky * 100)}% of the sensor`,
+    `Camera footprint <b>${meta.width_m.toFixed(2)} m × ${meta.height_m.toFixed(2)} m</b>` +
+    ` at h=${meta.camera_height_m.toFixed(2)} m`,
+  ];
+
+  if (crop.active) {
+    const hidden = cameraCropHiddenCount();
+    if (hidden) lines.push(`${hidden} detection${hidden === 1 ? "" : "s"} in the cut-away edges — ignored`);
+  } else {
+    lines.push("No crop — the full frame is used.");
+  }
+
+  summary.innerHTML = lines.map((line) => `<div>${line}</div>`).join("");
+  summary.title = cameraCropTooltip(crop);
+}
+
+function cameraCropMessage() {
+  const crop = cameraCropSettings();
+  if (!crop.active) return "Camera crop reset — the full frame is used again.";
+  const region = croppedSensorRegion(OCTOPUS_HBVCAM_640X480, crop);
+  const meta = octopusComputeCameraFootprintMeta();
+  return `Camera crop ${cameraCropShortLabel(crop)}: effective frame ` +
+    `${Math.round(region.width_px)} × ${Math.round(region.height_px)} px, footprint ` +
+    `${meta.width_m.toFixed(2)} m × ${meta.height_m.toFixed(2)} m.`;
+}
+
+// Send the crop to the backend, where the ROS camera-debug bridge picks it up and
+// cuts the frame edges away BEFORE the frame is sent — so Eve only ships the part
+// the operator wants. Called on the committed value, not on every slider pixel.
+async function pushCameraCropToBackend() {
+  const crop = cameraCropSettings();
+  const payload = {};
+  CAMERA_CROP_SIDES.forEach((side) => { payload[side] = crop[side]; });
+  try {
+    const response = await fetch("/api/camera_debug/crop", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+  } catch (error) {
+    console.warn("Camera crop sync failed", error);
+  }
+}
+
+// The backend keeps the crop in memory only, so after a backend restart it can
+// disagree with the panel. The panel is the authority — push ours again.
+function resyncCameraCropIfNeeded(backendCrop) {
+  if (!backendCrop) return;
+  const crop = cameraCropSettings();
+  const differs = CAMERA_CROP_SIDES.some(
+    (side) => Math.abs(safeNumber(backendCrop[side], 0) - crop[side]) > 1e-6
+  );
+  if (differs) pushCameraCropToBackend();
+}
+
+function octopusRefreshCameraCropView(announce = false) {
+  // Footprint summary, grid map, KPIs, and (when a grid is active) the camera
+  // overlay plus the mission map.
+  octopusRefreshGridModeView(false);
+  renderCameraCropSummary();
+
+  // The feed's own chips and the overlay, also with the grid switched off.
+  if (typeof renderCameraFeed === "function") renderCameraFeed();
+  else drawCameraFeedOverlay();
+
+  // The footprint outline on the mission map follows the crop even with no grid.
+  if (cameraGridMode() === "off" && OCTOPUS.missionMap?.map && typeof renderMissionMap === "function") {
+    renderMissionMap();
+  }
+
+  if (announce && typeof addTimeline === "function") addTimeline(cameraCropMessage(), "info");
+}
+
+function syncCameraCropInputs() {
+  const crop = cameraCropSettings();
+  CAMERA_CROP_SIDES.forEach((side) => {
+    const percent = Math.round(crop[side] * 100);
+    const range = $(`camera-crop-${side}`);
+    const number = $(`camera-crop-${side}-num`);
+    if (range && document.activeElement !== range) range.value = String(percent);
+    if (number && document.activeElement !== number) number.value = String(percent);
+  });
+}
+
+function setupCameraCropControls() {
+  const maxPercent = Math.round(CAMERA_CROP_MAX_SIDE * 100);
+
+  CAMERA_CROP_SIDES.forEach((side) => {
+    [$(`camera-crop-${side}`), $(`camera-crop-${side}-num`)].forEach((input) => {
+      if (!input) return;
+      input.max = String(maxPercent);
+      // "input" tracks the drag live, "change" is the committed value that also
+      // gets a timeline entry — one line per adjustment, not per pixel.
+      const apply = (announce) => {
+        setCameraCropSide(side, (parseFloat(input.value) || 0) / 100);
+        syncCameraCropInputs();
+        octopusRefreshCameraCropView(announce);
+      };
+      input.addEventListener("input", () => apply(false));
+      input.addEventListener("change", () => {
+        apply(true);
+        pushCameraCropToBackend();
+      });
+    });
+  });
+
+  const reset = $("camera-crop-reset-btn");
+  if (reset) {
+    reset.addEventListener("click", () => {
+      resetCameraCrop();
+      syncCameraCropInputs();
+      octopusRefreshCameraCropView(true);
+      pushCameraCropToBackend();
+    });
+  }
+
+  syncCameraCropInputs();
+  renderCameraCropSummary();
+  drawCameraFeedOverlay();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", setupCameraCropControls);
+} else {
+  setupCameraCropControls();
 }
 
 

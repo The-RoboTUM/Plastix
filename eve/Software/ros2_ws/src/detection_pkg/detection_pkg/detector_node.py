@@ -52,10 +52,19 @@ class DetectorNode(Node):
         # stays live. Set <= 0 to disable periodic republishing.
         self.declare_parameter('confirmed_republish_period_sec', 1.0)
 
+        # JPEG quality of ~/debug_image/compressed, the frame the dashboard shows.
+        # The default keeps the previous bandwidth. Raise it (92-98) when the feed
+        # looks blocky: the camera is only 640x480, so the dashboard magnifies every
+        # pixel and the 8x8 compression blocks become clearly visible.
+        self.declare_parameter('debug_image_jpeg_quality', 80)
+
         repo_path = self.get_parameter('detect_localize_path').value
         self.output_frame = self.get_parameter('output_frame').value
         input_topic = self.get_parameter('input_topic').value
         self.show_ui = self.get_parameter('show_ui').value
+        self.debug_image_jpeg_quality = max(
+            1, min(100, int(self.get_parameter('debug_image_jpeg_quality').value))
+        )
 
         # Make the shared pipeline importable, then build it.
         if repo_path not in sys.path:
@@ -483,7 +492,7 @@ class DetectorNode(Node):
             ok, encoded = cv2.imencode(
                 ".jpg",
                 debug_frame,
-                [int(cv2.IMWRITE_JPEG_QUALITY), 80],
+                [int(cv2.IMWRITE_JPEG_QUALITY), self.debug_image_jpeg_quality],
             )
             if not ok:
                 self.get_logger().warn("Failed to encode detector debug image")

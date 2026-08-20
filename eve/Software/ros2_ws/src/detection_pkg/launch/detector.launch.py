@@ -2,6 +2,7 @@ from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
+from launch_ros.parameter_descriptions import ParameterValue
 
 
 def generate_launch_description():
@@ -20,6 +21,12 @@ def generate_launch_description():
         default_value='camera/image_raw/compressed',
         description='CompressedImage topic to subscribe to.',
     )
+    debug_image_jpeg_quality = DeclareLaunchArgument(
+        'debug_image_jpeg_quality',
+        default_value='80',
+        description='JPEG quality (1-100) of ~/debug_image/compressed, the frame the '
+                    'dashboard shows. Raise it (92-98) when the feed looks blocky.',
+    )
 
     detector = Node(
         package='detection_pkg',
@@ -30,7 +37,12 @@ def generate_launch_description():
             'detect_localize_path': LaunchConfiguration('detect_localize_path'),
             'tags': LaunchConfiguration('tags'),
             'input_topic': LaunchConfiguration('input_topic'),
+            # A launch argument is a string; the node declares this one as an int, so
+            # the type has to be stated explicitly or the node refuses to start.
+            'debug_image_jpeg_quality': ParameterValue(
+                LaunchConfiguration('debug_image_jpeg_quality'), value_type=int
+            ),
         }],
     )
 
-    return LaunchDescription([repo, tags, input_topic, detector])
+    return LaunchDescription([repo, tags, input_topic, debug_image_jpeg_quality, detector])
