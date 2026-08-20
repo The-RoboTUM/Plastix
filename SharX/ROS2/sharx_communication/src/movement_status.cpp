@@ -20,6 +20,10 @@ public:
       "device_id",
       "sharx_1");
 
+    mode_ = declare_parameter<std::string>(
+    "mode",
+    "teleop");
+
     movement_threshold_ = declare_parameter<double>(
       "movement_threshold",
       0.01);
@@ -74,7 +78,7 @@ private:
     const json status = {
       {"device_id", device_id_},
       {"status", new_status},
-      {"mode", "teleop"},
+      {"mode", mode_},
       {"left_thruster", left},
       {"right_thruster", right}
     };
@@ -98,6 +102,7 @@ private:
     status_publisher_;
 
   std::string device_id_;
+  std::string mode_;
   std::string last_status_;
 
   double movement_threshold_{0.01};

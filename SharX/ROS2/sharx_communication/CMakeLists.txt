@@ -86,6 +86,17 @@ target_link_libraries(
   nlohmann_json::nlohmann_json
 )
 
+add_executable(
+  esp32_serial_bridge
+  src/esp32_serial_bridge.cpp
+)
+
+ament_target_dependencies(
+  esp32_serial_bridge
+  rclcpp
+  std_msgs
+)
+
 install(
   TARGETS
     dummy_octopus
@@ -93,6 +104,7 @@ install(
     sharx_teleop
     thruster_mixer
     movement_status
+    esp32_serial_bridge
   DESTINATION lib/${PROJECT_NAME}
 )
 
