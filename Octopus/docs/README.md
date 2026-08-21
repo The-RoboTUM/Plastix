@@ -23,6 +23,7 @@ Verträge zwischen den Teilsystemen. Das braucht, wer etwas anschließt.
 |---|---|
 | [`drone_to_octopus_interface.md`](drone_to_octopus_interface.md) | Eve → Octopus: wie Detektionen in Map-Koordinaten hereinkommen |
 | [`octopus_to_robot_interface.md`](octopus_to_robot_interface.md) | Octopus → Sammelroboter: Müllpositionen als GPS-Ziele für Nav2 |
+| [`gripperx_rosbridge_link.md`](gripperx_rosbridge_link.md) | Der WebSocket-Transport zu GripperX: starten, prüfen, Fehlerbilder |
 | [`detector_posearray_bridge.md`](detector_posearray_bridge.md) | Umwandlung der Detektor-`PoseArray` in das Octopus-JSON-Format |
 | [`coordinate_frames.md`](coordinate_frames.md) | Frames und Achsenkonventionen, inklusive der Normalisiert-vs-Welt-Falle bei `PoseArray` |
 

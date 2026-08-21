@@ -41,8 +41,11 @@ class OctopusBridgeNode(Node):
             10
         )
         
-        # Store laptop position (origin)
-        self.laptop_position = None
+        # Position the local frame is anchored on. Eve (the drone) is that point:
+        # the collector robot is started on her spot, so the whole Octopus stack
+        # calls it map (0, 0) - see docs/octopus_to_robot_interface.md. The laptop
+        # is only the fallback for a database that has no drone row yet.
+        self.datum_position = None
         
         # Timer to poll database
         self.create_timer(0.5, self.publish_device_data)  # 2 Hz
@@ -76,15 +79,14 @@ class OctopusBridgeNode(Node):
         )
         battery_dict = {b['device_id']: b for b in battery_data}
         
-        # Find laptop position first
-        laptop = next((loc for loc in locations if loc['type'] == 'laptop'), None)
-        if laptop:
-            self.laptop_position = laptop
+        # Find the datum first: Eve if she is in the table, else the laptop.
+        datum = self.find_datum(locations)
+        if datum:
+            self.datum_position = datum
         
         # Publish data for each device
         for loc in locations:
             device_id = loc['origin_id']
-            device_type = loc['type']
             
             # Create publisher if it doesn't exist
             if device_id not in self.device_publishers:
@@ -105,14 +107,10 @@ class OctopusBridgeNode(Node):
             pose_msg.header.stamp = self.get_clock().now().to_msg()
             pose_msg.header.frame_id = 'map'
             
-            # Convert to local coordinates if laptop position is known
-            if self.laptop_position and device_type != 'laptop':
-                x, y = self.gps_to_local(
-                    loc['latitude'], loc['longitude'],
-                    self.laptop_position['latitude'], self.laptop_position['longitude']
-                )
-            else:
-                x, y = 0.0, 0.0
+            # Local coordinates relative to the datum. The datum device itself is
+            # 0, 0 - it is what the frame is anchored on, so it cannot report a
+            # position within its own frame.
+            x, y = self.local_position(loc)
             
             pose_msg.pose.position.x = x
             pose_msg.pose.position.y = y
@@ -174,6 +172,27 @@ class OctopusBridgeNode(Node):
         msg.data = json.dumps(status)
         self.fleet_status_pub.publish(msg)
     
+    @staticmethod
+    def is_datum_device(loc):
+        """Eve, whose position defines local (0, 0)."""
+        return (str(loc.get('type') or '').lower() == 'drone'
+                or 'eve' in str(loc.get('origin_id') or '').lower())
+
+    def find_datum(self, locations):
+        """Eve if the table knows her, otherwise the laptop as a stand-in."""
+        return (next((loc for loc in locations if self.is_datum_device(loc)), None)
+                or next((loc for loc in locations if loc.get('type') == 'laptop'), None))
+
+    def local_position(self, loc):
+        """Metres east/north of the datum. The datum itself is always (0, 0)."""
+        datum = self.datum_position
+        if not datum or loc.get('origin_id') == datum.get('origin_id'):
+            return 0.0, 0.0
+        return self.gps_to_local(
+            loc['latitude'], loc['longitude'],
+            datum['latitude'], datum['longitude'],
+        )
+
     def gps_to_local(self, lat, lon, origin_lat, origin_lon):
         """Convert GPS to local coordinates"""
         R = 6371000  # Earth radius in meters

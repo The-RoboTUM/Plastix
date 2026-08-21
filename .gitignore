@@ -80,6 +80,13 @@ eve/Software/detect-and-localize/**/__pycache__/
 Octopus/ros2_ws/src/px4_msgs/
 eve/Software/ros2_ws/src/px4_msgs/
 
+# Local rosbridge dependency for the GripperX link. Third-party checkout with
+# its own .git, so committing it would leave a submodule gitlink nobody can
+# clone. Reproduce it with Octopus/scripts/build_rosbridge.sh, or install
+# ros-humble-rosbridge-suite and delete the directory - the link is identical
+# either way (see Octopus/docs/gripperx_rosbridge_link.md).
+Octopus/ros2_ws_rosbridge/
+
 # Python virtual environments (never commit these - they are multi-GB and
 # contain absolute paths that break as soon as the repo is moved)
 .venv/

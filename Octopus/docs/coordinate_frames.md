@@ -1,5 +1,15 @@
 # Coordinate Frames
 
+## Own position
+
+Whatever anchors the local frame reports itself as `x = 0, y = 0`. In the indoor fake-GPS demo
+that anchor is Eve's start point (the datum), so Eve's own local coordinate is always `0, 0`
+and only her `lat`/`lon` change — see
+[`octopus_to_robot_interface.md`](octopus_to_robot_interface.md#das-datum). In the marker-based
+test field below it is `marker_0`. Only GPS ever expresses the anchor as a non-zero number.
+
+## Test field
+
 First prototype uses a local flat test-field frame.
 
 Example field:

@@ -9,6 +9,8 @@ pkill -f "camera_debug_backend_bridge_node" || true
 pkill -f "camera_transform_status_backend_bridge_node" || true
 pkill -f "trash_gps_goal_node" || true
 pkill -f "eve_fake_gps_bridge_node" || true
+pkill -f "device_status_backend_bridge_node" || true
+pkill -f "rosbridge_websocket" || true
 pkill -f "uvicorn api:app" || true
 echo "Stopped."
 

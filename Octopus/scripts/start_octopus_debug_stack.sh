@@ -29,6 +29,8 @@ pkill -f "local_camera_grid_backend_bridge_node" || true
 pkill -f "local_camera_grid_node" || true
 pkill -f "camera_transform_status_backend_bridge_node" || true
 pkill -f "trash_gps_goal_node" || true
+pkill -f "device_status_backend_bridge_node" || true
+pkill -f "rosbridge_websocket" || true
 pkill -f "eve_fake_gps_bridge_node" || true
 pkill -f "uvicorn api:app" || true
 
@@ -113,6 +115,18 @@ setsid ros2 run octopus_camera_transform trash_gps_goal_node \
   > "$LOG_DIR/trash_gps_goal.log" 2>&1 &
 echo $! > "$LOG_DIR/trash_gps_goal.pid"
 
+echo "Starting device status backend bridge node..."
+setsid ros2 run octopus_backend_bridge device_status_backend_bridge_node \
+  > "$LOG_DIR/device_status_backend_bridge.log" 2>&1 &
+echo $! > "$LOG_DIR/device_status_backend_bridge.pid"
+
+# rosbridge carries the GripperX link: the contract topics in and out over
+# ws://<host>:9090. The arguments live in run_rosbridge.sh so this script, the
+# systemd unit and a manual run cannot drift apart.
+echo "Starting rosbridge for the GripperX link..."
+setsid "$BASE/Octopus/scripts/run_rosbridge.sh" > "$LOG_DIR/rosbridge.log" 2>&1 &
+echo $! > "$LOG_DIR/rosbridge.pid"
+
 echo "Starting camera transform status backend bridge node..."
 setsid ros2 run octopus_backend_bridge camera_transform_status_backend_bridge_node \
   > "$LOG_DIR/camera_transform_status_backend_bridge.log" 2>&1 &
@@ -124,6 +138,12 @@ echo "Logs: $LOG_DIR"
 echo ""
 echo "Open dashboard:"
 echo "http://127.0.0.1:8000/dashboard.html"
+echo ""
+echo "GripperX link (rosbridge):"
+echo "ws://$(hostname -I 2>/dev/null | awk '{print $1}'):9090"
+echo ""
+echo "Check the link:"
+echo "python3 $BASE/Octopus/scripts/check_rosbridge.py"
 echo ""
 echo "Run health check:"
 echo "python3 $BASE/Octopus/scripts/octopus_pipeline_health.py"

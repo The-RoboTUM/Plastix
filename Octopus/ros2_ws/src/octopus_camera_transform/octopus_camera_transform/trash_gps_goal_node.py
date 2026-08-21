@@ -312,6 +312,12 @@ class TrashGpsGoalNode(Node):
             "datum": {
                 "lat": self.datum_lat,
                 "lon": self.datum_lon,
+                # Our own position in the local map frame. Always (0, 0): the
+                # frame is anchored on this point, so it cannot be anything else.
+                # Stated instead of implied, so a consumer never has to guess
+                # where "we" are in the same meters the targets are given in.
+                "x": 0.0,
+                "y": 0.0,
                 "from_topic": self.datum_from_topic,
             },
             "goal_id": goal["id"] if goal else None,

@@ -16,6 +16,7 @@ Roboter denselben Bezugspunkt teilen — siehe [Das Datum](#das-datum).
 | `/octopus/trash_goal` | `sensor_msgs/NavSatFix` | latched, 1 Hz | Octopus → Roboter | **nächstes** Ziel |
 | `/octopus/trash_gps` | `std_msgs/String` (JSON) | 1 Hz | Octopus → Roboter | **alle** bekannten Ziele |
 | `/octopus/trash_goal_done` | `std_msgs/String` | — | Roboter → Octopus | erledigte Ziel-`id` |
+| `/octopus/devices/<id>/status` | `std_msgs/String` (JSON) | 2 Hz | Roboter → Octopus | Zustand des Roboters, fürs Dashboard |
 
 `latched` = `TRANSIENT_LOCAL`, Tiefe 1. Ein Roboter, der später bootet, bekommt Datum und
 aktuelles Ziel sofort beim Verbinden statt erst beim nächsten Zyklus. Ein Subscriber mit
@@ -34,6 +35,20 @@ Eve-Marker im Dashboard ziehen
                           /octopus/trash_goal + /octopus/trash_gps
 ```
 
+## Transport
+
+Zwei Wege, dieselben Topics:
+
+- **Gemeinsames DDS.** Roboter auf derselben `ROS_DOMAIN_ID` (hier `0`) sieht die Topics direkt.
+- **rosbridge.** WebSocket auf `ws://<host>:9090`, kein ROS auf der Roboterseite nötig. So hängt
+  GripperX dran. Betrieb, Argumente und Fehlerbilder:
+  [`gripperx_rosbridge_link.md`](gripperx_rosbridge_link.md).
+
+Über rosbridge ist nur `/octopus/*` erreichbar, in beide Richtungen; Services, Parameter und
+Actions sind zu. Am Vertrag in diesem Dokument ändert der Transport nichts — auch nicht an den
+Typen. Zu beachten ist nur die **kurze Typform** im Protokoll: `std_msgs/String`, nicht
+`std_msgs/msg/String`.
+
 ## Das Datum
 
 Der Roboter wird **auf demselben Punkt gestartet wie Eve**. Dieser Punkt ist das Datum: alle
@@ -44,7 +59,16 @@ Das Datum ist die Position des Eve-Markers auf der Mission Map. Wird der Marker 
 verschoben, wandern **alle** Ziele mit — die Positionen liegen intern in Map-Metern und werden
 erst beim Publizieren in lat/lon umgerechnet.
 
-Map (0, 0) entspricht per Konstruktion exakt dem Datum.
+Map (0, 0) entspricht per Konstruktion exakt dem Datum. Das gilt in beide Richtungen:
+**die eigene lokale Koordinate ist immer `x = 0, y = 0`** — Eve kann sich im Frame, den sie
+selbst aufspannt, nicht woanders befinden. Deshalb steht sie im `datum`-Block von
+`/octopus/trash_gps` und im Dashboard (Inspector, Grid) ausdrücklich als `0, 0`, statt gegen
+irgendeinen anderen Bezugspunkt gerechnet zu werden. Nur `lat`/`lon` des Datums bewegen sich.
+
+Das Dashboard verankert seinen lokalen Frame ebenfalls auf Eve (`eveDatum()` in
+`live_data.js`) — nicht auf der Ecke einer gezeichneten Suchfläche. Von der Suchfläche kommt
+nur noch ihre **Größe**; ihre Lage folgt Eve. Andernfalls würde dasselbe „x = 3,6 m" im
+Dashboard und in ROS auf zwei verschiedene Punkte am Boden zeigen.
 
 Solange das Dashboard noch nichts gemeldet hat, publiziert `eve_fake_gps_bridge_node` einen
 Fallback (`DEMO_MAP_ORIGIN` aus `live_data.js`, Garching) und loggt eine Warnung. Im JSON von
@@ -57,7 +81,7 @@ Fallback (`DEMO_MAP_ORIGIN` aus `live_data.js`, Garching) und loggt eine Warnung
   "source_id": "trash_gps_goal_node",
   "frame_id": "map",
   "timestamp": 1786977824.861,
-  "datum": { "lat": 46.694667, "lon": 11.840481, "from_topic": true },
+  "datum": { "lat": 46.694667, "lon": 11.840481, "x": 0.0, "y": 0.0, "from_topic": true },
   "goal_id": 1,
   "open_count": 2,
   "targets": [
@@ -82,6 +106,7 @@ Fallback (`DEMO_MAP_ORIGIN` aus `live_data.js`, Garching) und loggt eine Warnung
 | `id` | stabil über die Laufzeit des Nodes; Bezugsgröße für `trash_goal_done` |
 | `lat` / `lon` | WGS84, aus `x`/`y` relativ zum Datum berechnet |
 | `x` / `y` | Position im `map`-Frame in Metern (x = Ost, y = Nord) |
+| `datum.x` / `datum.y` | die eigene lokale Koordinate, konstant `0.0` / `0.0` |
 | `confidence` | YOLO-Konfidenz der Detektion, kann `null` sein |
 | `collected` | vom Roboter über `trash_goal_done` gemeldet |
 | `is_goal` | dieses Ziel liegt gerade auf `/octopus/trash_goal` |
@@ -141,6 +166,55 @@ Akzeptiert wird die nackte Id (`"1"`) oder JSON (`{"id": 1}`). Das Ziel wird auf
 `collected: true` gesetzt und `/octopus/trash_goal` rückt sofort auf das nächste vor.
 
 Unbekannte Ids werden mit einer Warnung ignoriert.
+
+## `/octopus/devices/<id>/status` — Rückkanal für den Zustand
+
+Der Roboter beschreibt sich selbst; Octopus fragt nicht nach. Ein JSON-String, 2 Hz, `<id>` ist
+die Roboterkennung (`gripperx`). `device_status_backend_bridge_node` leitet das ans Backend
+weiter, das Dashboard zeigt den Roboter damit auf der Mission Map.
+
+```json
+{
+  "source_id": "gripperx_demo",
+  "robot_id": "gripperx",
+  "timestamp": 1787234926.3,
+  "pose": {"status": "ok", "frame_id": "map", "x": 1.2, "y": 0.4,
+           "yaw_deg": 35.0, "lat": 48.2513, "lon": 11.6359},
+  "nav": {"status": "idle", "active_goal_id": null, "distance_remaining_m": null},
+  "armed": false,
+  "battery": {"status": "unavailable", "reason": "NO_SENSOR_INSTALLED",
+              "percent": null, "voltage_v": null},
+  "link": {"connected": true, "last_rx_age_sec": 0.7}
+}
+```
+
+| Feld | Bedeutung fürs Dashboard |
+|---|---|
+| `robot_id` | welcher Roboter das ist; der Topicname ist nur der Fallback |
+| `pose.lat` / `pose.lon` | der Marker auf der Mission Map |
+| `pose.status` | ist er nicht `ok`, sagt das Panel **warum** kein Marker da ist |
+| `nav.status` | das Zustands-Pill (`idle`, `navigating`, …) |
+| `nav.active_goal_id`, `nav.distance_remaining_m` | „goal #3 · 2.3 m to go" |
+| `armed` | wird nur angezeigt; nichts auf Octopus-Seite reagiert darauf |
+| `battery.status` / `battery.reason` | `unavailable` wird zu `n/a (no sensor installed)`, **nicht** zu 0 % |
+
+Zwei Festlegungen, die bewusst so sind:
+
+- **`pose.lat`/`lon` `null` setzt den Roboter nicht aufs Datum.** Wer `no_datum` meldet, bekommt
+  gar keinen Marker, und das Panel schreibt „no datum yet, not on the map". Ein Fallback auf eine
+  konfigurierte Position hätte einen live aussehenden Marker auf einen erfundenen Punkt gemalt —
+  und zwar genau auf Eves Startpunkt, weil eine fehlende Koordinate dorthin umrechnet.
+- **Ein stiller Roboter wird `stale`, nicht unsichtbar.** Nach ~6 s ohne Status steht `link lost`
+  und die Karte wird amber. Verschwinden würde aussehen wie „nie konfiguriert".
+
+Zusätzliche Felder werden unverändert durchgetragen; das Dashboard ignoriert, was es nicht kennt.
+
+Weitere Roboter brauchen keinen Code, nur einen Parameter:
+
+```bash
+ros2 run octopus_backend_bridge device_status_backend_bridge_node --ros-args \
+  -p status_topics:="['/octopus/devices/gripperx/status','/octopus/devices/robby/status']"
+```
 
 ## Umrechnung lat/lon ↔ map
 
@@ -240,6 +314,10 @@ neuen Punkt gesprungen sein.
   `trash_goal_done`.
 - **Der Yaw-Slider** aus dem Dashboard wird als `yaw_deg` mitgeschickt, aber von niemandem
   ausgewertet. Falls der Roboter auch Eves Ausrichtung übernehmen soll, liegt der Wert bereit.
+- **Die Einsammel-Schleife ist über rosbridge geprüft**, aber mit einem Simulator
+  (`scripts/simulate_gripperx.py`) und synthetischen Detektionen auf einer eigenen
+  `ROS_DOMAIN_ID`, nicht mit dem echten Roboter: fahren → `trash_goal_done` → Ziel als
+  `collected` → `trash_goal` rückt weiter.
 - **Nicht gegen echtes Nav2 getestet.** Auf dem Demo-Laptop läuft kein Nav2 und kein zweiter
   Roboter. Verifiziert ist alles bis einschließlich der publizierten Topics und des
   Weiterrückens nach `trash_goal_done`.

@@ -334,6 +334,77 @@ def get_eve_fake_gps():
 # --- END OCTOPUS EVE FAKE GPS START COORDINATE ---
 
 
+# --- DEVICE STATUS (GROUND ROBOTS) ---
+# Ground robots on the GripperX link publish their own state as a JSON string on
+# /octopus/devices/<id>/status. device_status_backend_bridge_node forwards each
+# message here, the dashboard polls /api/devices/status once per refresh and puts
+# the robot on the mission map.
+#
+# In-memory and newest-wins per device: this is live telemetry, not a log. A
+# robot that stops publishing keeps its last payload, and the dashboard decides
+# from backend_received_at whether that is still current - so a dead link shows
+# as stale rather than silently disappearing.
+DEVICE_STATUS: Dict[str, Dict[str, Any]] = {}
+
+# A robot id becomes part of a URL and a dashboard label, so keep it boring.
+DEVICE_ID_MAX_LEN = 64
+
+
+def _clean_device_id(device_id: Any) -> str:
+    cleaned = "".join(
+        char for char in str(device_id or "").strip().lower()
+        if char.isalnum() or char in "-_"
+    )
+    return cleaned[:DEVICE_ID_MAX_LEN]
+
+
+@app.post("/api/devices/{device_id}/status")
+def post_device_status(device_id: str, payload: Dict[str, Any]):
+    clean_id = _clean_device_id(device_id)
+    if not clean_id:
+        return {"status": "error", "message": "Unusable device_id", "device_id": device_id}
+
+    record = dict(payload)
+    record["device_id"] = clean_id
+    record["backend_received_at"] = _now_ts()
+    DEVICE_STATUS[clean_id] = record
+
+    return {"status": "ok", "device_id": clean_id, "device_status": record}
+
+
+@app.get("/api/devices/status")
+def get_all_device_status():
+    """Every known device in one call - what the dashboard polls."""
+    return {
+        "status": "ok",
+        "server_time": _now_ts(),
+        "count": len(DEVICE_STATUS),
+        "devices": DEVICE_STATUS,
+    }
+
+
+@app.get("/api/devices/{device_id}/status")
+def get_device_status(device_id: str):
+    clean_id = _clean_device_id(device_id)
+    record = DEVICE_STATUS.get(clean_id)
+    if record is None:
+        return {
+            "status": "empty",
+            "message": f"No status posted for device '{clean_id}' yet.",
+            "device_id": clean_id,
+            "server_time": _now_ts(),
+            "device_status": None,
+        }
+
+    return {
+        "status": "ok",
+        "device_id": clean_id,
+        "server_time": _now_ts(),
+        "device_status": record,
+    }
+# --- END DEVICE STATUS (GROUND ROBOTS) ---
+
+
 
 # Store server start time
 SERVER_START_TIME = datetime.now()

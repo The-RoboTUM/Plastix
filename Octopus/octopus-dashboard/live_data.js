@@ -75,6 +75,8 @@ const OCTOPUS = {
     cameraTransformStatus: null,
     cameraDebug: null,
     localCameraGrid: null,
+    devices: {},
+    devicesServerTime: null,
   },
   selected: null,
   selectedCellKey: null,
@@ -236,7 +238,9 @@ const ROBOT_FLEET_PROFILES = {
     taskRule: "Detection/scanning only",
     tags: ["scan", "detect", "camera", "map update"],
     aliases: ["eve", "drone", "drone_1", "uav"],
-    fallback: { x: 2.8, y: 2.4, state: "scanning", battery: 87 },
+    // Eve defines local (0, 0) - see eveDatum(). Even the demo fallback has to
+    // sit on the origin, or the datum and the marker drift apart.
+    fallback: { x: 0, y: 0, state: "scanning", battery: 87 },
   },
   robby: {
     key: "robby",
@@ -418,8 +422,37 @@ function getResolutionFromInput(fallback = 0.10) {
   return clamp(value, 0.02, 2.0);
 }
 
-function getMissionOrigin() {
+// Eve is the origin of the local frame, not the corner of the drawn search area.
+// The collector robot is started on Eve's spot, so trash_gps_goal_node expresses
+// every target relative to her and calls that map (0, 0) - see
+// docs/octopus_to_robot_interface.md. Anchoring the dashboard anywhere else means
+// the same "x = 3.6 m" points at two different places on the ground.
+//
+// Deliberately resolved without getFleetSnapshot(): the snapshot converts lat/lon
+// into local meters and would call straight back into here.
+function eveDatum() {
+  const profile = ROBOT_FLEET_PROFILES.eve;
+  // Same precedence getFleetSnapshot() gives Eve's position, so the datum and
+  // the marker on the map can never disagree: live link, then the operator's
+  // manual placement, then the database row.
+  const candidates = [
+    matchDeviceStatusForProfile(profile)?.pose,
+    OCTOPUS.manualEve,
+    matchLocationForProfile(profile),
+  ];
+  for (const candidate of candidates) {
+    const lat = safeNumber(candidate?.lat, NaN);
+    const lon = safeNumber(candidate?.lon, NaN);
+    if (Number.isFinite(lat) && Number.isFinite(lon)) return { lat, lon };
+  }
+  // Nothing knows where Eve is yet. Fall back to the drawn area's corner and
+  // finally to the demo origin - the same coordinate eve_fake_gps_bridge_node
+  // publishes as its own fallback datum, so ROS and dashboard still agree.
   return OCTOPUS.missionArea?.origin || DEMO_MAP_ORIGIN;
+}
+
+function getMissionOrigin() {
+  return eveDatum();
 }
 
 function metersPerDegreeLonForLat(lat) {
@@ -446,6 +479,9 @@ function boundsToMissionArea(bounds, source = "map", polygon = null) {
   const west = bounds.getWest();
   const north = bounds.getNorth();
   const east = bounds.getEast();
+  // The drawn area contributes its size, not the local frame's anchor - that is
+  // Eve (see eveDatum). This corner is only kept as the datum of last resort for
+  // a session where Eve's position is not known at all.
   const origin = { lat: south, lon: west };
   const widthM = Math.max(0.1, (east - west) * metersPerDegreeLonForLat(south));
   const heightM = Math.max(0.1, (north - south) * METERS_PER_DEGREE_LAT);
@@ -510,7 +546,9 @@ function getActiveGridMeta(mapData = null) {
     cols,
     width_m: cols * resolution,
     height_m: rows * resolution,
-    origin: area.origin || DEMO_MAP_ORIGIN,
+    // The grid's local (0, 0), i.e. Eve - not the corner the operator happened
+    // to drag the search area to. Only the extent comes from the drawn area.
+    origin: getMissionOrigin(),
     source: area.source || "default",
   };
 }
@@ -558,6 +596,60 @@ function matchLocationForProfile(profile) {
   });
 }
 
+// How long a device status may go unrefreshed before the link counts as stale.
+// device_status_backend_bridge_node posts at 2 Hz, so anything past a few
+// seconds means the robot or the link stopped, not a slow cycle.
+const DEVICE_STATUS_STALE_SEC = 6;
+
+function matchDeviceStatusForProfile(profile) {
+  const devices = OCTOPUS.latest.devices || {};
+  const direct = devices[profile.key];
+  if (direct) return direct;
+  const entry = Object.entries(devices).find(([id, record]) => {
+    const candidate = String(record?.robot_id || id).toLowerCase();
+    return profile.aliases.some((alias) => candidate.includes(alias));
+  });
+  return entry ? entry[1] : null;
+}
+
+// Seconds since the backend last accepted a status from this device, measured
+// against the backend clock so a skewed browser clock cannot invent staleness.
+function deviceStatusAge(device) {
+  const receivedAt = safeNumber(device?.backend_received_at, NaN);
+  const serverTime = safeNumber(OCTOPUS.latest.devicesServerTime, NaN);
+  if (!Number.isFinite(receivedAt) || !Number.isFinite(serverTime)) return null;
+  return Math.max(0, serverTime - receivedAt);
+}
+
+// What to call a robot that is publishing: its own nav state, unless it is
+// telling us it cannot place itself yet.
+function deviceStateLabel(device, age) {
+  if (age !== null && age > DEVICE_STATUS_STALE_SEC) return "link lost";
+  const pose = device?.pose || {};
+  if (pose.status && pose.status !== "ok") {
+    return pose.status === "no_datum" ? "waiting for datum" : `pose ${pose.status}`;
+  }
+  const nav = device?.nav || {};
+  const navStatus = String(nav.status || "").trim();
+  return navStatus || "online";
+}
+
+function batteryFromDeviceStatus(device) {
+  const battery = device?.battery || {};
+  const percent = battery.percent;
+  const usable = typeof percent === "number" && Number.isFinite(percent);
+  return {
+    percent: usable ? percent : null,
+    state: battery.status || "unknown",
+    reason: battery.reason || null,
+    // "no sensor installed" is not "empty battery" - keep them distinguishable
+    // so the fleet card can say so instead of drawing a 0% bar.
+    unavailable: !usable,
+    ts: null,
+    is_demo: false,
+  };
+}
+
 function fallbackLocationForProfile(profile) {
   const p = profile.fallback || { x: 0, y: 0 };
   const [lat, lon] = localToLatLng(p.x, p.y);
@@ -588,7 +680,7 @@ function robotStatusFromState(state, age) {
 
 function getFleetSnapshot() {
   return Object.values(ROBOT_FLEET_PROFILES).map((profile) => {
-    const battery = matchBatteryForProfile(profile) || { percent: profile.fallback?.battery, state: profile.fallback?.state, ts: null, is_demo: true };
+    let battery = matchBatteryForProfile(profile) || { percent: profile.fallback?.battery, state: profile.fallback?.state, ts: null, is_demo: true };
     let location = matchLocationForProfile(profile) || fallbackLocationForProfile(profile);
     // Manual placement of the Eve drone takes precedence over live/fallback location.
     if (profile.key === "eve" && OCTOPUS.manualEve &&
@@ -602,7 +694,7 @@ function getFleetSnapshot() {
         manual: true,
       };
     }
-    const age = ageSeconds(location.ts || battery.ts);
+    let age = ageSeconds(location.ts || battery.ts);
     let state = battery.state || location.state || profile.fallback?.state || "unknown";
     let demo = Boolean(location.is_demo || battery.is_demo);
     // A manually placed Eve counts as real, positioned data (not demo/offline).
@@ -610,8 +702,44 @@ function getFleetSnapshot() {
       state = "manual placement";
       demo = false;
     }
-    const status = demo ? "unknown" : robotStatusFromState(state, age);
-    const local = latLngToLocal(safeNumber(location.lat, NaN), safeNumber(location.lon, NaN));
+
+    // A robot reporting over the GripperX link outranks the database row and the
+    // configured fallback: this is the only source that is actually live.
+    const device = matchDeviceStatusForProfile(profile);
+    let deviceAge = null;
+    let linkStale = false;
+    if (device) {
+      deviceAge = deviceStatusAge(device);
+      linkStale = deviceAge !== null && deviceAge > DEVICE_STATUS_STALE_SEC;
+      const pose = device.pose || {};
+      const lat = safeNumber(pose.lat, NaN);
+      const lon = safeNumber(pose.lon, NaN);
+      if (Number.isFinite(lat) && Number.isFinite(lon)) {
+        location = { id: profile.name, lat, lon, ts: null, state: pose.status || "ok", live: true };
+      } else {
+        // The robot is talking but cannot place itself (typically pose.status
+        // "no_datum"). Falling back to the configured demo position here would
+        // draw a live-looking marker at a made-up spot, so drop the position
+        // entirely and let the panels say why there is no marker.
+        location = { id: profile.name, lat: null, lon: null, ts: null, state: pose.status || "no_position", live: true, missing: true };
+      }
+      battery = batteryFromDeviceStatus(device);
+      state = deviceStateLabel(device, deviceAge);
+      age = deviceAge;
+      demo = false;
+    }
+
+    let status = demo ? "unknown" : robotStatusFromState(state, age);
+    // A robot that is talking but cannot place itself needs attention: it will
+    // not appear on the map, and "unknown" reads like missing data instead.
+    if (device && location.missing && !linkStale) status = "warning";
+    if (linkStale) status = "stale";
+    // Eve is the local frame's origin, so her own local coordinate is 0, 0 by
+    // definition - stated outright rather than left to a subtraction that only
+    // happens to cancel out.
+    const local = profile.key === "eve"
+      ? { x: 0, y: 0 }
+      : latLngToLocal(safeNumber(location.lat, NaN), safeNumber(location.lon, NaN));
     const currentTask = findCurrentTaskForRobot(profile);
     return {
       ...profile,
@@ -622,9 +750,16 @@ function getFleetSnapshot() {
       state: demo ? "configured / no live data" : state,
       status,
       age,
-      online: !demo && status !== "offline" && status !== "error" && (age === null || age < 120),
+      // Readiness ("Land collection available") reads this, so a robot whose
+      // link went quiet must not still count as available.
+      online: !demo && !linkStale && status !== "offline" && status !== "error" && (age === null || age < 120),
       currentTask,
       demo,
+      device,
+      deviceAge,
+      linkStale,
+      live: Boolean(device) && !linkStale,
+      hasPosition: Number.isFinite(safeNumber(location.lat, NaN)) && Number.isFinite(safeNumber(location.lon, NaN)),
     };
   });
 }
@@ -872,8 +1007,9 @@ function placeEveAt(lat, lon) {
   OCTOPUS.manualEve = { lat, lon, ts: new Date().toISOString() };
   localStorage.setItem("octopusManualEve", JSON.stringify(OCTOPUS.manualEve));
   setEvePlacementMode(false);
-  const { x, y } = latLngToLocal(lat, lon);
-  addTimeline(`Eve placed manually at x=${x.toFixed(2)} m, y=${y.toFixed(2)} m (local).`, "success");
+  // No local x/y to report here: placing Eve moves the origin, it does not move
+  // her within the frame. She is local (0, 0) before and after.
+  addTimeline(`Eve placed manually at ${lat.toFixed(7)}, ${lon.toFixed(7)} — this is now local (0, 0).`, "success");
   syncEveFakeGps();
   renderAll();
 }
@@ -916,6 +1052,12 @@ async function syncEveFakeGps(force = false) {
   const payload = {
     lat: pose.lat,
     lon: pose.lon,
+    // Eve's own coordinate in the local map frame. Constant by definition - this
+    // coordinate is what the frame is anchored on - and sent along so a consumer
+    // reading the datum does not have to infer it.
+    x: 0.0,
+    y: 0.0,
+    frame_id: "map",
     yaw_deg: pose.yawDeg,
     manual: Boolean(pose.manual),
     demo: Boolean(pose.demo),
@@ -1468,7 +1610,7 @@ function renderMissionMap() {
   getFleetSnapshot().forEach((robot) => {
     const lat = safeNumber(robot.location.lat, NaN);
     const lon = safeNumber(robot.location.lon, NaN);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    if (!Number.isFinite(lat) || !Number.isFinite(lon) || robot.hasPosition === false) return;
     const icon = missionRobotIcon(robot);
     const style = deviceStyle(robot.type === "water" ? "boat" : robot.type, robot.state);
     const isEve = robot.key === "eve";
@@ -2044,6 +2186,10 @@ function drawFleetAndTasksOnGrid(ctx, mapData, geom) {
   if (!display.fleet) return;
   getFleetSnapshot().forEach((robot) => {
     const local = robot.local || {};
+    // A robot with no reported position converts to local (0, 0) - the datum -
+    // which would draw it on top of Eve's start point as if that were a fix.
+    if (robot.hasPosition === false) return;
+    if (!Number.isFinite(local.x) || !Number.isFinite(local.y)) return;
     if (local.x < 0 || local.x > geom.width_m || local.y < 0 || local.y > geom.height_m) return;
     const p = localMetersToCanvas(geom, local.x, local.y);
     if (p.x < -20 || p.x > geom.canvas.width + 20 || p.y < -20 || p.y > geom.canvas.height + 20) return;
@@ -2502,6 +2648,29 @@ function renderKpis() {
   $("kpi-health-sub").textContent = `${healthItems.filter((i) => i.state === "fresh" || i.state === "ok").length}/${healthItems.length} fresh/configured`;
 }
 
+// One line of what a robot on the GripperX link is actually reporting: what it
+// is doing, whether the arm is live, and whether it can place itself at all.
+function deviceLinkSummary(robot) {
+  const device = robot.device || {};
+  const nav = device.nav || {};
+  const pose = device.pose || {};
+  const parts = [];
+
+  const goal = nav.active_goal_id;
+  parts.push(goal === null || goal === undefined ? "no active goal" : `goal #${goal}`);
+
+  const remaining = safeNumber(nav.distance_remaining_m, NaN);
+  if (Number.isFinite(remaining)) parts.push(`${remaining.toFixed(1)} m to go`);
+
+  parts.push(device.armed ? "armed" : "disarmed");
+
+  if (!robot.hasPosition) {
+    parts.push(pose.status === "no_datum" ? "no datum yet, not on the map" : "no position");
+  }
+
+  return parts.join(" · ");
+}
+
 function renderFleet() {
   const el = $("fleet-content");
   if (!el) return;
@@ -2510,8 +2679,18 @@ function renderFleet() {
   const robots = getFleetSnapshot();
   el.innerHTML = `<div class="compact-list">${robots.map((robot) => {
     const percent = clamp(safeNumber(robot.battery.percent, 0), 0, 100);
+    // A robot that reports "no battery sensor" must not render as 0% - that
+    // reads as an empty battery about to strand it.
+    const batteryLabel = robot.battery.unavailable
+      ? `n/a${robot.battery.reason ? ` (${escapeHtml(String(robot.battery.reason).toLowerCase().replace(/_/g, " "))})` : ""}`
+      : `${percent.toFixed(0)}%`;
     const fresh = freshnessFromAge(robot.age, 5, 45);
     const status = robot.status === "unknown" ? fresh.state : robot.status;
+    const updateLabel = robot.demo
+      ? "demo/fallback"
+      : robot.device
+        ? `${robot.linkStale ? "link stale" : "live"}${robot.deviceAge === null ? "" : ` · ${robot.deviceAge.toFixed(1)}s ago`}`
+        : escapeHtml(fresh.label);
     const currentTask = robot.currentTask ? `Task #${escapeHtml(robot.currentTask.id)}` : "none";
     const tags = robot.tags.map((tag) => {
       const cls = tag.includes("water") || tag.includes("boat") || tag.includes("floating") ? "water" : tag.includes("land") ? "land" : tag.includes("scan") || tag.includes("detect") || tag.includes("camera") ? "scan" : "";
@@ -2531,10 +2710,11 @@ function renderFleet() {
         </div>
         <div class="item-meta">
           ${escapeHtml(robot.capability)}<br />
-          Battery: <span class="accent">${percent.toFixed(0)}%</span> · Last update: ${robot.demo ? "demo/fallback" : escapeHtml(fresh.label)}
-          ${detailed ? `<br />Position: ${safeNumber(robot.location.lat, 0).toFixed(6)}, ${safeNumber(robot.location.lon, 0).toFixed(6)}<br />Current task: ${currentTask}<br />Assignment rule: ${escapeHtml(robot.taskRule)}` : ""}
+          Battery: <span class="accent">${batteryLabel}</span> · Last update: ${updateLabel}
+          ${robot.device ? `<br />${escapeHtml(deviceLinkSummary(robot))}` : ""}
+          ${detailed ? `<br />Position: ${robot.hasPosition ? `${safeNumber(robot.location.lat, 0).toFixed(6)}, ${safeNumber(robot.location.lon, 0).toFixed(6)}` : "no position reported"}<br />Current task: ${currentTask}<br />Assignment rule: ${escapeHtml(robot.taskRule)}` : ""}
         </div>
-        <div class="progress"><span style="width:${percent}%"></span></div>
+        <div class="progress"><span style="width:${robot.battery.unavailable ? 0 : percent}%"></span></div>
         ${detailed ? `<div class="capability-tags">${tags}</div>` : ""}
       </button>
     `;
@@ -2727,11 +2907,22 @@ function renderInspector() {
             <tr><td>purpose</td><td>${escapeHtml(robot.purpose || "unknown")}</td></tr>
             <tr><td>capability</td><td>${escapeHtml(robot.capability || "unknown")}</td></tr>
             <tr><td>assignment rule</td><td>${escapeHtml(robot.taskRule || "unknown")}</td></tr>
-            <tr><td>battery</td><td>${percent.toFixed(0)}%</td></tr>
-            <tr><td>lat/lon</td><td>${safeNumber(robot.location?.lat, 0).toFixed(6)}, ${safeNumber(robot.location?.lon, 0).toFixed(6)}</td></tr>
-            <tr><td>local x/y</td><td>${safeNumber(robot.local?.x, 0).toFixed(2)}, ${safeNumber(robot.local?.y, 0).toFixed(2)} m</td></tr>
+            <tr><td>battery</td><td>${robot.battery?.unavailable
+              ? `n/a${robot.battery.reason ? ` (${escapeHtml(String(robot.battery.reason).toLowerCase().replace(/_/g, " "))})` : ""}`
+              : `${percent.toFixed(0)}%`}</td></tr>
+            <tr><td>lat/lon</td><td>${robot.hasPosition === false
+              ? "not reported"
+              : `${safeNumber(robot.location?.lat, 0).toFixed(6)}, ${safeNumber(robot.location?.lon, 0).toFixed(6)}`}</td></tr>
+            <tr><td>local x/y</td><td>${robot.hasPosition === false
+              ? "not reported"
+              : `${safeNumber(robot.local?.x, 0).toFixed(2)}, ${safeNumber(robot.local?.y, 0).toFixed(2)} m`}</td></tr>
             <tr><td>current task</td><td>${robot.currentTask ? `Task #${escapeHtml(robot.currentTask.id)}` : "none"}</td></tr>
             <tr><td>last update</td><td>${robot.demo ? "demo/fallback position" : escapeHtml(fresh.label)}</td></tr>
+            ${robot.device ? `
+            <tr><td>link</td><td>${robot.linkStale ? "stale" : "live"}${robot.deviceAge === null ? "" : ` · status ${robot.deviceAge.toFixed(1)}s old`}</td></tr>
+            <tr><td>reports</td><td>${escapeHtml(deviceLinkSummary(robot))}</td></tr>
+            <tr><td>source topic</td><td>${escapeHtml(robot.device.source_topic || "unknown")}</td></tr>
+            <tr><td>reported by</td><td>${escapeHtml(robot.device.source_id || robot.device.robot_id || "unknown")}</td></tr>` : ""}
           </tbody>
         </table>
       </div>
@@ -4088,6 +4279,24 @@ async function loadLocalCameraGrid() {
   }
 }
 
+// Live state of the ground robots on the GripperX link. They publish
+// /octopus/devices/<id>/status, device_status_backend_bridge_node forwards it to
+// the backend, and this is where the dashboard picks it up.
+async function loadDeviceStatus() {
+  try {
+    const data = await apiGet("/api/devices/status");
+    OCTOPUS.latest.devices = data.devices || {};
+    // The backend's clock, not the browser's: the robot's timestamps and
+    // backend_received_at are both server-side, so ages must be measured
+    // against the server or a skewed laptop clock invents staleness.
+    OCTOPUS.latest.devicesServerTime = data.server_time ?? null;
+  } catch (error) {
+    console.warn("Device status refresh failed", error);
+    OCTOPUS.latest.devices = {};
+    OCTOPUS.latest.devicesServerTime = null;
+  }
+}
+
 async function refreshAll() {
   await loadLocalCameraGrid();
   try {
@@ -4098,6 +4307,7 @@ async function refreshAll() {
       loadStats(),
       loadMapPatch(),
       loadGlobalMap(),
+      loadDeviceStatus(),
     ]);
     OCTOPUS.backendOk = true;
     OCTOPUS.lastError = null;

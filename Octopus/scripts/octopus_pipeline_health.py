@@ -86,6 +86,16 @@ def topic_once(topic: str, msg_type: Optional[str] = None, field: Optional[str] 
     return False
 
 
+def http_json_quiet(url: str):
+    """Same fetch, no payload dump - for callers that render their own summary."""
+    try:
+        with urllib.request.urlopen(url, timeout=3) as r:
+            return json.loads(r.read().decode("utf-8", errors="replace"))
+    except Exception as e:
+        bad(f"{url}: not reachable ({e})")
+        return None
+
+
 def http_json(url: str):
     try:
         with urllib.request.urlopen(url, timeout=3) as r:
@@ -98,6 +108,51 @@ def http_json(url: str):
     except Exception as e:
         bad(f"{url}: not reachable ({e})")
         return None
+
+
+def port_listening(host: str, port: int, timeout=2.0) -> bool:
+    import socket
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
+
+def gripperx_link():
+    """The rosbridge link to the collection robot, and what it carries."""
+    if port_listening("127.0.0.1", 9090):
+        ok("rosbridge: listening on 9090")
+    else:
+        bad("rosbridge: nothing listening on 9090")
+        info("start it with scripts/start_octopus_debug_stack.sh")
+        return
+
+    for topic in ("/octopus/fake_eve_gps_start", "/octopus/trash_goal", "/octopus/trash_gps"):
+        topic_info(topic)
+    topic_info("/octopus/trash_goal_done")
+    topic_info("/octopus/devices/gripperx/status")
+
+    devices = http_json_quiet("http://127.0.0.1:8000/api/devices/status")
+    if not isinstance(devices, dict):
+        return
+    known = devices.get("devices") or {}
+    if not known:
+        warn("no ground robot has reported status yet")
+        info("simulate one: python3 scripts/simulate_gripperx.py")
+        return
+    now = devices.get("server_time") or time.time()
+    for device_id, record in known.items():
+        age = now - (record.get("backend_received_at") or 0)
+        pose = record.get("pose") or {}
+        nav = record.get("nav") or {}
+        where = (
+            f"lat={pose['lat']:.7f} lon={pose['lon']:.7f}"
+            if isinstance(pose.get("lat"), (int, float)) and isinstance(pose.get("lon"), (int, float))
+            else f"no position (pose.status={pose.get('status')})"
+        )
+        line = f"{device_id}: {nav.get('status', 'unknown')}, {where}, {age:.1f}s old"
+        (ok if age < 6 else warn)(line)
 
 
 def main():
@@ -135,10 +190,16 @@ def main():
     topic_info("/octopus/map_patch")
     print()
 
+    print("GripperX link (rosbridge):")
+    gripperx_link()
+    print()
+
     print("Backend endpoints:")
     http_json("http://127.0.0.1:8000/api/camera_debug/latest")
     print()
     http_json("http://127.0.0.1:8000/api/map_patch/latest")
+    print()
+    http_json("http://127.0.0.1:8000/api/devices/status")
 
     print("\n=== Done ===")
 
