@@ -1,6 +1,26 @@
 # gripperx_sensors
 
-Publishes sensor topics expected by `gripperx_localization`:
+Two executables: `sensor_mocks` (bench stand-ins) and **`scan_range_filter`**
+(the real scan chain).
+
+## The scan chain — read this first
+
+```
+LiDAR driver (or ros_gz_bridge)  ->  /scan_raw  ->  scan_range_filter  ->  /scan
+```
+
+**The LiDAR driver does not publish `/scan`.** `scan_range_filter` republishes it
+with the robot's own returns removed (`min_range` 0.10 m). The same filter runs on
+both platforms, and it is launched from `gripperx_bringup/real_robot.launch.py`
+and `gripperx_gazebo/simulate_robot.launch.py` — **not** from this package's
+`sensors.launch.py`, which starts only the mocks.
+
+If the filter is bypassed or misconfigured, the robot maps itself: self-returns
+appear as an obstacle ring at the chassis radius and SLAM/AMCL degrade.
+
+## Topics
+
+Consumed by `gripperx_localization` and Nav2:
 
 | Topic | Type | Used by |
 |---|---|---|

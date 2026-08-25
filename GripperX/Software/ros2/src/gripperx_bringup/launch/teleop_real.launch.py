@@ -6,7 +6,10 @@ Started on the Pi:
   - arm_action_server            (only if use_arm:=true, /dev/arm_servo must be present)
 
 The micro_ros_agent is started via gripperx-agent.service (systemd).
-The teleop input runs on the development machine (ROS_DOMAIN_ID=42).
+The teleop input runs on the development machine, which must be on the SAME domain as
+the robot's services: ROS_DOMAIN_ID=20 (PlastiX convention, gripper robots 20-29, twin
++200). The "42" this used to claim was the Pi's interactive-shell value and never matched
+the services.
 """
 
 import os

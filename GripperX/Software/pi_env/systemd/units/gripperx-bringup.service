@@ -3,6 +3,17 @@
 Description=GripperX ROS2 Bringup (arm + servos + drive)
 After=local-fs.target network-online.target
 Wants=network-online.target
+# PROPOSAL (OP-20 E / HWR-40), activate together with gripperx.target: the
+# micro-ROS agent carries the ESP32 link, and ros2_control cannot read
+# /hw/joint_states without it. Ordering it before bringup also reverses
+# correctly on stop -- the agent goes down LAST, so the link is still alive
+# during the >=1 s window in which the ESP32's CMD_TIMEOUT_MS zeroes the
+# motors (see the TimeoutStopSec rationale below). Wants= (not Requires=), so
+# a dead agent does not take the whole bringup with it.
+#After=gripperx-agent.service
+#Wants=gripperx-agent.service
+# PROPOSAL: makes "systemctl stop gripperx.target" reach this unit.
+#PartOf=gripperx.target
 
 [Service]
 Type=simple
@@ -10,6 +21,181 @@ User=ubuntu
 Group=ubuntu
 Environment=HOME=/home/ubuntu
 ExecStart=/usr/local/bin/gripperx-bringup.sh
+
+# --- STOP CONTRACT (SR-12 / OP-20 option E) ---------------------------------
+# Until 2026-08-19 this unit had no KillMode, no KillSignal, no ExecStop and no
+# TimeoutStopSec, i.e. it inherited "SIGTERM to the whole cgroup, SIGKILL after
+# 90 s". Both halves of that are wrong for a ros2 launch tree:
+#
+# 1) SIGTERM is the ONE signal `ros2 launch` handles badly. Its own handler
+#    (launch/launch_service.py, _on_sigterm) logs "using SIGTERM can result in
+#    orphaned processes / make sure no processes launched are still running"
+#    and merely cancels its asyncio task -- it does NOT terminate its children.
+#    Measured on the machine 2026-08-18 (journal 40c87ce0): the launch parent
+#    was gone after 2 s and left arm_action_server, steer_servo_node,
+#    teleop_mux_node and ros2_control_node running as real orphans. On SIGINT
+#    launch instead runs its documented ordered teardown (SIGINT to each child,
+#    escalating to SIGTERM after sigterm_timeout=5 s and to SIGKILL after a
+#    further sigkill_timeout=5 s). KillSignal=SIGINT is therefore a correctness
+#    fix, not a preference: it is the only signal the whole ROS 2 stack -- launch,
+#    rclpy and rclcpp alike -- treats as "shut down cleanly".
+#
+# 2) KillMode: control-group is kept DELIBERATELY (it is also the default, but
+#    it is written out here so it cannot be lost by accident). It sends the
+#    KillSignal to EVERY process in the cgroup, so each node runs its own
+#    destroy_node() teardown -- steer_servo_node disabling servo torque,
+#    lidar_power_node driving LiDAR power ON before releasing the GPIO line --
+#    even if the launch parent is wedged. That case is not hypothetical: on
+#    2026-08-17 the bringup parent (PID 16300) ignored SIGINT and kept running.
+#    KillMode=mixed would signal only the launch parent and would give us a
+#    cross-node ORDER, but it makes the whole teardown depend on the very
+#    process that has already been observed to ignore the signal, and a
+#    TimeoutStopSec expiry would then SIGKILL everything with no torque-off at
+#    all. Revisit mixed only once the launch-side fix (OP-20 option D) is in and
+#    the SIGINT path is proven on hardware.
+#    NOTE ON Q-SD3: the SR-12 rev-3 / OP-20 draft recommends option E1 =
+#    `ExecStop` + KillMode=mixed, with KillSignal left at its SIGTERM default.
+#    That is the right END STATE and this file is written to grow into it (see
+#    the ExecStop block below for why it cannot be filled in yet). Until the
+#    ExecStop script exists, `mixed` would be strictly worse -- it signals only
+#    the launch parent, which has been observed to ignore the signal, and with no
+#    script to empty the cgroup the nodes would then be SIGKILLed with no
+#    teardown at all. So: control-group + SIGINT NOW, mixed + ExecStop LATER, and
+#    the switch happens in one step together with the script. The SIGINT-vs-
+#    SIGTERM divergence from the draft is a deliberate INPUT to Q-SD3, not a
+#    decision taken here -- see the report.
+KillMode=control-group
+KillSignal=SIGINT
+
+# TimeoutStopSec: PROVISIONAL 20 s, TO-VERIFY BY MEASUREMENT -- this is the one
+# number in this file the user has to decide (OP-20: "concrete KillMode/
+# TimeoutStopSec values are TO-VERIFY and must be set together with HWR-40's
+# ordered sequence"). What it has to be longer than, worst case, added up:
+#   * 10 s -- `ros2 launch`'s own internal escalation for a child that does not
+#     exit: sigterm_timeout 5 s (SIGINT -> SIGTERM) + sigkill_timeout 5 s
+#     (SIGTERM -> SIGKILL), both launch defaults, both parallel across children.
+#   * >=1 s -- the ESP32's CMD_TIMEOUT_MS 1000 window (main.cpp L113). The
+#     firmware timeout is on RECEIVING a message, so the wheels are only zeroed
+#     by stopMotors() one full second after the last /hw/joint_commands.
+#     SIGKILLing the stack before that second has elapsed means the drive is
+#     never commanded to zero at all and only coasts to a stop. This is the
+#     BACKSTOP and HWR-40 criterion 6 forbids it as the mechanism -- but while
+#     D-SD1 blocks the commanded stop (see ExecStop below) it is in fact what
+#     stops the drive, so the window has to fit inside the budget.
+#   * the slowest serial teardown -- steer_servo_node turns torque off on 4
+#     servos, arm_action_server on 6, each a bus round trip that RETRIES on a
+#     non-responding servo (the arm is currently logging "servo 1 not
+#     responding", so it is the slow one).
+# NOT in this budget, and this is the update of 2026-08-19: there is NO ESP32
+# teardown wait. Q-SD2 is resolved as Option 0 -- no new firmware interface; the
+# agent is simply stopped and the ESP's own ping timeout fires destroyEntities()
+# (main.cpp L179), which calls stopMotors() FIRST and then sets the session
+# destroy timeout to 0, i.e. it never waits for an agent acknowledgement. The
+# teardown is local, fast and autonomous, so the halt path has nothing to wait
+# for. TimeoutStopSec is therefore decoupled from Q-SD1 and can be decided on
+# its own -- which is what had blocked this number until now.
+# 10 + 1 + margin -> 20 s. Anything below ~12 s truncates launch's own
+# escalation; the old inherited 90 s is not dangerous, just far too slow for an
+# operator or for the HWR-40 button, which has to finish before the Pi halts.
+# Note this is a CEILING, not a delay: a normal stop completes as soon as the
+# cgroup is empty, typically in ~2 s. The 20 s only ever elapses in the
+# pathological case, and in that case you want the full escalation to run.
+TimeoutStopSec=20
+
+# ExecStop WIRED 2026-08-25. The interlock below was not bypassed -- both of its
+# named conditions were cleared on the robot that day, and the evidence is here so
+# nobody has to reconstruct it:
+#
+#   * Q-SD3 -- MEASURED. A full teardown through `gripperx-stack-stop --mode=stop`
+#     took 14.043 s first-observed-exit to last, with ORPHANS: none. The whole ROS
+#     stack was down in 1.449 s; the remainder is the Docker micro-ROS agent, a
+#     different unit, so TimeoutStopSec=20 above is untouched and still ample.
+#     One run only -- the shutdown track asks for three before the NUMBER is
+#     fixed, and the number is not being changed here.
+#   * D-SD1 -- DEPLOYED and VERIFIED TWICE, which is what this block demanded.
+#     (a) Cold boot 11:33 (true power cycle, systemd-started bringup):
+#         `No command written on activation (SR-14 item 1)`, steering HELD at the
+#         limp angles [-0.0890, 0.0567, 0.0368, -0.0705] rad.
+#     (b) Full restart via `gripperx-stack-stop --mode=restart --approve-motion`,
+#         robot ON BLOCKS, explicit per-test user approval (SR-1), which is also
+#         SR-12's owed restart test: /hw/steer_states BYTE-IDENTICAL before and
+#         after -- [0.0046045118457136835, -0.0030696745638091223,
+#         0.004601043722304911, 0.006139349127618245].
+#
+# ALSO CLEARED THE SAME DAY, and it is what makes this ExecStop mean something:
+# phase 1's probe is `python3 -c 'import ros2controlcli'`, and under sudo and
+# under ExecStop= the ROS environment is absent, so it reported `no-cli` and
+# announced "an INSTALL defect on this machine ... HWR-40 crit. 6 NOT met". The
+# package was installed all along (4.45.2); only the environment was missing.
+# gripperx-stack-stop now sources it itself. Without that fix this ExecStop would
+# have warned on EVERY stop and still fallen back to the ESP32 backstop -- the
+# very mechanism HWR-40 criterion 6 forbids.
+#
+# --from-unit is mandatory here: this runs INSIDE the stop job of the unit that
+# phase 3 would otherwise `systemctl stop`, which deadlocks until TimeoutStopSec
+# expires. It runs PHASE 1 ONLY -- the ordered, commanded stop -- and touches no
+# unit; systemd already owns the lifecycle in this context.
+ExecStop=/usr/local/bin/gripperx-stack-stop --mode=stop --from-unit
+
+# --- historical rationale, kept because it records WHY this was blocked --------
+# NO ExecStop YET -- and this is a hard safety interlock, not an omission.
+# The ordered sequence belongs here (SR-12 rev 3 / S2 entry point 2: ONE script,
+# `gripperx-stack-stop --mode=...`, called by the operator CLI, by this
+# ExecStop, by the launch-side handler and later by the HWR-40 GPIO button).
+# It MUST NOT be wired up before all three of these are cleared:
+#
+#   * Q-SD3 -- the user's choice of the contract shape itself. THIS IS NOW THE
+#     ONLY REMAINING BLOCKER.
+#
+# DEFECT D-SD1 -- FIXED 2026-08-19, user-authorised, and NOW DEPLOYED AND
+# VERIFIED ON THE ROBOT (corrected 2026-08-25; this block used to say "NOT YET
+# DEPLOYED"). GripperXInterface::on_deactivate() called publish_zero_commands(),
+# which assigns 0.0 to all 8 joints over a steering-first layout, so every
+# controller deactivation published steering 0 rad and steer_servo_node drove
+# all four servos to centre -- an ordered ExecStop would have PERFORMED the
+# movement this contract exists to prevent. It now calls publish_stop_commands()
+# (gripperx_interface.cpp L170): wheels to zero, steering held. Together with the
+# stale-command hold in steer_servo_node._on_timer, the ordered controller
+# shutdown is motion-free in the source AND on the robot: measured 2026-08-25,
+# a cold boot (systemd-started, true power cycle) held the measured/limp angles
+# and wrote no command on activation, and a full restart under per-test approval
+# with the robot on blocks left /hw/steer_states byte-identical before and after.
+# TWO THINGS THAT DOES NOT CHANGE: (a) the result is conditional on
+# center_on_startup: false and on the INTERIM arm_home_on_startup:=false (issue
+# #340) -- see the Restart=on-failure note further down; (b) a restart is still a
+# motion TRIGGER under SR-1 and still needs per-test approval. Wiring ExecStop is
+# still gated on Q-SD3 above.
+#
+# DECIDED BY THE USER 2026-08-19 and therefore NO LONGER blockers: Q-SD1/Q-SD2.
+# Option 0 -- no new firmware interface. The ESP
+# teardown is Option 0 (stop the agent, let the ESP's ping timeout fire its own
+# destroyEntities()), so no firmware interface is needed and the halt path has
+# no ESP wait in it at all. The only ESP-derived timing left lives in the
+# RESTART path, not here -- see the dwell in gripperx-stack-stop (renamed 2026-08-25 from
+# .sh.proposal: it is deployed and serving a P0 chain, so a name saying "proposal"
+# was misleading).
+#
+# Rejected outright, so it is not re-proposed: an ExecStop that merely publishes
+# zero commands. It would make the stop path an extra writer on a command topic
+# (SR-9), and it is redundant -- once the nodes are gone nothing publishes and
+# the ESP32's own 1000 ms receive timeout zeroes the motors. Note this is the
+# BACKSTOP, which HWR-40 criterion 6 explicitly forbids as the mechanism; the
+# mechanism is the commanded stop in the sequence above, which is what is still
+# missing. Today's contract makes the teardown clean and orphan-free; it does
+# NOT yet satisfy HWR-40 criterion 6.
+
+# Orphan check for the SR-12 (5) acceptance criterion: records what is still
+# alive after the stop, so the journal answers "were there orphans?" without
+# anyone having to be logged in at the time. Read-only, "-" prefixed, and it
+# deliberately also reports processes from a MANUAL `ros2 launch` (which this
+# unit does not own) -- that is information, not an action.
+ExecStopPost=-/bin/sh -c 'pgrep -a -f "gripperx_|ros2_control_node|robot_state_publisher|steer_servo|arm_action_server|teleop_mux" || echo "[stop] no chain processes left"'
+
+# Restart=on-failure is KEPT, but note what it means: an automatic restart is a
+# motion trigger (SR-1/SR-12). It is only acceptable because the two startup
+# moves are off -- arm_home_on_startup:=false in gripperx-bringup.sh (issue
+# #340) and center_on_startup: false in steer_servo.yaml (OP-20 option B).
+# If either is ever turned back on, this line has to be reconsidered.
 Restart=on-failure
 RestartSec=10
 StandardOutput=journal

@@ -1,6 +1,7 @@
 #!/bin/bash
 source /opt/ros/jazzy/setup.bash
-export ROS_DOMAIN_ID=0
+# PlastiX domain convention — see gripperx-bringup.sh. Real GripperX-1 = 20.
+export ROS_DOMAIN_ID=20
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 
 # Stop any old container
@@ -11,7 +12,7 @@ docker stop mros_agent 2>/dev/null
 # and enable it via FASTRTPS_DEFAULT_PROFILES_FILE so the DDS side of the
 # agent (ESP32 <-> /hw/joint_commands etc.) doesn't run over SHM either.
 exec docker run --rm --name mros_agent --net=host --ipc=host --privileged \
-  -e ROS_DOMAIN_ID=0 \
+  -e ROS_DOMAIN_ID=20 \
   -e RMW_IMPLEMENTATION=rmw_fastrtps_cpp \
   -e FASTRTPS_DEFAULT_PROFILES_FILE=/fastdds_udp_only.xml \
   -v /home/ubuntu/fastdds_udp_only.xml:/fastdds_udp_only.xml:ro \

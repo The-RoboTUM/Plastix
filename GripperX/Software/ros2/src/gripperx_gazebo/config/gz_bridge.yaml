@@ -16,7 +16,19 @@
   gz_type_name: gz.msgs.Odometry
   direction: GZ_TO_ROS
 
-- topic_name: /scan
+# /scan_raw, not /scan: scan_range_filter republishes it as /scan with returns
+# below its floor removed. Same chain as the real robot (real_robot.launch.py),
+# deliberately - a filter that only exists on one platform is the sim/real split
+# that produced the axis-mirror confusion.
+# The two sides need DIFFERENT names here, which a single topic_name cannot
+# express: Gazebo still publishes /scan (that name comes from the sensor in
+# gripperx_v1.lidar.xacro), while ROS must receive it as /scan_raw so
+# scan_range_filter can republish the filtered version as /scan. Setting
+# topic_name alone renamed BOTH sides and the bridge then looked for a Gazebo
+# topic that does not exist - the ROS topic appeared, with a publisher and the
+# right QoS, and carried nothing.
+- ros_topic_name: /scan_raw
+  gz_topic_name: /scan
   ros_type_name: sensor_msgs/msg/LaserScan
   gz_type_name: gz.msgs.LaserScan
   direction: GZ_TO_ROS

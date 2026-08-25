@@ -1,0 +1,13 @@
+<library path="gripperx_swerve_controller">
+  <class name="gripperx_swerve_controller/SwerveController"
+         type="gripperx_swerve_controller::SwerveController"
+         base_class_type="controller_interface::ControllerInterface">
+    <description>
+      4WIS4WID swerve kinematics as a ros2_control controller (NFR-10, §3.1 variant B).
+      Subscribes /cmd_vel, owns arbitration point A2 (/teleop/direct_steer override),
+      enforces the per-wheel per-direction steering window (FR-5/SR-6) and writes the
+      four steering position and four wheel velocity command interfaces. Open-loop on
+      wheel velocity (FR-11).
+    </description>
+  </class>
+</library>

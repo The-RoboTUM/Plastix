@@ -13,6 +13,7 @@
   <depend>geometry_msgs</depend>
   <depend>sensor_msgs</depend>
   <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
 
   <exec_depend>ament_index_python</exec_depend>
   <exec_depend>gripperx_description</exec_depend>
@@ -24,8 +25,11 @@
   <exec_depend>velocity_controllers</exec_depend>
   <exec_depend>teleop_twist_keyboard</exec_depend>
   <exec_depend>python3-numpy</exec_depend>
+  <!-- LiDAR power relay (HWR-23): libgpiod v1 Python bindings. -->
+  <exec_depend>python3-libgpiod</exec_depend>
 
 
+  <test_depend>gripperx_geometry</test_depend>
   <test_depend>ament_copyright</test_depend>
   <test_depend>ament_flake8</test_depend>
   <test_depend>ament_pep257</test_depend>

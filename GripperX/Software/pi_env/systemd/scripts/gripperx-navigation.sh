@@ -1,7 +1,8 @@
 #!/bin/bash
 source /opt/ros/jazzy/setup.bash
-source /home/ubuntu/ws/install/setup.bash
-export ROS_DOMAIN_ID=0
+source /home/ubuntu/ws/Software/ros2/install/setup.bash
+# PlastiX domain convention — see gripperx-bringup.sh. Real GripperX-1 = 20.
+export ROS_DOMAIN_ID=20
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 # UDP-only FastDDS transport (SHM off) — must be consistent across all gripperx
 # services, otherwise localhost data paths break. Rationale: gripperx-bringup.sh.
@@ -23,4 +24,13 @@ export HOME=/home/ubuntu
 # Switching to "autonomous" still requires an explicit user action (e.g. a key
 # in keyboard_teleop_node or a manual
 # "ros2 topic pub /teleop/set_mode ...").
-exec ros2 launch gripperx_bringup navigation.launch.py
+# OP-14 consolidation (user decision 2026-07-09, gate opened by the DT-5/M3
+# acceptance on 2026-07-17): the canonical Nav2 stack is gripperx_planning, and
+# it is now the stack this service starts. gripperx_bringup/navigation.launch.py
+# and gripperx_bringup/config/nav2_params.yaml are deleted.
+#
+# use_sim_time:=false is passed EXPLICITLY even though it is now also the launch
+# default. Doubly deliberate: this service is the reason the default was flipped,
+# and stating it here documents the intent at the call site. Without it, Nav2
+# would block waiting for a /clock that nothing publishes on the real robot.
+exec ros2 launch gripperx_planning navigation.launch.py use_sim_time:=false

@@ -1,0 +1,347 @@
+# Octopus external-goal link - REAL ROBOT (ROS_DOMAIN_ID=20, SR-8).
+#
+# NOT DEPLOYED AND NOT RUNNABLE TODAY. Real-robot execution is BLOCKED and not
+# by this file: all three EKF inputs are dead (/wheel/odom flat until the
+# encoder firmware is flashed and COUNTS_PER_OUTPUT_REV bench-measured,
+# /laser/odom off, BNO085 unconnected), so Nav2 cannot know where it is and a
+# validated goal is meaningless; NFR-5 is open, OP-7 has not decided whether
+# Nav2 is in v1 scope at all, and all three ros2_control controllers are
+# currently inactive. Stage 5 additionally needs an explicit SR-1 approval, and
+# a bringup restart is itself a motion event.
+#
+# This file exists so the real configuration is reviewable now rather than
+# improvised later, and so the twin/real difference is one file and not a set of
+# edits. Everything unmeasured stays TO-VERIFY.
+
+/gripperx/external/octopus_link_node:
+  ros__parameters:
+    use_sim_time: false
+
+    # SR-8. The real robot's domain. A twin process must never reach here, and a
+    # node started with this file on 220 exits FATAL before creating anything.
+    expected_domain_id: 20
+
+    # The Octopus host's rosbridge. ANSWERED BY THE OCTOPUS TEAM 2026-08-21
+    # (their reply to documentation/OCTOPUS_ROSBRIDGE_SETUP.md section 8):
+    # host ITQLM125, bound 0.0.0.0:9090, running rosbridge 2.0.7 built from
+    # source. Their actual argument set is
+    #   --topics_glob "['/octopus/*']" --services_glob "[]" --actions_glob "[]"
+    # NOT the launch-file form this project's documents used to give - see the
+    # corrections in OCTOPUS_ROSBRIDGE_SETUP.md section 3.
+    #
+    # ⚠ THE ADDRESS IS NOT PROVEN REACHABLE FROM THIS ROBOT, AND 10.42.0.x IS
+    # NOT EVIDENCE THAT IT IS. That range is NetworkManager's default for a
+    # SHARED connection, i.e. every laptop handing out its own hotspot uses it.
+    # Our Pi is 10.42.0.71 on THIS laptop's shared subnet (~/.ssh/config); their
+    # host is 10.42.0.158 on THEIRS. Same range, two different networks, and an
+    # address collision is possible. Nobody has yet put a packet between the two
+    # machines. Their own reply asks us to confirm exactly this.
+    #
+    # It is set here rather than left TO-VERIFY because a wrong address fails
+    # LOUDLY (the connection is refused and the link reports it), which is the
+    # same property the deliberately-wrong loopback default had.
+    url: "ws://10.42.0.158:9090"
+
+    goal_ingress_enabled: false
+
+    link_lost_sec: 5.0
+    drain_rate_hz: 5.0
+    status_rate_hz: 1.0
+    max_msg_bytes: 8192
+    ws_max_size: 65536
+    ping_interval_sec: 5.0
+    ping_timeout_sec: 5.0
+    backoff_initial_sec: 1.0
+    backoff_max_sec: 30.0
+
+    publish_telemetry: true
+    telemetry_debug_json: false
+    source_name: "octopus"
+
+/gripperx/external/goal_gateway_node:
+  ros__parameters:
+    # FALSE, AND THERE IS NO OTHER CORRECT VALUE HERE (SAFETY.md F-24). There is
+    # no /clock publisher on the robot, so sim time would mean a ROS clock
+    # pinned at zero - and the arming expiry, the link watchdog, the
+    # cancel-confirm report and every in-flight re-check are measured on it. The
+    # gateway REFUSES TO START with sim time on a domain that is not a known
+    # simulation domain, so this cannot be overridden into a working-looking
+    # node; it is startup-only, so it cannot be changed underneath a running one.
+    use_sim_time: false
+
+    expected_domain_id: 20
+    goal_ingress_enabled: false
+
+    # SET TRUE 2026-08-25 BY USER DECISION, for the first real-robot Octopus-link
+    # run with litter on the ground. The operator asked for the arming path to
+    # work from the teleop; `u` was reaching the gateway and being refused with
+    # "allow_arm is false".
+    #
+    # WHAT THIS DOES NOT DO: it does not arm anything. SR-15 rule 4 is explicit
+    # that a parameter like this "may only ever PERMIT a later, explicit service
+    # call; it can never BE the arming", and SAFETY.md A-2 verified by inspection
+    # that exactly one code path sets the armed state and its only caller is the
+    # SetArming handler. Arming still requires the operator's `u`, still expires
+    # by itself after the duration typed (120 s from the teleop), and is still
+    # refused over the wire (SR-15 rule 3).
+    #
+    # WHAT THE OPERATOR TAKES ON: with `auto_pick: true` below, an arrival
+    # actuates the arm, so each arming carries SR-16's assertion that the arm's
+    # workspace is clear for the duration typed.
+    #
+    # Startup-only (SAFETY.md A-4): the set-parameters callback refuses it at
+    # runtime, so changing it means restarting the two link nodes.
+    #
+    # ⚠ THE PREVIOUS COMMENT HERE WAS FACTUALLY WRONG and is not preserved: it
+    # read "Unchanged from the twin". The rule it cited is real; the claim of
+    # parity was not, and a false claim in a P0-safety comment is worse than no
+    # comment. For the record, checked against the file's history rather than
+    # asserted: `octopus_link_twin.yaml` carried `allow_arm: false` from
+    # 2026-08-18 until commit `0e311a8` on 2026-08-24 set it true, landing a
+    # decision taken in the 2026-08-21 session. So the twin diverged first, on
+    # 2026-08-24, and the real config followed on 2026-08-25 for its own,
+    # separately recorded reason.
+    allow_arm: true
+    dry_run: true
+    # STAYS FALSE ON THE REAL ROBOT (user decision 2026-08-19, amended C-9 in
+    # SAFETY.md) - see the 2026-08-21 amendment at the end of this block, which
+    # supersedes it. It would go to true ONLY once BOTH of these have actually
+    # been MEASURED on the bench:
+    #
+    # ⚠ CORRECTED 2026-08-24: this used to add "and this is the one place the
+    # twin and the real configuration deliberately differ". That is now wrong
+    # TWICE, and the direction is the confusing part, so it is spelled out:
+    #
+    #     flag         twin (220)   real (20)
+    #     allow_arm    true         true       <- UPDATED 2026-08-25: the real
+    #                                             config was false when this
+    #                                             table was written; the user
+    #                                             set it true for the first
+    #                                             real-robot link run (see the
+    #                                             allow_arm block above)
+    #     auto_pick    false        true       <- INVERTED vs what this line
+    #                                             was written to describe
+    #     dry_run      true         true
+    #
+    # The twin's `auto_pick: false` is deliberate: it is set for the FIRST run
+    # against the REAL Octopus link, whose targets are live detections and whose
+    # acknowledgement is irreversible. Neither machine can arm itself, and both
+    # still come up DISARMED.
+    #
+    #
+    #   * `grasp.offset_x_m` - where the object has to be for the blind sequence
+    #     to close on it. The 0.360 below is a user SPECIFICATION, not a
+    #     measurement, and no document may describe it as one.
+    #   * `grasp.tolerance_m` - how far off that point the robot may stand and
+    #     still succeed. Without it the reached check returns no verdict at all,
+    #     so "we arrived" is an unsupported claim and the arm would actuate on
+    #     it. The auditor observed a pick and an acknowledgement at a grasp-point
+    #     distance of 1.102 m for exactly that reason (SAFETY.md F-14).
+    #
+    # Both fall out of the SAME bench procedure - object on a grid relative to
+    # base_footprint, run /pick_plastic, record which positions succeed: the
+    # centre of the successful region is the offset, its extent is the
+    # tolerance - so requiring both costs nothing extra to obtain.
+    #
+    # This is ENFORCED, not only written here: on the real robot's domain an
+    # arrival with `grasp.tolerance_m` unmeasured refuses the pick and says so
+    # (goal_gateway_node, SR-16 condition 9). The twin is deliberately not
+    # affected - the pick path stays exercisable there with the tolerance
+    # unmeasured, which is what keeps the decoupling decision of the same day
+    # intact: the tolerance gates the reached CHECK, never goal resolution.
+    #
+    # SR-16 condition 6 is unchanged by the amendment: the first exercise of the
+    # auto-pick path on the real robot needs its own explicit SR-1 approval.
+    # SET TRUE 2026-08-21 BY USER DECISION, together with the two grasp values
+    # above ("das Greifen ist ausreichend vermessen und reicht fuer Test, auch
+    # am realen Roboter").
+    #
+    # ⚠ IT MOVES NOTHING BY ITSELF. The pick still requires an ARMED gate, and
+    # SR-16 condition 6 still requires an explicit SR-1 approval for the FIRST
+    # exercise of this path on the real robot - per test, not once. This flag
+    # only stops being the thing that refuses.
+    auto_pick: true
+    # As in the twin: no parameter exists that could make an arrival
+    # acknowledge. On the real robot that would mark real litter collected while
+    # it is still lying on the ground, irreversibly (SAFETY.md C-7).
+
+    arming.max_duration_sec: 600.0
+    arming.max_consecutive_aborts: 3
+
+    # The demo area, measured on site. Still TO-VERIFY; the gateway refuses to
+    # validate until these are set. Runtime-adjustable via `ros2 param set`.
+    # SET 2026-08-21 BY USER DECISION: the drivable area IS 1.25 m in every
+    # direction under the drone - the same rectangle as the twin, deliberately.
+    # Bounds the CHOSEN ROBOT POSE, not the object, and not the path.
+    #
+    # ⚠ THE CAMERA SEES MORE THAN THIS, AND THAT IS AN OPERATIONAL HAZARD, NOT A
+    # HARMLESS SURPLUS. A target whose every approach pose falls outside is
+    # refused AT VALIDATION - it never becomes a mission, so it never counts an
+    # attempt and NEVER reaches the blacklist (both _blacklist_target callers
+    # sit behind dispatch). Their side only advances on trash_goal_done and has
+    # no failure channel, so the pair DEADLOCKS: they re-send, we re-refuse, no
+    # timeout on either side, and every reachable target behind it is stuck.
+    # Until Octopus bounds detection or adds the failure channel, the whole
+    # CAMERA FIELD must be cleared of anything the detector fires on - not just
+    # this rectangle.
+    geofence.min_x_m: -1.25
+    geofence.max_x_m: 1.25
+    geofence.min_y_m: -1.25
+    geofence.max_y_m: 1.25
+
+    # offset_x/y: SET 2026-08-18 by the user as a deliberate provisional value
+    # ("erstmal genau 360 mm"), purely longitudinal. A SPECIFICATION, not a
+    # measurement, and nothing may describe it as measured.
+    # CONFIRMED UNCHANGED 2026-08-21 by the user ("es bleibt bei 360 mm als
+    # Offset") alongside the tolerance decision above. The confirmation settles
+    # the VALUE; it does not turn it into a bench measurement, and this comment
+    # is not being softened to suggest otherwise.
+    grasp.offset_x_m: 0.360
+    grasp.offset_y_m: 0.000
+    # Genuinely unmeasured. Since the user decision of 2026-08-19 it gates ONLY
+    # the post-arrival reached check, never resolution: without it a goal still
+    # resolves and dispatches, and the reached verdict is reported as UNKNOWN
+    # rather than invented. It does not enter the standoff-pose computation.
+    # On THIS machine it additionally gates the pick, per the `auto_pick`
+    # comment above - unmeasured here means no arrival may actuate the arm.
+    # SET 2026-08-21 BY USER DECISION: 0.10 m.
+    #
+    # ⚠ THIS IS A USER DECISION, NOT A BENCH MEASUREMENT, and no document may
+    # describe it as one. The user's words were "ich halte 10 cm fuer
+    # realistisch" - a judgement that the grasp is adequately characterised for
+    # testing, taken deliberately and on the user's authority. SR-16 condition 6
+    # asks for a MEASURED catch window; this is a decision to proceed without
+    # one, which is the user's to take and is recorded here rather than
+    # laundered into the word "measured".
+    #
+    # What it now does: the reached check returns a real verdict instead of
+    # UNKNOWN, and on the real robot it stops refusing the pick. What it does
+    # NOT do: it does not enter the standoff computation, and it does not make
+    # the value right. OP-33 is the reason to keep watching it - the machine
+    # cannot creep, so this window must absorb the arrival span AND the creep
+    # floor, and nobody has bounded that sum.
+    grasp.tolerance_m: 0.10
+    # INTERIM, USER DECISION 2026-08-25, after the first real Octopus run: the
+    # robot navigated correctly to the litter, stood at the standoff, and did
+    # not pick it up, because from there IT OCCLUDED THE OBJECT ITSELF - the
+    # Octopus stopped seeing it, it left their target list, and the arrival gate
+    # read NO_MATCH and refused to actuate the arm.
+    #
+    # The failure is systematic: every correct approach ends with the robot in
+    # front of the thing it came for, so better navigation means more reliable
+    # refusal. See goal_gateway_node._occlusion_latch_holds for what the latch
+    # covers (NO_MATCH only), what still refuses (AMBIGUOUS, a moved id, a stale
+    # list, a failed re-correlation - each of which voids it permanently), and
+    # WHAT IT COSTS: it reopens the SAFETY.md F-13 gap for one status value, and
+    # the bound is the arming window rather than the seconds the coordinator
+    # recommended. That narrower form was offered and the operator chose this
+    # one; it is written down rather than quietly changed in either direction.
+    #
+    # This is scaffolding. The durable fix is designed separately.
+    occlusion_latch_enabled: true
+    grasp.approach_candidates: 12
+    # NOT IMPLEMENTED - see the twin config for why. Setting it true logs an
+    # ERROR and changes nothing.
+    grasp.verify_path: false
+
+    max_goal_cost: 200
+    max_stamp_age_sec: 5.0
+    max_tf_age_sec: 1.0
+    max_teleop_mode_age_sec: 2.0
+    link_lost_sec: 5.0
+    goal_match_tolerance_m: 0.25
+
+    # SAFETY.md F-28: the maximum age of their target list for it to be
+    # correlated against - and since the F-13 fix the irreversible
+    # acknowledgement depends on that correlation. Their `trash_gps` publishes
+    # at 1 Hz unconditionally, so this is the same kind of value as
+    # link_lost_sec. Measured monotonically, against their clock's cadence.
+    #
+    # FIRST EVIDENCE 2026-08-21 (Octopus team, their reply section 5), and the
+    # VALUE IS DELIBERATELY UNCHANGED BY IT. Measured client-side through
+    # rosbridge over 30 s: /octopus/trash_gps 30 msgs, 1.00 Hz, mean gap
+    # 1.000 s, WORST gap 1.001 s, sigma 0.000 s. On that data 2 s would carry 2x
+    # headroom and 3 s would survive one missed message.
+    #
+    # WHY 5.0 STAYS ANYWAY: their run was LOOPBACK - host to itself, no second
+    # machine on the subnet - on a QUIET graph (no detector, no drone, no camera
+    # traffic) for 30 s. The number this parameter needs is the one measured
+    # over the REAL path from THIS robot, across Wi-Fi, under a full pipeline.
+    # Their table says so itself. FR-12 SS10.1 item 5 is therefore NOT
+    # discharged, and tightening the threshold on loopback data would trade a
+    # conservative value for a fabricated one.
+    max_target_list_age_sec: 5.0
+    # SAFETY.md F-24: how long the ROS clock may fail to advance before arming
+    # is refused and an armed window is closed. On the robot the clock is wall
+    # time, so this should never fire; it is here because the configuration that
+    # would break it (use_sim_time true) is one `ros2 launch` argument away.
+    clock_stall_sec: 2.0
+    # SAFETY.md F-31. How long an unproven ROS clock is reported at WARN before
+    # it becomes an ERROR. It is NOT a second stall tolerance: arming is refused
+    # for an unproven clock throughout, inside this grace and after it, and the
+    # gate is identical in both. What it grades is the loudness.
+    #
+    # WHY: `/clock` is discovered, not delivered on request. The gateway
+    # subscribes when it comes up and cannot see a first message before DDS has
+    # matched a publisher, and that latency overlaps clock_stall_sec (2.0 s), so
+    # an ordinary twin start used to raise the SAME ERROR a dead Gazebo raises -
+    # about half the time on the auditor's machine. An ERROR that fires on
+    # ordinary starts is an ERROR operators learn to scroll past, and that is
+    # the silent-health failure F-24 exists against, wearing different clothes.
+    #
+    # MEASURED, 2026-08-19, on the laptop that runs the twin (gateway first log
+    # line -> "ROS clock observed advancing"), 25 samples in three conditions:
+    #   idle machine, 12 samples          0.22 - 1.39 s
+    #   loaded machine (10 busy cores)    0.25 - 2.46 s   (3 spurious ERRORs)
+    #   auditor's, live Gazebo on dom 220 1.32 / 3.20 / 3.48 s (2 spurious)
+    # The 10.0 s VALUE IS A JUDGEMENT, not a measurement: it is ~2.9x the
+    # largest observation (3.48 s). Only the range above is measured. Re-measure
+    # on the machine that will run it before treating it as settled.
+    # On the robot use_sim_time is false and the clock is wall time, so the
+    # grace is proven out within one watchdog tick and this value is never
+    # reached. It is set here for the same reason clock_stall_sec is: the
+    # configuration that would need it is one launch argument away.
+    clock_startup_grace_sec: 10.0
+
+    # The two CLOCK DISCONTINUITY thresholds. SR-15 rule 14 makes both of them
+    # startup-only, each its OWN parameter, and neither derived from anything
+    # else - a `ros2 param set` on either is refused, not applied.
+    #
+    # BOTH VALUES ARE `TO-VERIFY`. Nothing measured either of them, and they
+    # carry the same gap `clock_stall_sec` carries: every `/clock` behind every
+    # number in this package has been a test fixture and never a running Gazebo,
+    # so what a LOADED Gazebo does to them is unanswered.
+    #
+    # SAFETY.md F-30/F-36. How far the ROS clock may go BACKWARDS before that is
+    # a discontinuity rather than "no advance". It alone decides whether
+    # CLOCK_JUMPED_BACK - the ninth auto-disarm trigger, split out by user
+    # decision 2026-08-19 - ever fires. 0.2 is exactly what it was DERIVED as
+    # from `safety_rate_hz: 5.0` before 2026-08-20, so the threshold is
+    # unchanged; what changed is that editing the safety tick rate no longer
+    # moves it (F-36).
+    clock_backward_eps_sec: 0.2
+    # SAFETY.md F-40, user decision 2026-08-20. How much MORE than a continuous
+    # clock at the observed rate the ROS clock may advance before that is
+    # reported as a forward discontinuity. REPORT ONLY: WARN plus a
+    # /diagnostics value, no disarm and no cancel. Measured as an excess over
+    # the observed rate rather than as an absolute step, so a twin deliberately
+    # run fast does not report on every tick.
+    clock_forward_jump_sec: 1.0
+
+    datum_jump_warn_m: "TO-VERIFY"
+    max_attempts_per_target: 2
+
+    telemetry_rate_hz: 1.0
+    preview_rate_hz: 5.0
+    safety_rate_hz: 5.0
+    dispatch_rate_hz: 2.0
+
+    navigate_action: "/navigate_to_pose"
+    pick_action: "/pick_plastic"
+    cancel_confirm_timeout_sec: 3.0
+
+    map_frame: "map"
+    base_frame: "base_footprint"
+    costmap_topic: "/global_costmap/costmap"
+    odom_topic: "/odometry/filtered"
+    teleop_mode_topic: "/teleop/active_mode"

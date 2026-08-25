@@ -10,7 +10,6 @@ from launch_ros.actions import Node, SetUseSimTime
 
 def generate_launch_description():
     gripperx_gazebo = get_package_share_directory("gripperx_gazebo")
-    gripperx_control = get_package_share_directory("gripperx_control")
     gripperx_teleop = get_package_share_directory("gripperx_teleop")
 
     spawn_robot = IncludeLaunchDescription(
@@ -29,20 +28,19 @@ def generate_launch_description():
         }.items(),
     )
 
-    control = IncludeLaunchDescription(
-        PythonLaunchDescriptionSource(
-            os.path.join(gripperx_control, "launch", "control.launch.py")
-        ),
-        launch_arguments={
-            "use_sim_time": "true",
-            # Sim URDF: right wheel joints have axis "0 0 -1" -> right wheels
-            # must be inverted in the bridge so that driving straight actually
-            # goes straight (DT-4/M2 investigation). Real robot stays unchanged.
-            "bridge_config": os.path.join(
-                gripperx_control, "config", "joint_command_bridge.sim.yaml"
-            ),
-        }.items(),
-    )
+    # control.launch.py (swerve_cmd_node + joint_command_bridge) IS DELIBERATELY
+    # NOT INCLUDED ANY MORE — NFR-10 / §3.1.2. Both nodes are replaced by
+    # swerve_controller, which is spawned in spawn_robot.launch.py and writes the
+    # eight command interfaces directly. The right-wheel inversion that used to
+    # live in joint_command_bridge.sim.yaml survives as
+    # swerve_controller.sim.yaml's wheel_command_multipliers [1,-1,1,-1], layered
+    # onto the spawner there — dropping it makes the twin veer off on a
+    # straight-ahead command.
+    #
+    # Structural, not an ordering trick: on the real robot joint_command_bridge
+    # is the node that would become a THIRD publisher on /hw/joint_commands
+    # (SR-10, exactly 2 permitted). Keeping real and sim on the same launch
+    # structure is §3.1.6's no-code-fork rule, so it comes out here too.
 
     gz_bridge = Node(
         package="ros_gz_bridge",
@@ -54,23 +52,35 @@ def generate_launch_description():
         ],
     )
 
-    # DT-10: sim counterpart to steer_servo_node. Maps /teleop/direct_steer
-    # ([FL,FR,BL,BR] = [angle,angle,-angle,-angle]) directly onto the
-    # steering_position_controller (real servo steering path, same axis
-    # kinematics as the real robot) and arbitrates -- as on the real robot --
-    # against the swerve-derived steering (/swerve_cmd_joint_states) for the
-    # Nav2/autonomous path. Replaces the earlier angular.z workaround steering
-    # (swerve IK), which produced diverging angles on left/right rotation
-    # ("fighting each other"). joint_command_bridge no longer publishes
-    # steering for this (publish_steering=false in
-    # joint_command_bridge.sim.yaml), only wheels.
-    sim_steer_bridge = Node(
-        package="gripperx_control",
-        executable="sim_steer_bridge",
-        name="sim_steer_bridge",
+    # SAME FILTER AS THE REAL ROBOT, on purpose. The bridge delivers /scan_raw
+    # and this republishes /scan with returns below the floor removed. In the
+    # twin there is nothing to remove — the simulated LD06 does not see the arm —
+    # so it is a pass-through here. It runs anyway because a filter present on
+    # one platform and absent on the other is exactly the kind of sim/real split
+    # that cost this project the axis-mirror confusion: every consumer should
+    # read a topic that was produced the same way on both machines.
+    scan_range_filter = Node(
+        package="gripperx_sensors",
+        executable="scan_range_filter",
+        name="scan_range_filter",
         output="screen",
-        parameters=[{"use_sim_time": True}],
+        parameters=[
+            {"input_topic": "/scan_raw"},
+            {"output_topic": "/scan"},
+            {"min_range": 0.10},
+            {"use_sim_time": True},
+        ],
     )
+
+    # sim_steer_bridge IS GONE FROM THE ACTIVE PATH — DT-10 / OP-23 / A2-b.
+    # It was the sim's duplicate of arbitration point A2, and its only output
+    # topic was /steering_position_controller/commands. That topic ceases to
+    # exist with this rebuild (§3.1.2), so the node cannot survive the switch
+    # even in principle. A2 now lives in swerve_controller and is therefore ONE
+    # implementation shared by real and sim (§3.1.6, no code fork) instead of the
+    # two copies it was (steer_servo_node L648 + sim_steer_bridge L161).
+    # DT-10's requirement stands; its implementation does not.
+    # The file stays on disk until after hardware sign-off.
 
     # DT-3/DT-4 (M1/M2): teleop_mux has so far been completely missing from
     # the sim -- on the real robot it's only started via
@@ -108,10 +118,15 @@ def generate_launch_description():
                 choices=["keyboard", "controller", "autonomous"],
             ),
             SetUseSimTime(True),
-            spawn_robot,
-            control,
+            # gz_bridge FIRST in the list: it is the /clock source (gz_bridge.yaml
+            # bridges gz Clock -> /clock GZ_TO_ROS), and spawn_robot's
+            # clock_ready_gate blocks the controller spawners until that clock
+            # ADVANCES (§3.1.7 / D17 part (a)). List order is not itself a
+            # guarantee — the gate is — but starting the source first means the
+            # gate is not paying for it.
             gz_bridge,
-            sim_steer_bridge,
+            scan_range_filter,
+            spawn_robot,
             teleop_mux,
         ]
     )

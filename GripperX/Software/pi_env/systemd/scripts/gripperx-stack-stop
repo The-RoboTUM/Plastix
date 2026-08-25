@@ -1,0 +1,877 @@
+#!/bin/bash
+# ============================================================================
+#  gripperx-stack-stop  --  SEQUENCE COMPLETE, NOT EXECUTABLE, NOT DEPLOYED
+# ============================================================================
+#  STATUS 2026-08-25. Every phase is implemented; there are no stubs, no
+#  placeholder returns and no "intended content" comments standing in for code.
+#  The file is STILL named *.proposal and STILL non-executable, and that is now
+#  a DEPLOYMENT decision rather than a technical gap: inside this file the only
+#  remaining steps are `chmod +x` and the rename to `gripperx-stack-stop.sh`.
+#  Everything else that is still owed is OUTSIDE this file -- see WHAT REMAINS
+#  at the end of this header. Do not install it before that list is worked off.
+#
+#  WHY ONE SCRIPT (SR-12 rev 3 / S2): the sequence exists in exactly ONE place
+#  and has four callers -- the operator CLI, gripperx-bringup.service's
+#  ExecStop=, the launch-side on_shutdown handler, and later the HWR-40 GPIO
+#  button. A caller that reimplements the sequence is a defect. The three
+#  operator commands are therefore MODES of this script, not scripts of their
+#  own; that is what makes the button and the CLI one path and not two.
+#
+#      gripperx-stop      -> gripperx-stack-stop --mode=stop      (stack down, Pi up)
+#      gripperx-restart   -> gripperx-stack-stop --mode=restart   (stack down+up, Pi up)
+#      gripperx-shutdown  -> gripperx-stack-stop --mode=halt      (stack down, Pi halts)
+#      HWR-40 button SHORT-> gripperx-stack-stop --mode=restart   (identical path)
+#      HWR-40 button LONG -> gripperx-stack-stop --mode=halt      (identical path)
+#
+#  Install those three as SYMLINKS to this script: dispatch on $0 is implemented
+#  in main(), so the wrappers carry no logic at all. An explicit --mode= still
+#  wins over the name, which is what makes the button and the CLI the same path.
+#
+#  The button is gripperx-button-daemon.py (this directory) + the
+#  gripperx-button.service unit. It measures press duration and picks the mode;
+#  it does NOT carry a sequence of its own. Its short-press path ships DISARMED
+#  until the SR-1 restart test in SR-12 §S4 has actually been run and passed.
+#
+#  --from-unit -- THE FOURTH CALLER NEEDS ITS OWN SHAPE, AND THIS IS NOT AN
+#  EXCEPTION TO "ONE SCRIPT". Called from gripperx-bringup.service's ExecStop=,
+#  the script runs INSIDE the stop job of the very unit phase 3 would stop. A
+#  plain `systemctl stop gripperx-bringup.service` from there enqueues a job
+#  against a transaction that is waiting for this process to exit -- it blocks
+#  until TimeoutStopSec expires and the cgroup is SIGKILLed, i.e. it converts a
+#  clean teardown into the pathological one. So --from-unit runs PHASE 1 ONLY
+#  and touches no unit at all: systemd already owns the unit lifecycle in that
+#  context (Requires=+After= stop navigation and mapping ahead of bringup, and
+#  KillMode=control-group empties the cgroup afterwards). Phase 1 is precisely
+#  the part systemd cannot do for us -- the ORDERED, COMMANDED stop that HWR-40
+#  criterion 6 requires -- which is the whole reason ExecStop exists in SR-12 S2.
+#
+# ---------------------------------------------------------------------------
+#  FORMER BLOCKERS -- ALL CLEARED. Re-verified 2026-08-25 in THIS worktree
+#  (Software/ros2/src), not taken from commit messages or from older line refs.
+# ---------------------------------------------------------------------------
+#  D-SD1  CLOSED. Committed AND hardware-deployed since 2026-08-19 (17cb6d8) --
+#         not "fixed in the tree, not yet deployed", which is what this header
+#         used to say. GripperXInterface::on_deactivate() once called
+#         publish_zero_commands(), which assigns 0.0 to all 8 joints over a
+#         steering-first layout, so every controller deactivation published
+#         steering 0 rad and steer_servo_node drove four live servos to centre:
+#         the ordered shutdown PERFORMING the movement it exists to prevent.
+#         Both lifecycle hooks now call publish_stop_commands() -- wheels to
+#         zero, steering held at its last commanded angle:
+#             gripperx_interface.cpp  L365  on_activate
+#             gripperx_interface.cpp  L506  on_deactivate
+#         publish_zero_commands() still EXISTS (L903) but is deliberately
+#         UNUSED and carries a comment (L897-901) forbidding new call sites.
+#         (a) WAS: "on_activate() still calls publish_zero_commands(), so
+#             bringing controllers back up is still a centring move." NO LONGER
+#             TRUE -- the NFR-10 track fixed that half too; see L365 above.
+#             Controller activation is now motion-free by construction: SR-14
+#             item 1, and SwerveController::on_activate (L607-624) deliberately
+#             writes NOTHING, leaving the measurement the hardware component
+#             seeded.
+#         (b) WAS: "swerve_cmd_node still resolves a zero twist to steering
+#             0 rad." NO LONGER REACHABLE on the bringup path, for two
+#             independent reasons, either of which alone would be enough:
+#             * control.launch.py is NOT included in real_robot.launch.py any
+#               more (removal + reasoning at real_robot.launch.py L305-322), so
+#               swerve_cmd_node and joint_command_bridge are not launched at
+#               all. They stay on disk only so one revert restores the old chain.
+#             * its successor implements the opposite rule. swerve_controller.cpp
+#               L1442 computes cmd_is_zero with an EXACT zero test
+#               (linear.x == 0.0 && linear.y == 0.0 && angular.z == 0.0), and
+#               L1503 takes the `if (cmd_stale || cmd_is_zero)` branch, which
+#               commands the wheels to zero and writes NO steering: in that
+#               branch write_steering is false unless a fresh /teleop/direct_steer
+#               override is present (the only place it is set true is L1477).
+#               On_deactivate (L629-644) is the same rule again -- wheel zeros
+#               written, steering untouched on purpose.
+#         => Phase 1 is implementable against the deployed robot, and the
+#            ordered controller shutdown is motion-free. It is IMPLEMENTED below.
+#
+#  Q-SD3  THE SOLE REMAINING OPEN VALUE of the SR-12 §S5 register, and it is
+#         open because it is BLOCKED ON WORK, not on a decision: KillMode /
+#         TimeoutStopSec / KillSignal / ExecStop shape on gripperx-bringup.service
+#         cannot be measured until the Pi rollout has happened (including
+#         building gripperx_behaviors -- without it no managed node reaches
+#         `active` and the number would describe a stack that no longer starts
+#         that way). It is BEING MEASURED TODAY. The twin's figure must not be
+#         substituted for it in either direction. The interim contract is
+#         implemented in the unit file; the end state is still to be chosen.
+#         Binding order of work (SR-12 §S4): Pi rollout -> measure Q-SD3 ->
+#         wire ExecStop -> deploy the button daemon -> run the SR-1 restart test
+#         -> only then may Mode R be armed.
+#
+#  Q-SD1 / Q-SD2 / Q-SD4 / Q-SD5  ALL CLOSED BY USER DECISION 2026-08-19. Kept
+#  here only because the decisions shape the sequence below:
+#  Q-SD1/Q-SD2  ESP32 teardown = OPTION 0. No new firmware interface, and there
+#         is no bounded ESP wait to set. Stop the micro-ROS agent and let the
+#         ESP's own ping timeout fire its destroyEntities() (main.cpp L179),
+#         which calls stopMotors() FIRST and then sets
+#         rmw_uros_set_context_entity_destroy_session_timeout(ctx, 0) -- it does
+#         NOT wait for an agent acknowledgement, so the teardown is local, fast
+#         and autonomous, and reconnect is autonomous too (on !ros_ok the ESP
+#         pings every 50 ms and calls startRos()).
+#         => THERE IS NO BLOCKING ESP WAIT IN THE HALT PATH. Phase 2 is gone as
+#         a wait. Either the ESP keeps power and finishes well inside the Pi's
+#         own halt, or it loses power at Q1 and the next cold boot is clean
+#         anyway. What remains is a MINIMUM DWELL, restart path only -- see
+#         AGENT_RESTART_DWELL_SEC below.
+#  Q-SD4  HWR-40 acceptance criterion 3 = 10 consecutive clean shutdown/
+#         power-cycle cycles with no filesystem-repair or journal-recovery event
+#         in the following boot logs. THE SERIES RESTARTS FROM ZERO ON ANY
+#         FAILURE. Acceptance test only -- not a blocker for this script.
+#  Q-SD5  Steering (and arm) end state = LEAVE IT LIMP AT ITS LAST ANGLE / LAST
+#         POSE (v1). No parking move, no stowing move and no centring anywhere in
+#         the shutdown path. See the operator note in phase 3.
+#  OP-20 B  Mode restart has a HARD PRECONDITION: center_on_startup must default
+#         to false, otherwise every restart centres four steering servos.
+#         IMPLEMENTED and HARDWARE-VERIFIED 2026-08-19 (cfaabe5; it adopted a
+#         genuinely off-centre pose of 3.43 / -2.73 / 0.35 / 2.90 deg instead of
+#         centring it). The guard on mode restart in main() therefore no longer
+#         exists because the code is unsafe -- it exists because the SR-1
+#         restart TEST has not been run yet, and a restart is a motion trigger
+#         until that test has passed.
+#
+# ---------------------------------------------------------------------------
+#  WHAT REMAINS BEFORE THIS CAN BE INSTALLED (nothing on this list is code)
+# ---------------------------------------------------------------------------
+#   1. Q-SD3 measured on the Pi (in progress 2026-08-25).
+#   2. `chmod +x` + rename to gripperx-stack-stop.sh; install to
+#      /usr/local/bin/gripperx-stack-stop (the path gripperx-button-daemon.py
+#      already expects) plus the three symlinks named above.
+#   3. Privilege: this runs as `ubuntu`, which can neither stop units nor halt
+#      the Pi. It needs the narrow sudo grant (or the root-owned unit) that
+#      gripperx-button.service documents. UNRESOLVED IN THIS FILE ON PURPOSE:
+#      every systemctl call below is written bare, so that the privilege
+#      decision is made once, visibly, at install time and not smuggled in here.
+#   4. ExecStop= on gripperx-bringup.service -- AFTER Q-SD3, and as
+#      `--mode=stop --from-unit`. Wiring it before this file is installed would
+#      point ExecStop at a non-existent binary and put the unit into `failed`
+#      on every ordinary stop, which is strictly worse than having no ExecStop.
+#   5. The SR-1 restart test (robot on blocks, explicit per-test user approval).
+#      Until it passes, --mode=restart stays behind --approve-motion and the
+#      button's short press stays disarmed.
+#
+# ---------------------------------------------------------------------------
+set -euo pipefail
+
+# --- ROS environment ---------------------------------------------------------
+# ADDED 2026-08-25, from a measurement on the real robot, not from reading.
+# phase 1's probe is `python3 -c 'import ros2controlcli'`. This script MUST run
+# under sudo -- it stops units and halts the Pi -- and sudo here is env_reset +
+# secure_path, so the ROS environment is absent and that import fails. Under
+# systemd's ExecStop= it is absent for the same reason. The probe then reports
+# `no-cli` and the script tells the operator it is "an INSTALL defect on this
+# machine ... HWR-40 crit. 6 NOT met".
+#
+# IT IS NOT AN INSTALL DEFECT. Measured 2026-08-25: ros-jazzy-ros2controlcli
+# 4.45.2 IS installed; sourcing the environment makes the import succeed, ros2
+# appear in PATH, and `ros2 control list_controllers` answer with the live
+# controllers. Verified under this file's own `set -euo pipefail`.
+#
+# So the script brings its own environment, exactly as every gripperx-*.sh does.
+# set +u around the sourcing: the ROS setup scripts dereference unset variables
+# and would abort under `set -u`. The sourcing is skipped when the environment is
+# already present, so an operator running this from a sourced shell is unaffected.
+if ! python3 -c 'import ros2controlcli' >/dev/null 2>&1; then
+    set +u
+    if [ -f /opt/ros/jazzy/setup.bash ]; then . /opt/ros/jazzy/setup.bash; fi
+    if [ -f /home/ubuntu/ws/Software/ros2/install/setup.bash ]; then
+        . /home/ubuntu/ws/Software/ros2/install/setup.bash
+    fi
+    set -u
+fi
+# DDS settings must match every other gripperx unit or the controller_manager is
+# simply not in the graph -- rationale in gripperx-bringup.sh.
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-20}"
+export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+export FASTRTPS_DEFAULT_PROFILES_FILE="${FASTRTPS_DEFAULT_PROFILES_FILE:-/home/ubuntu/fastdds_udp_only.xml}"
+# --- end ROS environment -----------------------------------------------------
+
+MODE=""          # stop | restart | halt
+APPROVE_MOTION=0 # see the SR-1 guard in main()
+FROM_UNIT=0      # ExecStop= caller: phase 1 only, no unit actions (see header)
+
+# Unit order comes from documentation/DEPLOYMENT.md §1 (binding), not invented here.
+STOP_ORDER=(gripperx-navigation gripperx-mapping gripperx-bringup gripperx-agent)
+START_ORDER=(gripperx-agent gripperx-bringup gripperx-mapping gripperx-navigation)
+
+# Wall-clock ceilings for the ros2 CLI calls in phase 1 and the docker/daemon
+# calls in phase 4. EVERY external call in this script is bounded, because a
+# shutdown that hangs is a defect -- the same principle the ESP32 rule states
+# (HWR-40 criterion 6: the watchdog is the backstop, never the mechanism; a stop
+# path that never returns hands the job to exactly that backstop).
+ROS2_CALL_TIMEOUT_SEC="${ROS2_CALL_TIMEOUT_SEC:-8}"
+# `timeout` sends SIGTERM first; a wedged ros2 CLI process can ignore it, so the
+# escalation to SIGKILL is part of the bound rather than a nicety.
+CALL_KILL_AFTER_SEC="${CALL_KILL_AFTER_SEC:-3}"
+# docker stop can legitimately take ~40 s (DEPLOYMENT.md §1 step 2) -- that is
+# slow, not hung, so it gets its own, larger ceiling.
+DOCKER_STOP_TIMEOUT_SEC="${DOCKER_STOP_TIMEOUT_SEC:-60}"
+
+# The hardware boundary. Phase 1's proof that the commanded stop went out is
+# read here and nowhere else (SR-12 §S4: "commanded zero observed on
+# /hw/joint_commands with steering values unchanged (not zero)").
+JOINT_COMMANDS_TOPIC="${JOINT_COMMANDS_TOPIC:-/hw/joint_commands}"
+# Deactivation order is normative (SR-12 §S3 phase 1 item 2): motion-producing
+# controller first, feedback last. swerve_controller now carries the ENTIRE
+# drive path, so its deactivation IS the whole commanded-motion stop -- there is
+# no second controller behind which a command could survive.
+CONTROLLER_STOP_ORDER=(swerve_controller joint_state_broadcaster)
+
+log() { echo "[stack-stop] $*"; logger -t gripperx-stack-stop "$*" 2>/dev/null || true; }
+
+# Bounded external call. Usage: bounded <seconds> <cmd> [args...]
+# Exit 124 means the ceiling was hit; callers distinguish that from a real
+# failure, because "wedged" and "absent" need different words in the log.
+bounded() {
+    local secs="$1"
+    shift
+    timeout --kill-after="$CALL_KILL_AFTER_SEC" "$secs" "$@"
+}
+
+# --- phase 1: stop commanding motion (HWR-40 crit. 6 / SR-12 §S3 phase 1) ---
+#
+# CALL BUDGET -- deliberately small, and NFR-2 is the reason. Every `ros2` CLI
+# call creates a DDS participant against a live stack, and that traffic is
+# itself a measured load problem: it correlates with controller_manager write()
+# overruns and with spawner timeouts (DEPLOYMENT.md §2.1). So this phase makes
+# AT MOST FIVE ros2 calls and usually fewer:
+#   1x  ros2 control list_controllers      (one probe -- the state of the whole
+#                                           controller set, so the deactivation
+#                                           calls below are never speculative)
+#   0-2x ros2 control switch_controllers   (only for a controller that is really
+#                                           loaded AND really active)
+#   0-2x ros2 topic echo --once            (the crit. 6 proof, one sample either
+#                                           side of the deactivation; skipped
+#                                           entirely when the probe already showed
+#                                           there was nothing commanding motion)
+# Nothing here polls, nothing here loops, and nothing here runs `ros2 node list`
+# or `ros2 topic list`. Silencing the sources in step 1 uses systemctl, which
+# costs no DDS traffic at all.
+#
+# NOT MEMBERS OF ANY SET WE WAIT ON: the two controller SPAWNERS
+# (joint_state_broadcaster L255, swerve_controller L284 in real_robot.launch.py)
+# are ONE-SHOT processes, chained by event handlers, and they have exited long
+# before any shutdown runs. This phase talks to the controller_manager about
+# CONTROLLERS; it never looks for a spawner process, never waits for one and
+# never reports one as failed. A sequence that does is wrong (SR-12 §S3 phase 3
+# item 2).
+#
+# RETURN CONTRACT:
+#   0 -- the phase completed. This INCLUDES the degraded stack it exists to be
+#        able to clean up: no controller_manager, or a respawned one with no
+#        controllers loaded, or a controller already inactive. None of those is
+#        an error, and none of them leaves motion commanded.
+#   1 -- controllers WERE active and were deactivated, but the commanded zero
+#        could not be observed on the wire. The sequence continues (main() logs
+#        it), but HWR-40 criterion 6 is then NOT demonstrated and the log says
+#        so in as many words.
+phase1_stop_commanding() {
+    phase1_silence_sources
+
+    # Sets PROBE_STATE / PROBE_LISTING. Deliberately NOT `x="$(probe ...)"`: a
+    # command substitution is a subshell, so a listing written there would be
+    # discarded and the deactivation below would run blind.
+    phase1_probe_controllers
+
+    case "$PROBE_STATE" in
+        no-cli)
+            log "phase 1: ros2controlcli is not installed -- cannot deactivate controllers"
+            log "         through the supported interface. NOT treating this as 'nothing was"
+            log "         running': it is an INSTALL defect on this machine, and the drive is"
+            log "         left to the ESP32 CMD_TIMEOUT_MS backstop. HWR-40 crit. 6 NOT met."
+            return 1
+            ;;
+        unreachable)
+            log "phase 1: no controller_manager answered within ${ROS2_CALL_TIMEOUT_SEC}s --"
+            log "         no controller can be commanding the drive, so there is nothing to"
+            log "         deactivate. NORMAL outcome, not an error (SR-12 §S3 phase 3 1(b))."
+            return 0
+            ;;
+    esac
+
+    # A respawned ros2_control_node comes back with NO controllers loaded and the
+    # one-shot spawners are long gone (SR-12 §S3 phase 3 item 1(b)). That is the
+    # single most likely state in which this script is called at all, so it must
+    # SUCCEED on it rather than report a failure it cannot do anything about.
+    if [[ -z "$PROBE_LISTING" ]]; then
+        log "phase 1: controller_manager is up with NO controllers loaded (respawned"
+        log "         ros2_control_node). Nothing to deactivate, nothing commanding the"
+        log "         drive. NORMAL outcome, not an error."
+        return 0
+    fi
+
+    # Decide what to deactivate BEFORE touching anything, from the single probe.
+    # Two reasons this is a separate pass and not folded into the loop:
+    #  * "controller not found" and "already inactive" are NORMAL outcomes, so
+    #    they are resolved by reading state, never by letting a call fail;
+    #  * if nothing is to be deactivated there is nothing to prove either, and
+    #    the before-sample below can be skipped entirely (NFR-2 call budget).
+    local -a to_deactivate=()
+    local name state
+    for name in "${CONTROLLER_STOP_ORDER[@]}"; do
+        state="$(printf '%s\n' "$PROBE_LISTING" | awk -v n="$name" '$1 == n { print $NF; exit }')"
+        if [[ -z "$state" ]]; then
+            # "Controller not found" is a NORMAL outcome, by requirement.
+            log "phase 1: $name not loaded -- skipped (NORMAL, not an error)"
+        elif [[ "$state" != "active" ]]; then
+            log "phase 1: $name already '$state' -- skipped (NORMAL, not an error)"
+        else
+            to_deactivate+=("$name")
+        fi
+    done
+
+    if [[ "${#to_deactivate[@]}" -eq 0 ]]; then
+        log "phase 1: no controller was active -- nothing was commanding motion, so no"
+        log "         commanded stop was performed and none was needed. HWR-40 crit. 6 is"
+        log "         not at stake here. Skipping the /hw/joint_commands sample so the"
+        log "         stop path adds no DDS traffic it has no use for (NFR-2)."
+        return 0
+    fi
+
+    # The before-sample MUST be taken here -- before the first deactivation --
+    # or the "steering unchanged" half proves nothing: two post-deactivation
+    # samples would agree with each other even if the deactivation had just
+    # centred all four servos, which is precisely the D-SD1 defect.
+    local before after
+    before="$(phase1_sample_joint_commands)" || before=""
+    if [[ -z "$before" ]]; then
+        log "phase 1: WARN no sample of $JOINT_COMMANDS_TOPIC before deactivation --"
+        log "         the 'steering held' half cannot be proven on this run."
+    fi
+
+    local rc
+    for name in "${to_deactivate[@]}"; do
+        log "phase 1: deactivating $name"
+        rc=0
+        bounded "$ROS2_CALL_TIMEOUT_SEC" \
+            ros2 control switch_controllers --deactivate "$name" >/dev/null 2>&1 || rc=$?
+        if [[ "$rc" -eq 124 ]]; then
+            log "phase 1: WARN deactivating $name timed out after ${ROS2_CALL_TIMEOUT_SEC}s"
+            log "         (controller_manager wedged). Continuing -- a stop path that waits"
+            log "         on a wedged CM is the defect, not the cure."
+        elif [[ "$rc" -ne 0 ]]; then
+            log "phase 1: WARN deactivating $name returned $rc. Continuing."
+        fi
+    done
+
+    after="$(phase1_sample_joint_commands)" || after=""
+    phase1_verify_commanded_zero "$before" "$after"
+}
+
+# Step 1 of phase 1 -- silence the command sources BEFORE touching controllers.
+# Deactivating a controller while a source still publishes re-arms the path the
+# moment anything re-activates (SR-12 §S3 phase 1 item 1).
+#
+# WHAT ACTUALLY PUBLISHES, on the service path, verified in the tree rather than
+# listed from memory:
+#  * Nav2 -- planner/controller/behaviour servers publish /nav/cmd_vel_raw ->
+#    velocity_smoother -> /teleop/autonomous/cmd_vel -> teleop_mux -> /cmd_vel
+#    (gripperx_planning/launch/navigation.launch.py L58-77). It is the ONLY
+#    source of a non-zero twist on the service path, and it lives entirely in
+#    gripperx-navigation.service, so stopping that unit silences it. systemctl,
+#    not ros2 -- no DDS cost.
+#  * The FR-12 external goal link (gripperx_external/octopus_link_node) has NO
+#    systemd unit and is not on the bringup path. It publishes GOALS, never
+#    /cmd_vel: it can only reach the drive through Nav2, so it is silenced by
+#    the same step and needs no action of its own.
+#  * teleop_mux_node is NOT silenced, and that is deliberate rather than an
+#    omission. It cannot be stopped without stopping bringup (it is a child of
+#    that launch), and it must not be: when no source is fresh it publishes a
+#    default-constructed, all-zero Twist at 20 Hz, and under swerve_controller's
+#    exact-zero rule (cmd_is_zero, swerve_controller.cpp L1442/L1503) an exact
+#    zero twist means wheels to zero and NO steering write. The mux at idle is
+#    therefore a STOP source, not a re-arm risk. Its mode is not changed either:
+#    that would mean publishing on /teleop/set_mode, i.e. making the stop path a
+#    writer on a command topic for no gain.
+phase1_silence_sources() {
+    if [[ "$FROM_UNIT" -eq 1 ]]; then
+        # In ExecStop context systemd has already stopped navigation and mapping
+        # ahead of bringup (Requires=+After=). Enqueueing a unit job from inside
+        # a running stop transaction risks blocking until TimeoutStopSec, so
+        # this reports and does not act. See the --from-unit note in the header.
+        if systemctl is-active --quiet gripperx-navigation.service; then
+            log "phase 1: WARN gripperx-navigation still active inside an ExecStop run --"
+            log "         NOT stopping it from here (deadlock risk). Nav2 may still be"
+            log "         publishing while the controllers are deactivated."
+        else
+            log "phase 1: Nav2 already down (systemd stopped it ahead of bringup)"
+        fi
+        return 0
+    fi
+
+    if systemctl is-active --quiet gripperx-navigation.service; then
+        log "phase 1: stopping gripperx-navigation (the only non-zero /cmd_vel source)"
+        systemctl stop gripperx-navigation.service \
+            || log "phase 1: WARN stop gripperx-navigation returned non-zero"
+    else
+        log "phase 1: gripperx-navigation not active -- no Nav2 source to silence"
+    fi
+}
+
+# One probe, one call. Sets PROBE_STATE to ok | empty | unreachable | no-cli and
+# PROBE_LISTING to the "<name> <type> <state>" rows. Globals rather than stdout,
+# so the caller does not have to run it in a subshell (which would swallow the
+# listing) and so log lines from here could never be mistaken for data.
+PROBE_STATE=""
+PROBE_LISTING=""
+phase1_probe_controllers() {
+    PROBE_STATE=""
+    PROBE_LISTING=""
+
+    # Distinguishing "no controller_manager" from "no ros2controlcli on this
+    # machine" matters: the first is a normal degraded stack, the second is an
+    # install defect that must not be silently reported as "nothing was running".
+    # The probe is a local import -- no DDS participant, no discovery, no cost.
+    if ! python3 -c 'import ros2controlcli' >/dev/null 2>&1; then
+        PROBE_STATE="no-cli"
+        return 0
+    fi
+
+    local raw=""
+    if ! raw="$(bounded "$ROS2_CALL_TIMEOUT_SEC" ros2 control list_controllers 2>/dev/null)"; then
+        PROBE_STATE="unreachable"
+        return 0
+    fi
+
+    # Keep only real "<name> <type> <state>" rows; the CLI prints nothing else on
+    # a healthy call, but an error banner on stdout must not become a controller.
+    PROBE_LISTING="$(printf '%s\n' "$raw" | awk 'NF >= 3 && $2 ~ /\// { print }')"
+    if [[ -z "$PROBE_LISTING" ]]; then
+        PROBE_STATE="empty"
+    else
+        PROBE_STATE="ok"
+    fi
+}
+
+# Step 3 of phase 1 -- prove the commanded zero went out, HWR-40 criterion 6.
+# The drive must come to rest through the COMMANDED path; the ESP32's
+# CMD_TIMEOUT_MS is the backstop, never the mechanism, and a run that came to
+# rest by that timeout is a FAILED acceptance of criterion 6 (SR-12 §S4).
+#
+# Why a sample of /hw/joint_commands is the right evidence and a journal grep is
+# not: neither SwerveController::on_deactivate nor
+# GripperXInterface::publish_stop_commands logs anything, so there is no log line
+# to read. The wire is the only place the commanded zero is observable.
+#
+# Why two samples, one on each side of the deactivation: criterion 6 has TWO
+# halves and one sample can only prove one.
+#   (i)  wheels commanded to zero  -- the stop itself
+#   (ii) steering values UNCHANGED, not zero -- Q-SD5 / OP-24: the shutdown must
+#        not centre. A single after-sample cannot tell a held angle from a
+#        coincidentally-zero one, and two samples taken on the SAME side of the
+#        deactivation would agree with each other even if the deactivation had
+#        just centred all four servos. The before-sample is therefore taken by
+#        the caller before the first switch_controllers call, and that ordering
+#        is what makes "held" provable at all. One extra one-shot echo is a cheap
+#        price for the only hard evidence this script can produce about the
+#        P0-safety property this whole file exists for.
+# NO TOLERANCE is applied to either half: the comparison is exact, matching the
+# controller's own exact-zero rule and the standing epsilon prohibition. A
+# difference reported here is a real finding, not rounding.
+phase1_verify_commanded_zero() {
+    local before="$1"
+    local after="$2"
+
+    if [[ -z "$after" ]]; then
+        log "phase 1: NO sample of $JOINT_COMMANDS_TOPIC after deactivation."
+        log "         HONEST STATEMENT OF WHAT STOPS THE DRIVE: the commanded path could"
+        log "         NOT be demonstrated. What actually brings the wheels to rest is the"
+        log "         ESP32's CMD_TIMEOUT_MS (~1 s) backstop. HWR-40 crit. 6 NOT met on"
+        log "         this run -- see SR-12 §S4 negative criterion."
+        return 1
+    fi
+
+    local verdict
+    verdict="$(phase1_compare_samples "$before" "$after")"
+    case "$verdict" in
+        held-and-zero)
+            log "phase 1: commanded zero OBSERVED on $JOINT_COMMANDS_TOPIC -- wheels 0.0,"
+            log "         steering unchanged. The drive was stopped through the COMMANDED"
+            log "         path, not by the ESP32 CMD_TIMEOUT_MS backstop. HWR-40 crit. 6 met."
+            log "         steering before: $(printf '%s' "$before" | cut -d' ' -f1-4)"
+            log "         steering after : $(printf '%s' "$after" | cut -d' ' -f1-4)"
+            return 0
+            ;;
+        zero-only)
+            log "phase 1: wheels commanded to 0.0 on $JOINT_COMMANDS_TOPIC -- the commanded"
+            log "         stop went out (HWR-40 crit. 6 met, NOT the CMD_TIMEOUT_MS backstop),"
+            log "         but the 'steering held' half is unproven on this run."
+            return 0
+            ;;
+        steering-moved)
+            log "phase 1: *** commanded zero observed, BUT THE STEERING COMMAND CHANGED ***"
+            log "         before: $(printf '%s' "$before" | cut -d' ' -f1-4)"
+            log "         after : $(printf '%s' "$after" | cut -d' ' -f1-4)"
+            log "         This is the D-SD1 signature (a centring command on deactivation)."
+            log "         Q-SD5 says LIMP AT THE LAST ANGLE -- the shutdown must not move the"
+            log "         steering. Report this before running the sequence again."
+            return 1
+            ;;
+        not-zero)
+            log "phase 1: *** the wheel commands on $JOINT_COMMANDS_TOPIC are NOT zero after"
+            log "         deactivation ***: $(printf '%s' "$after" | cut -d' ' -f5-8)"
+            log "         The commanded stop did NOT go out. The drive will be stopped by the"
+            log "         ESP32 CMD_TIMEOUT_MS backstop -- a FAILED HWR-40 crit. 6."
+            return 1
+            ;;
+        *)
+            log "phase 1: WARN could not read $JOINT_COMMANDS_TOPIC as 8 values"
+            log "         (got: '$after'). Commanded stop UNPROVEN; the ESP32 CMD_TIMEOUT_MS"
+            log "         backstop is what stops the drive. HWR-40 crit. 6 NOT met."
+            return 1
+            ;;
+    esac
+}
+
+# One bounded one-shot subscription. Prints "s0 s1 s2 s3 w0 w1 w2 w3" (the
+# publisher's layout: four steering slots first, then four wheel slots) or
+# nothing. The parser accepts both block and flow YAML so it does not depend on
+# a ros2cli formatting default.
+phase1_sample_joint_commands() {
+    local raw
+    if ! raw="$(bounded "$ROS2_CALL_TIMEOUT_SEC" \
+            ros2 topic echo --once "$JOINT_COMMANDS_TOPIC" 2>/dev/null)"; then
+        return 1
+    fi
+    printf '%s\n' "$raw" | awk '
+        started == 0 && /^data:/ {
+            started = 1
+            s = $0
+            sub(/^data:/, "", s)
+            buf = buf " " s
+            next
+        }
+        started == 1 {
+            if ($0 ~ /^[[:space:]]*-[[:space:]]/ || $0 ~ /^[[:space:]]*-?[0-9]/ ||
+                $0 ~ /^[[:space:]]*-$/ || $0 ~ /^[[:space:]]*[][,]/) {
+                buf = buf " " $0
+                next
+            }
+            exit
+        }
+        END {
+            gsub(/[][,]/, " ", buf)
+            n = split(buf, tok, /[[:space:]]+/)
+            out = ""
+            c = 0
+            for (i = 1; i <= n; i++) {
+                if (tok[i] ~ /^-?([0-9]+\.?[0-9]*|\.[0-9]+)([eE][-+]?[0-9]+)?$/) {
+                    out = out (c > 0 ? " " : "") tok[i]
+                    c++
+                }
+            }
+            if (c > 0) print out
+        }'
+}
+
+# Exact comparison, no tolerance (see phase1_verify_commanded_zero).
+# Prints one of: held-and-zero | zero-only | steering-moved | not-zero | unreadable
+phase1_compare_samples() {
+    awk -v before="$1" -v after="$2" '
+        BEGIN {
+            nb = split(before, b, " ")
+            na = split(after,  a, " ")
+            if (na != 8) { print "unreadable"; exit }
+            for (i = 5; i <= 8; i++) {
+                if (a[i] + 0 != 0) { print "not-zero"; exit }
+            }
+            if (nb != 8) { print "zero-only"; exit }
+            for (i = 1; i <= 4; i++) {
+                if (b[i] + 0 != a[i] + 0) { print "steering-moved"; exit }
+            }
+            print "held-and-zero"
+        }'
+}
+
+# --- phase 2: orderly ESP32 teardown (HWR-40 crit. 8) ---------------------
+# RESOLVED as Option 0: there is no request to send and nothing to wait for. The
+# teardown is triggered simply by the agent going away in phase 3, and the ESP
+# runs destroyEntities() on its own. So this phase does not exist as a step any
+# more -- it is a PROPERTY of stopping the agent, and it is restart HYGIENE, not
+# a stop mechanism (HWR-40 mechanism table row 2).
+#
+# The one piece of ESP-derived timing that survives, RESTART MODE ONLY: a
+# minimum dwell between stopping the agent and starting the new one. Without it
+# the new agent can appear before the ESP has noticed the old one is gone --
+# ros_ok is still true, the ESP keeps the stale session, and that is exactly the
+# criterion-8 failure this is supposed to avoid.
+#
+# DERIVED from the firmware, not guessed (Software/microros/firmware/src/main.cpp):
+#     PING_INTERVAL_MS        1000 ms   L114  -- worst case the ESP has just
+#                                              pinged when the agent disappears,
+#                                              so it waits a full interval
+#     rmw_uros_ping_agent(200, 1)  200 ms L278 -- that ping then blocks until it
+#                                              times out
+#     rclc_executor_spin_some(100 ms)     L285 -- the loop can be inside this
+#                                              slice when the interval elapses,
+#                                              delaying the ping check
+#     -------------------------------------------------------------------
+#     worst case                1300 ms
+# 1.5 s = 1300 ms + margin. PROVISIONAL: TO-BENCH-CONFIRM once the Pi is
+# reachable (watch for the ESP's own teardown log, then start the agent).
+# THOSE THREE FIRMWARE CONSTANTS AND THIS VALUE ARE ONE VALUE IN TWO PLACES and
+# must be changed together -- if the firmware timing moves, this dwell breaks
+# SILENTLY (SR-12 §S3 phase 2, standing risk of Option 0).
+# ⚠ BENCH-CONFIRMED 2026-08-25 — AND 1.5 s FAILED. The line above asked for
+# exactly this confirmation; here it is. A Mode R short press left
+# gripperx-agent.service in state `failed` with no container and
+# /hw/joint_states silent, while steering kept working (different path, servo
+# bus) so it read as a drive fault rather than an agent fault. A 10 s dwell plus
+# `systemctl reset-failed` recovered it.
+#
+# RAISED 1.5 -> 5.0. The evidence brackets the right value loosely: 1.5 failed,
+# 10 worked, and nothing in between was tried. 5.0 is 3.8x the 1300 ms worst
+# case rather than 1.15x.
+#
+# WHY ERR GENEROUS RATHER THAN TIGHT, which is the whole argument: this dwell is
+# a FLOOR inside a restart that takes about 130 s to bring the stack back
+# (measured three times on 2026-08-25: bringup at 68 s, mapping 90 s,
+# navigation 105 s, agent 133 s from boot). Three extra seconds are a rounding
+# error against that. Being too short costs a drive that is dead while every
+# unit reports active — which is what happened, and what cost this evening an
+# hour. The asymmetry is not close.
+AGENT_RESTART_DWELL_SEC="${AGENT_RESTART_DWELL_SEC:-5.0}"
+
+# Epoch (float seconds) at which gripperx-agent was actually stopped. The dwell
+# is measured from THAT moment, not from when phase 4 begins: it is a FLOOR,
+# never an added delay (SR-12 §S3 phase 4).
+AGENT_STOPPED_AT=""
+
+# --- phase 3: bring the stack down, zero orphans (SR-12 2/4/5) ------------
+# This is the phase that IS implementable today, because the systemd stop
+# contract now carries it (KillMode=control-group + KillSignal=SIGINT +
+# TimeoutStopSec on gripperx-bringup.service).
+#   * respawn is a LAUNCH-level property: ask the launch PARENT to shut down,
+#     never signal children individually. Signalling a child of a live parent is
+#     what produced the 2026-08-17 event -- the children came straight back and
+#     the restart re-centred the steering.
+#   * Requires=+After= already stop navigation and mapping ahead of bringup, so
+#     stopping bringup alone is ordered correctly. The agent is NOT covered and
+#     is stopped explicitly (last), which is also why gripperx.target exists.
+#     "Agent last" is load-bearing under Option 0: stopping it IS the trigger for
+#     the ESP's own teardown, and the link must stay alive until then.
+#   * STEERING END STATE (Q-SD5, DECIDED 2026-08-19 -- v1: LIMP AT THE LAST
+#     ANGLE). steer_servo_node.destroy_node() disables servo torque, so the
+#     wheels go limp at whatever angle they were holding. That is not motion,
+#     but it IS loss of hold, and on a slope or a crown the wheels can settle by
+#     themselves. This is the DECIDED end state, not a side effect: there is no
+#     parking move and no centring anywhere in the shutdown path -- a centring
+#     move here would be precisely the unrequested movement SR-12 (1) forbids.
+#     The same holds for the ARM: limp in its last pose, no stowing move.
+#     If the wheels are wanted straight, that is a separate operator-requested
+#     action BEFORE the shutdown, never part of this sequence. The operator-
+#     facing output says so, so it is expected rather than discovered.
+phase3_stack_down() {
+    for unit in "${STOP_ORDER[@]}"; do
+        if systemctl is-active --quiet "$unit.service"; then
+            log "stopping $unit"
+            systemctl stop "$unit.service" || log "WARN: stop $unit returned non-zero"
+        else
+            log "$unit not active -- skipped (not an error)"
+        fi
+        if [[ "$unit" == "gripperx-agent" ]]; then
+            AGENT_STOPPED_AT="$(date +%s.%N)"
+        fi
+    done
+    # SR-12 (5) orphan check. `systemctl is-active` is NOT sufficient: a manual
+    # `ros2 launch` is invisible to it and the chain can be live while systemd
+    # reports inactive (observed 2026-08-18, PID 3297/PPID 1).
+    if pgrep -a -f "gripperx_|ros2_control_node|steer_servo|arm_action_server|teleop_mux"; then
+        log "WARN: chain processes still alive after stop -- see list above"
+    else
+        log "no chain processes left"
+    fi
+    # docker stop mros_agent is already ExecStop on gripperx-agent.service; the
+    # container survives a bare systemctl stop otherwise (DDS zombie). Phase 4
+    # repeats it deliberately -- DEPLOYMENT.md §1 step 2 is binding and the unit's
+    # own ExecStop is not a substitute for it when the unit was already inactive.
+}
+
+# --- phase 4: DDS hygiene, MODE RESTART ONLY ------------------------------
+# Skipped on halt on purpose: /dev/shm is tmpfs and docker/DDS state does not
+# survive a halt, so cleaning it on the halt path only adds a failure point.
+# Steps and their order are DEPLOYMENT.md §1 steps 2-4, which are binding.
+phase4_dds_hygiene() {
+    log "phase 4: DDS/agent hygiene (restart mode only)"
+
+    # DEPLOYMENT.md §1 step 2. `docker run --rm` semantics: the container
+    # survives `systemctl stop` of the wrapping unit and becomes a DDS zombie --
+    # the missed step behind the session #14 spawner-death incident. Up to ~40 s
+    # is normal here, so the ceiling is generous but it IS a ceiling.
+    if command -v docker >/dev/null 2>&1; then
+        if bounded "$DOCKER_STOP_TIMEOUT_SEC" docker stop mros_agent >/dev/null 2>&1; then
+            log "phase 4: mros_agent container stopped"
+        else
+            # No container, or no docker permission for this user, or a genuine
+            # hang. All three are non-fatal here and none may abort the restart.
+            log "phase 4: docker stop mros_agent returned non-zero -- no container, no"
+            log "         permission, or it exceeded ${DOCKER_STOP_TIMEOUT_SEC}s. Continuing."
+        fi
+    else
+        log "phase 4: docker not available -- skipping the container stop"
+    fi
+
+    # DEPLOYMENT.md §1 step 3. Orphaned FastDDS SHM segments after a freeze or a
+    # hard reboot caused a COMPLETE SHM transport failure on the next boot
+    # (2026-07-09): discovery fine, zero payload data. `rm -f` on a non-matching
+    # glob is a no-op, which is the intended behaviour here.
+    rm -f /dev/shm/fastrtps_* 2>/dev/null || true
+    log "phase 4: stale /dev/shm/fastrtps_* segments removed (no-op if none)"
+
+    # DEPLOYMENT.md §1 step 4. Clears stale daemon discovery state; bounded,
+    # because a wedged daemon must not hold up the restart.
+    if bounded "$ROS2_CALL_TIMEOUT_SEC" ros2 daemon stop >/dev/null 2>&1; then
+        log "phase 4: ros2 daemon stopped"
+    else
+        log "phase 4: ros2 daemon stop returned non-zero (no daemon, or wedged). Continuing."
+    fi
+
+    # DEPLOYMENT.md §1 step 4, zombie check. Read-only: it REPORTS, it does not
+    # kill. A duplicate agent holding /dev/esp32 is the classic session #14
+    # signature and the operator needs to see it, but silently killing processes
+    # is not this script's business.
+    if pgrep -a -f "micro_ros_agent|micro-ros-agent" >/dev/null 2>&1; then
+        log "phase 4: WARN micro-ROS agent processes still present:"
+        pgrep -a -f "micro_ros_agent|micro-ros-agent" || true
+    else
+        log "phase 4: no leftover micro-ROS agent process"
+    fi
+}
+
+# The dwell is a FLOOR measured from the agent stop, never an added delay: if the
+# phases in between already took longer, this returns 0 and nothing is waited on.
+phase4_dwell_remaining() {
+    if [[ -z "$AGENT_STOPPED_AT" ]]; then
+        printf '%s' "$AGENT_RESTART_DWELL_SEC"
+        return 0
+    fi
+    awk -v stopped="$AGENT_STOPPED_AT" -v now="$(date +%s.%N)" \
+        -v dwell="$AGENT_RESTART_DWELL_SEC" \
+        'BEGIN { r = dwell - (now - stopped); if (r < 0) r = 0; printf "%.3f", r }'
+}
+
+usage() {
+    cat <<'USAGE'
+gripperx-stack-stop --mode=stop|restart|halt [--approve-motion] [--from-unit]
+
+  --mode=stop       stack down, Pi stays up
+  --mode=restart    stack down, then up again (Mode R) -- MOTION TRIGGER
+  --mode=halt       stack down, then halt the Pi (Mode H)
+  --approve-motion  required for --mode=restart; pass ONLY with a per-test user
+                    approval in hand (SR-1)
+  --from-unit       caller is gripperx-bringup.service ExecStop=: run phase 1
+                    only and touch no systemd unit
+
+When installed as a symlink named gripperx-stop / gripperx-restart /
+gripperx-shutdown, the mode is taken from the name; an explicit --mode= wins.
+USAGE
+}
+
+main() {
+    # SR-1 guard. A restart is a MOTION TRIGGER as long as either startup move
+    # can fire, so this refuses to run unattended by default. Not decoration:
+    # gripperx-bringup.sh passes arm_home_on_startup:=false but the launch AND
+    # node defaults are both `true` (D15 -- the protection is a habit, not a
+    # property), and center_on_startup:=false is implemented and hardware-verified
+    # but the SR-1 restart test has not been run. Drop this guard only when both
+    # startup moves are structurally false AND that test has passed.
+    if [[ "$MODE" == "restart" && "$APPROVE_MOTION" -ne 1 ]]; then
+        log "REFUSED: --mode=restart re-starts nodes that may move the steering"
+        log "         or the arm on startup (SR-1/SR-12). Pass --approve-motion"
+        log "         only with a per-test user approval in hand."
+        exit 2
+    fi
+
+    if [[ "$FROM_UNIT" -eq 1 ]]; then
+        # Only the commanded stop belongs here; systemd owns the rest. Running
+        # phase 3 from inside this unit's own stop job would deadlock against it
+        # (see the --from-unit note in the header), and phase 4's restart half
+        # would be actively wrong.
+        if [[ "$MODE" != "stop" ]]; then
+            log "REFUSED: --from-unit supports --mode=stop only (got '$MODE')."
+            exit 2
+        fi
+        phase1_stop_commanding \
+            || log "WARN: the commanded stop was NOT verified -- see the phase 1 lines above"
+        log "--from-unit: phases 3/4 deliberately not run -- systemd owns the unit"
+        log "             teardown (Requires=+After= ordering, KillMode=control-group)"
+        log "steering will go LIMP at its last angle when steer_servo_node exits (Q-SD5)"
+        exit 0
+    fi
+
+    phase1_stop_commanding \
+        || log "WARN: the commanded stop was NOT verified -- see the phase 1 lines above"
+    phase3_stack_down
+    case "$MODE" in
+        stop)    log "stack down, Pi stays up -- steering is LIMP at its last angle (Q-SD5)"
+                 log "next start: run DEPLOYMENT.md §1 steps 2-4 first (this mode skips the"
+                 log "            DDS hygiene, which is a restart-path step)" ;;
+        restart) phase4_dds_hygiene
+                 # Minimum dwell so the ESP notices the old agent is gone and
+                 # tears its session down before the new agent appears. Derived
+                 # above from the firmware constants; restart path only; a floor,
+                 # not an added delay.
+                 remaining="$(phase4_dwell_remaining)"
+                 log "dwell ${remaining}s before restarting the agent (floor of"
+                 log "      ${AGENT_RESTART_DWELL_SEC}s from the agent stop; ESP session teardown)"
+                 sleep "$remaining"
+                 for unit in "${START_ORDER[@]}"; do
+                     # reset-failed FIRST, added 2026-08-25. A unit in state
+                     # `failed` does not accept a plain `systemctl start`, so a
+                     # single failure LATCHES until somebody knows the
+                     # incantation. Observed that evening: phase 4 left
+                     # gripperx-agent `failed`, the operator's stop/start did
+                     # nothing, and only reset-failed + start recovered it.
+                     # StartLimitBurst is 5, so repeated Mode R presses can also
+                     # exhaust the allowance and land here. Harmless when the
+                     # unit is healthy: reset-failed on a non-failed unit is a
+                     # no-op.
+                     systemctl reset-failed "$unit.service" 2>/dev/null || true
+                     log "starting $unit"
+                     systemctl start "$unit.service" \
+                         || log "WARN: start $unit returned non-zero"
+                 done
+                 log "NOTE: a green 'is-active' is NOT evidence that the stack came back"
+                 log "      (SR-12 §S4). Check the five managed Nav2 nodes and slam_toolbox"
+                 log "      per node before treating this restart as successful."
+                 log "steering was left LIMP at its last angle -- the next start must NOT"
+                 log "assume a centred geometry, nor a known arm pose (Q-SD5)" ;;
+        halt)    log "steering LIMP at its last angle, arm limp in its last pose (Q-SD5); halting"
+                 systemctl poweroff ;;
+    esac
+    # Exit 0 whenever the sequence COMPLETED, including the "commanded stop could
+    # not be proven" case: that is a warning, not a failure (HWR-40 crit. 8). A
+    # non-zero ExecStop exit would look like a service failure to systemd.
+    exit 0
+}
+
+# Dispatch on $0 so the three operator commands can be bare symlinks with no
+# logic of their own (SR-12 §S2: a caller that reimplements the sequence is a
+# defect). An explicit --mode= below still wins.
+case "$(basename -- "$0")" in
+    gripperx-stop)     MODE="stop" ;;
+    gripperx-restart)  MODE="restart" ;;
+    gripperx-shutdown) MODE="halt" ;;
+esac
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --mode=*)         MODE="${1#--mode=}" ;;
+        --approve-motion) APPROVE_MOTION=1 ;;
+        --from-unit)      FROM_UNIT=1 ;;
+        -h|--help)        usage; exit 0 ;;
+        *)                log "REFUSED: unknown argument '$1'"; usage >&2; exit 64 ;;
+    esac
+    shift
+done
+
+case "$MODE" in
+    stop|restart|halt) ;;
+    *) log "REFUSED: --mode must be stop, restart or halt (got '${MODE:-<none>}')"
+       usage >&2
+       exit 64 ;;
+esac
+
+main

@@ -56,14 +56,31 @@ def generate_launch_description():
     )
 
     # GAP-1 (DT-2): teleop_mux is the single owner of /cmd_vel. Nav2's
-    # controller_server (path following) and behavior_server (spin/backup/
-    # drive-on-heading recoveries) both publish cmd_vel, so their output must
-    # go to the mux's autonomous input (/teleop/autonomous/cmd_vel), NOT
-    # directly to /cmd_vel — otherwise two publishers fight on /cmd_vel (mux
-    # zeros vs. Nav2) and the mux mode/override/stop chain cannot gate autonomy.
-    # The mux must be in "autonomous" mode for Nav2 to reach /cmd_vel (wired via
+    # controller_server (path following) and behavior_server (drive-on-heading /
+    # wait recoveries) both publish cmd_vel, so their output must reach the mux's
+    # autonomous input (/teleop/autonomous/cmd_vel) and NEVER /cmd_vel directly —
+    # otherwise two publishers fight on /cmd_vel (mux zeros vs. Nav2) and the mux
+    # mode/override/stop chain cannot gate autonomy. The mux must be in
+    # "autonomous" mode for Nav2 to reach /cmd_vel (wired via
     # initial_mode:=autonomous in the integrated bringup, sim_navigation.launch.py).
-    autonomous_cmd_vel_remap = [("cmd_vel", "/teleop/autonomous/cmd_vel")]
+    #
+    # OP-14 consolidation: velocity_smoother sits INSIDE that branch, so the two
+    # servers now publish one hop earlier, on /nav/cmd_vel_raw. GAP-1 is
+    # unchanged — the smoother is still not a /cmd_vel publisher, it only moves
+    # the branch's entry point one topic upstream:
+    #
+    #   controller_server ┐
+    #                     ├─> /nav/cmd_vel_raw ─> velocity_smoother
+    #   behavior_server   ┘                            │
+    #                            /teleop/autonomous/cmd_vel
+    #                                                  ↓
+    #                                             teleop_mux ─> /cmd_vel
+    #
+    # The smoother's input and output MUST remain different topics; wiring both
+    # to one name makes it smooth its own output recursively. Rationale for
+    # having a smoother at all (4WIS steering-servo slew) is in
+    # gripperx_planning/config/nav2.yaml next to the parameter block.
+    nav_cmd_vel_raw_remap = [("cmd_vel", "/nav/cmd_vel_raw")]
 
     controller_server = LifecycleNode(
         package="nav2_controller",
@@ -72,7 +89,7 @@ def generate_launch_description():
         namespace="",
         output="screen",
         parameters=[params_file, sim_time_param],
-        remappings=autonomous_cmd_vel_remap,
+        remappings=nav_cmd_vel_raw_remap,
         additional_env=_NAV2_ENV,
     )
 
@@ -83,7 +100,21 @@ def generate_launch_description():
         namespace="",
         output="screen",
         parameters=[params_file, sim_time_param],
-        remappings=autonomous_cmd_vel_remap,
+        remappings=nav_cmd_vel_raw_remap,
+        additional_env=_NAV2_ENV,
+    )
+
+    velocity_smoother = LifecycleNode(
+        package="nav2_velocity_smoother",
+        executable="velocity_smoother",
+        name="velocity_smoother",
+        namespace="",
+        output="screen",
+        parameters=[params_file, sim_time_param],
+        remappings=[
+            ("cmd_vel", "/nav/cmd_vel_raw"),
+            ("cmd_vel_smoothed", "/teleop/autonomous/cmd_vel"),
+        ],
         additional_env=_NAV2_ENV,
     )
 
@@ -133,6 +164,7 @@ def generate_launch_description():
                     "controller_server",
                     "behavior_server",
                     "bt_navigator",
+                    "velocity_smoother",
                 ],
             },
         ],
@@ -143,8 +175,21 @@ def generate_launch_description():
         [
             DeclareLaunchArgument(
                 "use_sim_time",
-                default_value="true",
-                description="Use simulation clock (set false on real hardware).",
+                # false since the OP-14 consolidation: this launch is now the ONLY
+                # Nav2 entry point, and its default consumer is the real robot
+                # (gripperx-navigation.service). The twin is the special case and
+                # says so explicitly -- gripperx_gazebo/sim_navigation.launch.py
+                # passes use_sim_time:="true", real_autonomy.launch.py forwards its
+                # own argument (default "false").
+                #
+                # This argument OVERRIDES the hardcoded use_sim_time: true entries
+                # in config/nav2.yaml: every node below takes sim_time_param AFTER
+                # params_file, and rcl merges parameter sources in order, so the
+                # later one wins. Verified per node, not assumed -- getting this
+                # backwards would leave Nav2 on the real robot waiting forever for
+                # a /clock that nothing publishes there.
+                default_value="false",
+                description="Use simulation clock. true only for the digital twin.",
             ),
             DeclareLaunchArgument(
                 "enable_terrain_cost",
@@ -175,6 +220,7 @@ def generate_launch_description():
             planner_server,
             controller_server,
             behavior_server,
+            velocity_smoother,
             bt_navigator,
             lifecycle_manager_navigation,
         ]

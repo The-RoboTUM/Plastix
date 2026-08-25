@@ -16,21 +16,129 @@ localization_input_node:
       - b_leftsteer
       - b_rightsteer
       - f_right_steer
+    # GEOMETRY — CAD-anchored 2026-08-18, tyre revised 2026-08-19. Source of
+    # truth is the GEOMETRY comment block in
+    # gripperx_description/urdf/gripperx_v1.core.xacro; keep this in step with it.
+    # CAD: wheelbase 0.3618 (king pin x = +-0.1809), track 0.2174 (king pin
+    # y = +-0.1087), tyre 140 mm dia x 80 mm wide -> radius 0.070.
+    #
+    # THE TYRE CHANGE DOES NOT MOVE wheel_positions, and that was checked rather
+    # than assumed. These are LATERAL and LONGITUDINAL contact-point offsets;
+    # the only quantity a bigger tyre changes is the VERTICAL drop from the
+    # steering joint to the axle. Re-derived from the 2026-08-19 import with the
+    # 140 mm tyre, the king-pin -> tyre-mid-plane offsets come back as
+    # +0.055572 / +0.055572 / -0.055571 / -0.055372 — identical to the values
+    # below, to the last digit. Only effective_wheel_radius moves.
+    #
+    # The previous values here (0.2014/-0.20473/-0.2046/0.20127, 0.16556, 0.052)
+    # were the OBSOLETE CAD version the xacro explicitly marks as stale — they
+    # imply wheelbase 0.406 and track 0.331. Removed, do not reinstate.
+    #
+    # CONTACT POINTS, NOT KING PINS — deliberate, and it matters. Each wheel hangs
+    # on a lateral lever arm off its king pin (*_wheel_offset_xyz, y = +-0.0556 m,
+    # i.e. 51 % of the half-track), so the two conventions are far apart.
+    # (This line read +-0.072 / 66 % until 2026-08-19 and contradicted the
+    # CORRECTED block below in its own file - see there.)
+    # _compute_paper_geometry() reduces these 8 numbers to a = mean|x|, b = mean|y|
+    # and hands them to FourWIS4WIDKinematicModel, where this node uses ONLY the
+    # FORWARD direction: it reads the steering angles from /joint_states and
+    # converts wheel ROLLING speeds into a body twist. The lever arm that turns a
+    # wheel speed into a yaw rate is the one at the CONTACT PATCH, so the contact
+    # points are the correct input here. Numerically, against an exact scrub-aware
+    # model over a Nav2-like velocity envelope, the yaw-rate error is
+    #     contact point (below)      RMS  1.1 %  (translation-dominant) / 3.5 % (full)
+    #     king pin (0.1809/0.1087)   RMS 16.6 %                        / 23.3 %
+    # The INVERSE direction is HALF the opposite case, and the half this block
+    # used to get wrong. CORRECTED 2026-08-21.
+    # What is right in the parenthetical below is right: the lateral lever arm IS
+    # perpendicular to the rolling direction and DOES drop out of the lateral
+    # no-slip constraint, so the STEERING ANGLE is fixed by the king pin and the
+    # IK side must keep using +-0.1809/+-0.1087 for it.
+    # What was wrong is the conclusion drawn from it. The lever arm drops out of
+    # the ANGLE only. It stays fully present in the SPEED: the contact patch of a
+    # wheel offset by e = (t, h) from its king pin rolls at
+    #     v_i = (+-|u_i|) - omega*h_i
+    # where u_i is the king-pin velocity, because  z_hat x R(delta) e  contributes
+    # exactly -h_i along the rolling direction, for every delta. So it is NOT true
+    # that one (a, b) pair cannot serve both directions — one (a, b, h) TRIPLE
+    # serves both EXACTLY, with the king pins as (a, b) and h as the offset.
+    # That is what swerve_controller's `wheel_lateral_offset` now is, and dropping
+    # the h term is what made the machine under-rotate ~21 % on every commanded
+    # rotation (measured 2026-08-21, see OP-29).
+    # This note is documentation only: localization_input_node.py and the odometry
+    # behaviour are NOT changed by it and remain a separate question.
+    #
+    # Residual: the true contact point rotates with the steering angle (at 100 deg
+    # outward the lateral offset collapses from 0.181 to ~0.095), which a fixed-
+    # geometry model cannot express. Worst case in the sweep was +7.6 % at pure
+    # spin-in-place. Removing that needs the lever arm inside the kinematic model,
+    # not a different constant here.
+    #
+    # CORRECTED 2026-08-19. The first version of this block was derived from the
+    # xacro's *_wheel_offset_xyz y = +-0.072, which a fresh Onshape import then
+    # disproved: the true king-pin -> tyre-mid-plane offset is +-0.0556, so the
+    # contact points sit 16.4 mm further IN than written here before. Confirmed
+    # two independent ways (joint origins 0.023071 king pin -> drive axis, and
+    # the tyre mesh bounding box), and cross-checked by a second session.
+    # b therefore goes 0.181098 -> 0.164222. Measured RMS yaw-rate error against
+    # an exact scrub-aware model, translation-dominant envelope:
+    #     b = 0.164222 (this)   0.89 %
+    #     b = 0.181098 (before) 5.41 %
+    #     b = 0.1087   (king pin) 12.79 %
+    # The convention decision above is unchanged and is reinforced by the new
+    # numbers; only the magnitude of the lever arm moves.
+    #
+    # Order matches drive_joint_names / the model's module order: FL, BL, BR, FR.
+    # Per-corner CAD asymmetry is kept rather than rounded away, as in the xacro.
     wheel_positions:
-      - 0.2014
-      - 0.16556
-      - -0.20473
-      - 0.16556
-      - -0.2046
-      - -0.16556
-      - 0.20127
-      - -0.16556
-    effective_wheel_radius: 0.052
+      - 0.180900        # FL x   king pin  0.180965 + wheel offset -0.000065
+      - 0.164272        # FL y   king pin  0.1087   + wheel offset  0.055572
+      - -0.180900       # BL x   king pin -0.180965 + wheel offset  0.000065
+      - 0.164272        # BL y   king pin  0.1087   + wheel offset  0.055572
+      - -0.180900       # BR x   king pin -0.180835 + wheel offset -0.000065
+      - -0.164271       # BR y   king pin -0.1087   + wheel offset -0.055571
+      - 0.180900        # FR x   king pin  0.180835 + wheel offset  0.000065
+      - -0.164072       # FR y   king pin -0.1087   + wheel offset -0.055372
+      # -> a = mean|x| = 0.180900 m,  b = mean|y| = 0.164222 m
+    # effective_wheel_radius: 0.070, a MEASURED effective radius, not a
+    # geometric stand-in. The 2026-08-19 CAD models the same 140 mm tyre
+    # geometrically, so the "a loaded tyre rolls smaller" caveat no longer
+    # separates two different numbers here. The former TO-VERIFY is closed.
+    # Kept in step with wheel_radius in gripperx_v1.core.xacro (0.070) and in
+    # gripperx_control/config/swerve_cmd.yaml and teleop_joint_commands.yaml,
+    # which already carried 0.070 from the tape measurement and were never
+    # moved to 0.065 — this file was the outlier.
+    #
+    # HOW IT WAS MEASURED (merged in from the drive/encoder track): rolled by
+    # hand in a straight line with one wheel's tyre marked at the ground
+    # contact point — FL 2 rev / 885 mm -> 70.43 mm, BL 2 rev / 900 mm ->
+    # 71.62 mm. Only the MARKED wheel is usable per run: hand-pushing skids
+    # the other three (up to 23.7 % spread), so there is no evidence of a
+    # per-wheel radius difference. The same runs confirmed
+    # COUNTS_PER_OUTPUT_REV = 3200 to about 1 %.
+    #
+    # KNOWN LIMIT, and it does not appear in the CAD: the tyres are lugged,
+    # not smooth, and this was measured on CARPET. The effective rolling
+    # radius is surface-dependent — the lugs sink into soft ground — so
+    # outdoor odometry will scale differently and nobody has measured by how
+    # much. See SAFETY (internal) F-41/F-42 and REQUIREMENTS OP-32.
+    #
+    # DO NOT REINTRODUCE 0.052. It was never measured; it arrived with the
+    # repo's first commit as part of one obsolete-CAD export bundle, and it
+    # was co-calibrated against the then-wrong encoder constant 2200. With the
+    # encoder corrected to 3200 the two errors no longer cancel, so this file
+    # was reporting distances roughly 26 % short until 2026-08-20.
+    effective_wheel_radius: 0.070
+    # [1,1,1,1] and correct for BOTH platforms since 2026-08-21. It used to be
+    # [1,1,-1,-1] to undo the URDF's authored right-side axis mirror, which made
+    # it right in the twin and WRONG on the real robot, where GripperXInterface
+    # already delivers robot-frame values. The mirror is gone from the URDF, so
+    # the identity is now right in both places and there is no split to forget.
     drive_joint_multipliers:
       - 1.0
       - 1.0
-      - -1.0
-      - -1.0
+      - 1.0
+      - 1.0
     odom_frame: odom
     base_frame: base_footprint
     publish_tf: false
@@ -97,10 +205,39 @@ ekf_filter_node:
     imu0_remove_gravitational_acceleration: true
     imu0_twist_rejection_threshold: 1.5
 
+    # YAW AND YAW-RATE PROCESS NOISE RAISED 2026-08-21 — index 5 (yaw) 0.08 -> 0.15
+    # and index 11 (vyaw) 0.05 -> 0.50. Measured on the real robot, not tuned by
+    # feel: during two commanded spins /wheel/odom reported the rotation
+    # immediately and correctly (-1.403 and +1.487 rad/s), while
+    # /odometry/filtered passed on
+    #     CW            -0.106 against -1.403   =  8 % of it
+    #     CCW, first 5s +0.473 against +1.450   = 33 %
+    #     CCW, later    +1.479 against +1.487   = 99 %
+    # i.e. the filter needed about six seconds to accept a rotation its own input
+    # had been reporting from the first cycle — and then kept publishing
+    # +1.431 rad/s AFTER the wheels had stopped. That lag is what makes the map
+    # lurch and snap back during a turn: slam_toolbox is handed a heading that
+    # trails the machine and then overshoots it.
+    #
+    # Process noise is the filter's allowance for the state changing between
+    # updates. At 0.05 on vyaw and 50 Hz the filter permits almost no change per
+    # cycle, so a step from 0 to 1.5 rad/s in ~0.2 s — an ordinary spin start —
+    # is treated as implausible and absorbed slowly. 0.50 lets the yaw rate move
+    # at the pace the drivetrain actually moves it. Index 5 is raised in step,
+    # more gently, because integrating a rate the filter now tracks faster is
+    # pointless if the heading itself stays stiff.
+    #
+    # The other entries are untouched: this is the yaw axis only, and vx/vy
+    # tracked correctly throughout the same recording.
+    #
+    # NOT a claim about imu0. That source is configured and publishes nothing
+    # (the BNO085 is not connected), which remains a candidate for the same
+    # symptom and is NOT ruled out by this change. The placeholder stays until
+    # someone demonstrates it is the cause.
     process_noise_covariance: [0.08, 0.08, 1.0,
-                               1.0, 1.0, 0.08,
+                               1.0, 1.0, 0.15,
                                0.05, 0.05, 1.0,
-                               1.0, 1.0, 0.05,
+                               1.0, 1.0, 0.50,
                                0.2, 0.2, 1.0]
 
     initial_estimate_covariance: [1e-3, 1e-3, 1.0,
@@ -166,6 +303,24 @@ slam_toolbox:
     # Represents: Maximum distance in meters to trust a LiDAR point.
     # Behavior: If your LiDAR is noisy past 8 meters, set this to 8.0. Points beyond 
     # this range are ignored, preventing false walls from being drawn due to sensor noise.
+    # NO min_laser_range HERE, AND IT IS NOT AN OVERSIGHT. One was added on
+    # 2026-08-21 and removed the same hour: slam_toolbox does not declare such a
+    # parameter. `ros2 param list /slam_toolbox` offers max_laser_range and
+    # nothing else for range, so the entry was silently ignored - it looked like
+    # a fix and did nothing.
+    #
+    # THE PROBLEM IT WAS MEANT TO SOLVE IS REAL AND REMAINS OPEN HERE. The LD06
+    # reports from 2 cm (range_min 0.0200) and the arm and gripper sit
+    # permanently in the scan plane behind the sensor, so slam_toolbox matches
+    # against, and maps, the robot's own structure. Measured over 25 scans:
+    # 284 returns below 0.10 m at 140-150 deg, 291 at 150-160, 307 at 200-210,
+    # 117 at 210-220 - and NOTHING between 0.10 and 0.35 m anywhere.
+    #
+    # The costmaps are covered: nav2.yaml sets obstacle_min_range and
+    # raytrace_min_range to 0.10 on both, which is where the black cells under
+    # the robot in RViz came from. The MAP is not covered. Closing that needs a
+    # filter node between /scan and slam_toolbox (laser_filters
+    # LaserScanRangeFilter), which nothing in this stack runs yet.
     max_laser_range: 12.0 
     
     # Represents: Distance in meters the robot must move before processing a new scan.
@@ -222,8 +377,34 @@ slam_toolbox:
     # ---------------------------------------------------------
     # SOLVER TUNING (Advanced)
     # ---------------------------------------------------------
-    distance_variance_penalty: 0.5
-    angle_variance_penalty: 1.0
+    # ODOMETRY AS THE ANCHOR DURING ROTATION, raised 2026-08-21 (were 0.5 / 1.0,
+    # the slam_toolbox defaults). Both penalise a scan-match solution for
+    # deviating from the ODOMETRY pose, so raising them means "trust the wheels,
+    # let the laser refine rather than decide".
+    #
+    # WHY, and it is not a matcher problem. The LD06 turns at 10 Hz, scan_time
+    # 0.0999 s, so a scan is not an instant. At a 0.75 rad/s cap the robot
+    # rotates 4.3 deg WHILE the scan is taken, against an angle_increment of
+    # 0.795 deg — first and last point of one scan are more than five angular
+    # steps apart in robot orientation. slam_toolbox treats a scan as a snapshot,
+    # so that smear enters the match as error. The encoders do not have this
+    # problem: they follow the rotation continuously.
+    #
+    # RAISED BY A FACTOR OF TWO AND NO FURTHER. The wheel odometry's YAW is
+    # itself wrong — measured at -10 % in the twin, where imu0 hides it by
+    # supplying the filter's only absolute yaw. THE BNO085 IS NOT CONNECTED ON
+    # THE REAL ROBOT, so nothing hides it here. Trust the wheels too far and
+    # slam_toolbox writes that yaw error into the map with confidence. This is a
+    # half-step: enough to stop the laser overruling a good prior mid-turn, not
+    # enough to let an uncorrected 10 % error author the map. Revisit when the
+    # IMU is connected — that is what would justify going further.
+    #
+    # NOT A CURE. The smear stays in the data; this only stops the matcher acting
+    # on it. The cause is addressed by turning slower (max_vel_theta, lowered to
+    # 0.40 in the same change) or by de-skewing the scan against odometry before
+    # matching, which nothing in this stack currently does.
+    distance_variance_penalty: 0.8
+    angle_variance_penalty: 2.0
     fine_search_angle_offset: 0.00349
     coarse_search_angle_offset: 0.349
     coarse_angle_resolution: 0.0349
@@ -248,10 +429,14 @@ navsat_transform_node:
     publish_filtered_gps: false
     use_odometry_yaw: true
     wait_for_datum: false
-    gps_topic: /gps/fix
-    imu_topic: /imu/data/filtered
-    odometry_topic: /wheel/odom
-    datum: [0.0, 0.0, 0.0]
+    # gps_topic / imu_topic / odometry_topic / datum USED TO STAND HERE and were
+    # removed 2026-08-21: navsat_transform_node does not declare any of the four,
+    # so all four were inert. Verified by listing the live node's parameters against
+    # this file — the other 149 keys across all seven blocks are declared, these were
+    # the only dead ones. The three topics are set by REMAPPING, which
+    # localization.launch.py already does correctly (/imu, /gps/fix,
+    # /odometry/filtered -> /wheel/odom). Do not reintroduce them as parameters:
+    # they look authoritative and change nothing.
 
 map_server:
   ros__parameters:

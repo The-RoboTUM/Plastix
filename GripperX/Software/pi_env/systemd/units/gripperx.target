@@ -1,0 +1,75 @@
+# /etc/systemd/system/gripperx.target
+#
+# PROPOSAL, not yet installed or enabled (SR-12 (4) / OP-20 E / HWR-40).
+#
+# WHY A TARGET AT ALL -- what the existing Requires= chain already gives us, and
+# what it does not:
+#
+#   gripperx-mapping.service     Requires=+After= gripperx-bringup.service
+#   gripperx-navigation.service  Requires=+After= gripperx-mapping.service
+#
+# Requires= propagates a STOP to the dependent unit, and After= makes systemd
+# stop in reverse start order. So `systemctl stop gripperx-bringup.service`
+# ALREADY brings navigation and mapping down first, in the correct order --
+# SR-12 (4) ("a single stop signal MUST suffice") is satisfied for those three
+# today. That is worth stating plainly, because it means the target is NOT
+# needed to fix the ordering; the ordering is fine.
+#
+# What is missing is exactly two things:
+#
+#  1. gripperx-agent.service is in NO relationship with any of them. It carries
+#     the ESP32 link and it survives every `systemctl stop gripperx-bringup`.
+#     For an operator stop that may be what you want; for the HWR-40 button,
+#     which then halts the Pi, it is not -- the agent (and its Docker container,
+#     which is a known zombie, see gripperx-agent.service) has to go down too,
+#     and it has to go down LAST so that the ESP32 still has a live link during
+#     the >=1 s in which its CMD_TIMEOUT_MS zeroes the motors.
+#     STRENGTHENED 2026-08-19 by the Q-SD2 Option-0 decision: stopping the agent
+#     is not just cleanup, it IS the trigger for the ESP's own orderly teardown
+#     (its ping to the vanished agent times out and it runs destroyEntities(),
+#     main.cpp L179). So "agent last" is now load-bearing for HWR-40 criterion 8,
+#     not merely tidy -- and it is the ordering this target exists to guarantee.
+#  2. There is no single handle. "Stop the stack" currently means naming the
+#     right unit and knowing that the other two follow -- fine for someone who
+#     read this file, wrong for a GPIO button and for an operator under time
+#     pressure.
+#
+# RECOMMENDATION: yes, add this target. It is the idiomatic answer and it costs
+# one file plus one PartOf= line per service. `stop gripperx.target` then stops
+# all four, ordered by the members' own After= chain (a target does not order
+# its members among themselves -- the existing After= chain does that, which is
+# why the proposed After=gripperx-agent.service on bringup is part of this
+# package and not optional).
+#
+# Resulting stop order: navigation -> mapping -> bringup -> agent.
+# Resulting start order: agent -> bringup -> mapping -> navigation.
+#
+# ACTIVATION -- all of it, or none of it:
+#   1. add "PartOf=gripperx.target" to gripperx-{agent,bringup,mapping,
+#      navigation}.service   (stop/restart propagation FROM the target; it does
+#      not change start behaviour)
+#   2. add "After=gripperx-agent.service" + "Wants=gripperx-agent.service" to
+#      gripperx-bringup.service   (already present there, commented out)
+#   3. systemctl daemon-reload && systemctl enable gripperx.target
+#
+# KNOWN CONSEQUENCE, needs the user's eyes (NOT introduced by this file -- it is
+# already true today): Requires= propagates stop but not restart. When
+# gripperx-bringup hits Restart=on-failure, mapping and navigation are stopped
+# and do NOT come back on their own. Whether that is wanted (safe: nav2 does not
+# resume driving by itself) or a defect (the robot silently loses autonomy) is a
+# policy question, related to OP-21 (a) "recovery = operator-triggered".
+#
+# NOT chosen: making the target Requires= its members. Wants= keeps a single
+# failing service from failing the whole target, which matters because these are
+# started at boot.
+
+[Unit]
+Description=GripperX ROS2 stack (agent + bringup + mapping + navigation)
+Wants=gripperx-agent.service
+Wants=gripperx-bringup.service
+Wants=gripperx-mapping.service
+Wants=gripperx-navigation.service
+After=gripperx-agent.service gripperx-bringup.service gripperx-mapping.service gripperx-navigation.service
+
+[Install]
+WantedBy=multi-user.target

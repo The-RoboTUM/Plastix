@@ -1,6 +1,11 @@
 # /etc/systemd/system/gripperx-mapping.service
 [Unit]
-Description=GripperX Mapping (rf2o + slam_toolbox)
+Description=GripperX Localization + Mapping (EKF + laser odometry + slam_toolbox)
+# Renamed 2026-08-24: this unit no longer starts rf2o. gripperx-mapping.sh now starts
+# gripperx_localization/localization.launch.py, which carries the EKF that publishes
+# /odometry/filtered — the topic gripperx-navigation.service's Nav2 reads its odometry
+# from. The unit ID stays gripperx-mapping.service so the dependency chain and every
+# existing runbook keep working; only what it starts changed. See the script's header.
 After=gripperx-bringup.service network-online.target
 Requires=gripperx-bringup.service
 Wants=network-online.target

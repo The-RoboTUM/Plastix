@@ -1,13 +1,92 @@
 
 teleop_joint_commands_node:
   ros__parameters:
-    a: 0.203
-    b: 0.16556
-    wheel_radius: 0.052
+    # --- ROBOT GEOMETRY — DECLARED IN gripperx_geometry/config/geometry.yaml ---
+    # DO NOT EDIT THE VALUES BELOW BY HAND. They are checked against the
+    # declaration by gripperx_geometry's consistency test, which names every
+    # site that drifts. Change the quantity there, not here.
+    #
+    # a and b are KING-PIN quantities, which is exactly what they denote in
+    # FourWIS4WIDKinematicModel:
+    #   half-wheelbase (longitudinal)  a = 0.1809   CAD, king pin
+    #   half-track     (lateral)       b = 0.1087   CAD, king pin
+    #   wheel radius                   r = 0.070    measured, effective rolling
+    #
+    # SUPERSEDED 2026-08-24 by GQ-1: the tape measurement of 2026-08-13
+    # (wheelbase 360 mm -> a = 0.180, track 220 mm -> b = 0.110) and, before
+    # that, the obsolete CAD (a = 0.203, b = 0.16556, r = 0.052). Both are kept
+    # in the record here rather than deleted, because a number that vanishes
+    # gets reintroduced by the next person who finds it in an old document.
+    #
+    # !!! a and b remain TO-VERIFY, but NOT for the reason recorded here until
+    # 2026-08-20. The "34 % track contradiction" is RETIRED: it compared two
+    # DIFFERENT QUANTITIES, not two measurements of one.
+    #   a and b are KING-PIN quantities. swerve_kinematics.cpp computes each
+    #   wheel's velocity at modules_[i] and takes atan2 of it to get that
+    #   module's STEERING angle, so the point the model works at is by
+    #   construction the point the wheel steers about.
+    #   The 0.16556 it was compared against is a CONTACT-POINT quantity from
+    #   the obsolete CAD. King-pin track 2 x 0.1087 = 217.4 mm; contact-point
+    #   track 2 x 0.164272 = 328.5 mm; the difference is exactly twice the
+    #   documented king-pin-to-tyre-centre offset of 55.572 mm.
+    # RESOLVED 2026-08-24 (GQ-1 + GQ-4). The 2026-08-18 CAD gives a king-pin
+    # half-track of 0.1087 against the tape's 0.110; the pair are two
+    # INDEPENDENT MEASUREMENTS of one quantity, not a rounding (0.1087 rounds
+    # to 0.109). The user decided for CAD, and GQ-4 then removed the doubt it
+    # was decided under: the robot is mainly 3D-PRINTED, so the parts hold
+    # their CAD dimensions to a few tenths of a millimetre and the 0.9/1.3 mm
+    # gap was tape error, not build deviation. The king-pin axis is not
+    # touchable once the steering assembly is mounted, which is why the tape
+    # reading was the imprecise one.
+    # The 34 % framing never was an open question.
+    # Found 2026-08-20 by the Octopus and battery tracks reading this file.
+    # NOTE the same 55.572 mm offset is the leading candidate for OP-29's
+    # in-place-spin half: the controller treats the contact point as
+    # coincident with the king pin, and at 51 % of the half-track that puts
+    # two wheels on a 0.15470 m radius and two on 0.26585 m while all four are
+    # commanded the same speed. See OP-29.
+    #
+    # wheel_radius RESOLVED 2026-08-19: for odometry the EFFECTIVE ROLLING radius
+    # counts, not half the geometric diameter — a loaded tyre rolls smaller than its
+    # own geometric radius. Measured by rolling the robot forward/backward by hand
+    # in a straight line, marking one wheel's tyre at the ground contact point, and
+    # counting both the physical revolutions and the encoder counts (all four
+    # steering axes held within +/-0.35 deg of straight, encoder provenance `Live`,
+    # COUNTS_PER_OUTPUT_REV = 3200):
+    #   Run 1, FL marked, forward 2 rev: 885 mm -> r = 70.43 mm
+    #   Run 2, BL marked, backward 2 rev: 900 mm -> r = 71.62 mm
+    # The unmarked wheel in each run showed large, variable skid from hand-pushing
+    # (up to 23.7 % spread) and is not usable; there is no evidence of a per-wheel
+    # radius difference. User-decided fixed constant: r = 0.070 m. This is the
+    # carpet/hard-floor value — the tyres are lugged/profiled, not smooth, so the
+    # effective rolling radius is surface-dependent (lugs sink in on soft ground).
+    #
+    # Why this matters more than it looks: it interacts with the encoder constant
+    # fixed the same day. COUNTS_PER_OUTPUT_REV was 2200 against a real 3200
+    # (+45 % on reported revolutions) while r was 0.052 against ~0.070 (-26 % on
+    # distance per revolution) — the two errors nearly cancelled, leaving odometry
+    # only ~8 % long. Correcting the encoder alone would have left it 26 % short.
+    # The pair has to move together.
+    #
+    # Effect on the in-place spin pose: atan2(a, b) goes 50.80 -> 58.57 deg. Still
+    # comfortably inside the 100 deg outward window (41 deg of margin), so spin
+    # stays reachable; the steering windows below are unaffected by this change.
+    a: 0.1809   # declared in gripperx_geometry/config/geometry.yaml
+    b: 0.1087   # declared in gripperx_geometry/config/geometry.yaml
+    wheel_radius: 0.070
     cmd_vel_topic: /cmd_vel
     joint_states_topic: /hw/joint_states
     joint_commands_topic: /hw/joint_commands
-    steering_angle_limit: 0.78539816339
+    # Per-wheel, per-direction window (stage B, 2026-08-13) — mirrors
+    # config/steer_servo.yaml (source of truth). This node writes
+    # /hw/joint_commands directly, so it must plan inside the same window.
+    # Joint order FL, FR, BL, BR:  FL [-100,+35]  FR [-35,+100]
+    #                              BL [-35,+100]  BR [-100,+35]  deg
+    steering_outward_limit_deg: 100.0
+    steering_inward_limit_deg: 35.0
+    # inward 30 -> 35 deg on 2026-08-18, mirrors steer_servo.yaml. TO-VERIFY:
+    # the inward stop itself is disputed - see that file.
+    steering_outward_sign: [-1, 1, 1, -1]
     steer_alignment_min_scale: 0.45
     steer_alignment_deadband_rad: 0.12
     max_wheel_angular_speed: 12.0

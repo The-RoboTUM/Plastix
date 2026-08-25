@@ -1,0 +1,11 @@
+<library path="gripperx_crab_walk_behavior">
+  <class name="gripperx_behaviors::CrabWalk"
+         type="gripperx_behaviors::CrabWalk"
+         base_class_type="nav2_core::Behavior">
+    <description>
+      Bounded pure-lateral (crab) recovery for the 4WIS/4WID GripperX chassis.
+      Commands vy only, at exactly 90 deg, with a server-side distance limit and
+      a costmap collision check swept sideways.
+    </description>
+  </class>
+</library>

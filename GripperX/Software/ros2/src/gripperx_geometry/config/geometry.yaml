@@ -1,0 +1,630 @@
+# =============================================================================
+# GripperX — ROBOT GEOMETRY, SINGLE SOURCE OF TRUTH
+# =============================================================================
+#
+# WHAT THIS FILE IS
+#   The one place a geometric quantity is written down. Every other occurrence
+#   in the workspace — param YAMLs, xacro properties, node defaults, test
+#   constants, documentation tables — is a CONSUMER of a quantity declared here
+#   and is expected to agree with it.
+#
+#   This file is NOT a ROS parameter file. It is not loaded by any node. It is
+#   the input to gripperx_geometry's consistency test (which proves the
+#   consumers agree) and to its generator (which will, from Phase 1 on, write
+#   the consumers).
+#
+# WHY IT EXISTS
+#   Before this file, `wheel_radius` was written out at 13 code sites plus
+#   documentation, and `a`/`b` at 8. They drifted: as of 2026-08-21 three node
+#   defaults and three test files still carried the obsolete 0.203 / 0.16556
+#   CAD pair while the configs had moved to 0.180 / 0.110. See the
+#   KNOWN_DIVERGENCES registry in test/test_geometry_consistency.py.
+#
+# THE RULE THAT MAKES IT WORK
+#   Quantities are DISTINCT AND NAMED. Two numbers that happen to be equal today
+#   are not thereby the same quantity, and two numbers that differ are not
+#   thereby in conflict — they may be the same physical thing measured under
+#   two different conventions. Merging them is how the next class of error gets
+#   built in. See `half_track_kingpin` vs `half_track_contact` below: they
+#   differ by 51 % and BOTH ARE CORRECT.
+#
+# FIELDS
+#   value       the number, in `unit`
+#   unit        SI, spelled out
+#   provenance  cad | measured | derived | rounded_from
+#   date        when the value was established (ISO)
+#   status      accepted | TO-VERIFY
+#   rationale   why this number and not another; kept short, pointing at the
+#               file that carries the full argument rather than copying it
+#   consumers   every site expected to agree, as <path>::<locator>
+#
+# CHANGING A VALUE
+#   Edit it HERE, then run the consistency test. Do not edit a consumer by hand.
+#
+# NOT YET EXHAUSTIVE
+#   Phase 0 covers the quantities that are duplicated across two or more sites
+#   plus the couplings that have broken before. Steering limits, joint
+#   dynamics, mesh offsets and the arm are not modelled here yet.
+# =============================================================================
+
+meta:
+  revision: 1
+  created: 2026-08-21
+  phase: 0
+  authority: |
+    The GEOMETRY comment block in
+    gripperx_description/urdf/gripperx_v1.core.xacro is the historical origin of
+    the CAD figures; this file supersedes it as the place to edit them.
+
+quantities:
+
+  # ---------------------------------------------------------------------------
+  # WHEEL RADIUS — two quantities, equal today, NOT the same thing
+  # ---------------------------------------------------------------------------
+
+  wheel_radius_geometric:
+    value: 0.070
+    decimals: 3
+    unit: metre
+    provenance: cad
+    date: 2026-08-19
+    status: accepted
+    rationale: |
+      Half the modelled tyre diameter (140 mm x 80 mm) from the 2026-08-19 CAD
+      import. Used for collision and visual geometry, where what matters is the
+      shape of the part, not how it rolls. The earlier import modelled a 130 mm
+      tyre and gave 0.065; that value is superseded, not merely stale.
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.core.xacro::xacro:property[wheel_radius]
+
+  wheel_radius_effective:
+    value: 0.070
+    decimals: 3
+    unit: metre
+    provenance: measured
+    date: 2026-08-19
+    status: accepted
+    surface: carpet / hard floor
+    rationale: |
+      The EFFECTIVE ROLLING radius, which is what odometry and wheel-speed
+      commands need. Measured by rolling the robot by hand in a straight line,
+      marking one tyre at the ground contact point, counting physical
+      revolutions against encoder counts (all four steering axes held within
+      +/-0.35 deg of straight, COUNTS_PER_OUTPUT_REV = 3200):
+        Run 1, FL marked, forward  2 rev: 885 mm -> r = 70.43 mm
+        Run 2, BL marked, backward 2 rev: 900 mm -> r = 71.62 mm
+      The unmarked wheel in each run showed up to 23.7 % skid spread from hand
+      pushing and is not usable. No evidence of a per-wheel radius difference.
+      User-decided fixed constant 0.070 m. Full argument in
+      gripperx_control/config/swerve_cmd.yaml.
+
+      SURFACE-DEPENDENT, AND THAT GAP IS ACCEPTED, NOT UNNOTICED. The tyres are
+      lugged, not smooth, so the lugs sink on soft ground and this is a
+      carpet/hard-floor value. Outdoor operation is expected to need a different
+      one, and this robot's mission IS outdoors. The user decided 2026-08-25 to
+      leave the scalar as it stands rather than spend the last robot day's time
+      on a second surface -- see GQ-3, which carries the cost and the reopening
+      recipe. Related: OP-32, the firmware feedforward, carpet-calibrated for
+      the same reason.
+
+      EQUAL TO wheel_radius_geometric TODAY, BY COINCIDENCE OF MEASUREMENT.
+      A loaded tyre generally rolls smaller than its geometric radius; that the
+      two agree here is a result, not an identity. Do not collapse them.
+    consumers:
+      - gripperx_control/config/swerve_cmd.yaml::swerve_cmd_node.wheel_radius
+      - gripperx_control/config/teleop_joint_commands.yaml::teleop_joint_commands_node.wheel_radius
+      - gripperx_control/config/ros2_controllers.yaml::swerve_controller.wheel_radius
+      - gripperx_localization/config/localization.yaml::localization_input_node.effective_wheel_radius
+      - gripperx_control/src/gripperx_control/teleop_joint_commands_node.py::declare_parameter[wheel_radius]
+      - gripperx_teleop/gripperx_teleop/keyboard_teleop_node.py::declare_parameter[wheel_radius]
+      - gripperx_localization/src/gripperx_localization/localization_input_node.py::declare_parameter[effective_wheel_radius]
+      - gripperx_control/test/check_steering_limits.py::WHEEL_RADIUS
+      - gripperx_teleop/test/check_manoeuvres.py::WHEEL_RADIUS
+      - gripperx_teleop/test/check_teleop_manoeuvre_path.py::MODEL[wheel_radius]
+      - gripperx_swerve_controller/test/dump_reference.py::R
+      - gripperx_swerve_controller/include/gripperx_swerve_controller/swerve_controller.hpp::cpp_member[wheel_radius_]
+      - gripperx_swerve_controller/test/dump_reference.cpp::cpp_constexpr[kR]
+      - gripperx_swerve_controller/test/test_swerve_kinematics.cpp::cpp_constexpr[kR]
+      - gripperx_swerve_controller/test/test_steering_limits.cpp::cpp_ctor[SwerveKinematics:2]
+
+  # ---------------------------------------------------------------------------
+  # HALF-WHEELBASE / HALF-TRACK — TWO CONVENTIONS, BOTH CORRECT
+  #
+  # The king pin is where the wheel STEERS. The contact patch is where it TOUCHES
+  # THE GROUND. Each wheel hangs on a lateral lever arm off its king pin, so the
+  # two are 55.6 mm apart laterally — 51 % of the half-track. Which one a formula
+  # needs depends on the formula:
+  #   * steering geometry and the physical frame -> KING PIN
+  #   * anything that turns wheel motion into robot motion, or vice versa,
+  #     i.e. inverse kinematics and odometry -> CONTACT PATCH
+  #
+  # The control stack currently uses the KING-PIN pair for inverse kinematics.
+  # That is the open finding OP-29, not a value error, and this file records the
+  # situation rather than silently resolving it. See open_questions below.
+  # ---------------------------------------------------------------------------
+
+  half_wheelbase_kingpin:
+    value: 0.1809
+    decimals: 4
+    unit: metre
+    symbol: a
+    convention: king-pin
+    provenance: cad
+    date: 2026-08-19
+    status: accepted
+    status_note: |
+      Was TO-VERIFY until 2026-08-21 on the strength of the 1.3 mm tape/CAD
+      gap. GQ-4 retired that: the parts are 3D-printed and hold their CAD
+      dimensions, so the gap was tape error. the internal requirements document still carries
+      these as TO-VERIFY and is now behind this file — reconciling it is a
+      documentation task, listed in the Phase 1 manifest.
+    decision:
+      question: GQ-1
+      by: user
+      date: 2026-08-21
+      outcome: |
+        CAD wins, as ONE quantity. The tape figures (a = 0.180, b = 0.110,
+        from 360 mm / 220 mm measured 2026-08-13 on the rebuilt robot) are
+        SUPERSEDED as the workspace's declared value. Every consumer converges
+        on the CAD figure.
+
+        This was a decision between two independent determinations, not a
+        rounding: 0.1087 rounds to 0.109, not to 0.110. The two methods
+        genuinely disagree by 0.9 mm on a and 1.3 mm on b.
+
+        CONSEQUENCE, RECORDED BECAUSE IT IS NOT FREE: correcting the control
+        configs moves the commanded in-place-spin steering angle from 58.570
+        deg to 58.999 deg, module speed by +0.045 % and the odometry rotation
+        scale k by +0.091 %. Small, but non-zero, so DEPLOYING the corrected
+        values is a movement change and needs a drive test. Phase 1 may land in
+        the repo; the Pi must not receive it before that test.
+
+        WHAT THE DECISION ALSO BUYS: localization.yaml already derives its
+        contact points from the CAD king pin (0.1087 + 0.055572 = 0.164272,
+        exactly the figure in the file) and core.xacro already carries the CAD
+        figures. Control was the only stack still on the tape pair. After
+        Phase 1 all three agree on one convention and one number for the first
+        time.
+    rationale: |
+      Longitudinal distance from the robot centroid to the front/rear king-pin
+      axes. CAD wheelbase 0.3618 -> half 0.1809. Tape-measured on the rebuilt
+      robot 2026-08-13 between the steering axes and found consistent, but the
+      physical measurement is still carried as TO-VERIFY internally.
+      Per-corner CAD asymmetry of +/-0.000065 m is real and is kept in the
+      per-corner quantities, not averaged away.
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.core.xacro::xacro:property[front_axle_x]
+      - gripperx_control/config/swerve_cmd.yaml::swerve_cmd_node.a
+      - gripperx_control/config/teleop_joint_commands.yaml::teleop_joint_commands_node.a
+      - gripperx_control/config/ros2_controllers.yaml::swerve_controller.a
+      - gripperx_control/src/gripperx_control/teleop_joint_commands_node.py::declare_parameter[a]
+      - gripperx_teleop/gripperx_teleop/keyboard_teleop_node.py::declare_parameter[a]
+      - gripperx_control/test/check_steering_limits.py::A
+      - gripperx_teleop/test/check_manoeuvres.py::A
+      - gripperx_teleop/test/check_teleop_manoeuvre_path.py::MODEL[a]
+      - gripperx_swerve_controller/test/dump_reference.py::A
+      - gripperx_swerve_controller/include/gripperx_swerve_controller/swerve_controller.hpp::cpp_member[a_]
+      - gripperx_swerve_controller/test/dump_reference.cpp::cpp_constexpr[kA]
+      - gripperx_swerve_controller/test/test_swerve_kinematics.cpp::cpp_constexpr[kA]
+      - gripperx_swerve_controller/test/test_steering_limits.cpp::cpp_ctor[SwerveKinematics:0]
+
+  half_track_kingpin:
+    value: 0.1087
+    decimals: 4
+    unit: metre
+    symbol: b
+    convention: king-pin
+    provenance: cad
+    date: 2026-08-19
+    status: accepted
+    status_note: |
+      Was TO-VERIFY until 2026-08-21 on the strength of the 1.3 mm tape/CAD
+      gap. GQ-4 retired that: the parts are 3D-printed and hold their CAD
+      dimensions, so the gap was tape error. the internal requirements document still carries
+      these as TO-VERIFY and is now behind this file — reconciling it is a
+      documentation task, listed in the Phase 1 manifest.
+    decision:
+      question: GQ-1
+      by: user
+      date: 2026-08-21
+      outcome: |
+        CAD wins, as ONE quantity. The tape figures (a = 0.180, b = 0.110,
+        from 360 mm / 220 mm measured 2026-08-13 on the rebuilt robot) are
+        SUPERSEDED as the workspace's declared value. Every consumer converges
+        on the CAD figure.
+
+        This was a decision between two independent determinations, not a
+        rounding: 0.1087 rounds to 0.109, not to 0.110. The two methods
+        genuinely disagree by 0.9 mm on a and 1.3 mm on b.
+
+        CONSEQUENCE, RECORDED BECAUSE IT IS NOT FREE: correcting the control
+        configs moves the commanded in-place-spin steering angle from 58.570
+        deg to 58.999 deg, module speed by +0.045 % and the odometry rotation
+        scale k by +0.091 %. Small, but non-zero, so DEPLOYING the corrected
+        values is a movement change and needs a drive test. Phase 1 may land in
+        the repo; the Pi must not receive it before that test.
+
+        WHAT THE DECISION ALSO BUYS: localization.yaml already derives its
+        contact points from the CAD king pin (0.1087 + 0.055572 = 0.164272,
+        exactly the figure in the file) and core.xacro already carries the CAD
+        figures. Control was the only stack still on the tape pair. After
+        Phase 1 all three agree on one convention and one number for the first
+        time.
+    rationale: |
+      Lateral distance from the robot centroid to the left/right king-pin axes.
+      CAD track 0.2174 -> half 0.1087.
+
+      NOT COMPARABLE TO half_track_contact. That one is 0.164222 and the 51 %
+      gap between them is the lever arm, not drift.
+
+      HISTORICAL TRAP: the obsolete CAD pair was a = 0.203, b = 0.16556 (track
+      0.33112). That obsolete b is numerically close to the CURRENT
+      half_track_contact of 0.164222 — a coincidence, and a dangerous one,
+      because it lets a stale value look confirmed by a correct one. They are
+      unrelated. Do not use one to justify the other.
+    consumers:
+      # NOTE: core.xacro carries track_width = 2 * this. That is the quantity
+      # `track_width` below, not a 1:1 consumer of this one.
+      - gripperx_control/config/swerve_cmd.yaml::swerve_cmd_node.b
+      - gripperx_control/config/teleop_joint_commands.yaml::teleop_joint_commands_node.b
+      - gripperx_control/config/ros2_controllers.yaml::swerve_controller.b
+      - gripperx_control/src/gripperx_control/teleop_joint_commands_node.py::declare_parameter[b]
+      - gripperx_teleop/gripperx_teleop/keyboard_teleop_node.py::declare_parameter[b]
+      - gripperx_control/test/check_steering_limits.py::B
+      - gripperx_teleop/test/check_manoeuvres.py::B
+      - gripperx_teleop/test/check_teleop_manoeuvre_path.py::MODEL[b]
+      - gripperx_swerve_controller/test/dump_reference.py::B
+      - gripperx_swerve_controller/include/gripperx_swerve_controller/swerve_controller.hpp::cpp_member[b_]
+      - gripperx_swerve_controller/test/dump_reference.cpp::cpp_constexpr[kB]
+      - gripperx_swerve_controller/test/test_swerve_kinematics.cpp::cpp_constexpr[kB]
+      - gripperx_swerve_controller/test/test_steering_limits.cpp::cpp_ctor[SwerveKinematics:1]
+
+  kingpin_to_contact_lateral:
+    value: 0.055572
+    decimals: 6
+    unit: metre
+    provenance: cad
+    date: 2026-08-19
+    status: accepted
+    rationale: |
+      The lateral lever arm from each king-pin axis outward to the tyre mid
+      plane. This single offset is what separates the king-pin and contact-patch
+      conventions, and at 51 % of the half-track it is far too large to ignore.
+
+      VERIFIED RADIUS-INDEPENDENT, not assumed: re-derived from the 140 mm tyre
+      import, the four offsets come back +0.055572 / +0.055572 / -0.055571 /
+      -0.055372, identical to the 130 mm import to the last digit. A bigger tyre
+      moves only the VERTICAL drop from steering joint to axle.
+    per_corner:
+      front_left: 0.055572
+      back_left: 0.055572
+      back_right: -0.055571
+      front_right: -0.055372
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.core.xacro::xacro:property[front_left_wheel_offset_xyz]
+      - gripperx_description/urdf/gripperx_v1.core.xacro::xacro:property[back_left_wheel_offset_xyz]
+      - gripperx_description/urdf/gripperx_v1.core.xacro::xacro:property[back_right_wheel_offset_xyz]
+      - gripperx_description/urdf/gripperx_v1.core.xacro::xacro:property[front_right_wheel_offset_xyz]
+
+  half_wheelbase_contact:
+    value: 0.180900
+    decimals: 6
+    unit: metre
+    provenance: derived
+    date: 2026-08-19
+    status: accepted
+    derived_from: mean absolute x of wheel_positions_contact
+    rationale: |
+      Longitudinal half-spacing of the four ground contact patches. Equal to the
+      king-pin figure to within the per-corner asymmetry, because the lever arm
+      is lateral, not longitudinal.
+    consumers: []   # verified internally against wheel_positions_contact
+
+  half_track_contact:
+    value: 0.164222
+    decimals: 6
+    unit: metre
+    provenance: derived
+    date: 2026-08-19
+    status: accepted
+    derived_from: mean absolute y of wheel_positions_contact
+    rationale: |
+      Lateral half-spacing of the four ground contact patches
+      = half_track_kingpin 0.1087 + kingpin_to_contact_lateral 0.0556.
+      This is the figure odometry needs, and localization.yaml uses it.
+      The control stack uses half_track_kingpin instead — see OP-29.
+    consumers: []   # verified internally against wheel_positions_contact
+
+  wheel_positions_contact:
+    decimals: 6
+    unit: metre
+    provenance: cad
+    date: 2026-08-19
+    status: accepted
+    order: FL, BL, BR, FR
+    rationale: |
+      The four ground contact patches as x/y pairs, which is the form
+      localization.yaml consumes. Order matches drive_joint_names and the
+      kinematic model's module order; getting it wrong swaps a wheel's
+      contribution to the odometry, so it is stated rather than implied.
+
+      Per-corner CAD asymmetry is kept rather than rounded away, as in the
+      xacro: the +/-0.000065 m longitudinal and the 0.2 mm spread on the front
+      right are real CAD figures, and averaging them here would quietly
+      re-import the rounding question GQ-1 asks about elsewhere.
+    value:
+      - 0.180900     # FL x
+      - 0.164272     # FL y
+      - -0.180900    # BL x
+      - 0.164272     # BL y
+      - -0.180900    # BR x
+      - -0.164271    # BR y
+      - 0.180900     # FR x
+      - -0.164072    # FR y
+    consumers:
+      - gripperx_localization/config/localization.yaml::localization_input_node.wheel_positions
+      - gripperx_localization/src/gripperx_localization/localization_input_node.py::declare_parameter_list[wheel_positions]
+
+  wheel_lateral_offset_joint_order:
+    decimals: 6
+    unit: metre
+    provenance: cad
+    date: 2026-08-19
+    status: accepted
+    order: FL, FR, BL, BR
+    rationale: |
+      THE SAME FOUR OFFSETS AS kingpin_to_contact_lateral, IN A DIFFERENT ORDER,
+      and that is the entire reason this is a separate entry rather than a
+      reference to that one.
+
+      Two orders are live in this workspace and both are correct:
+        JOINT order FL, FR, BL, BR  — steer_servo.yaml, /hw/joint_commands[0-3],
+                                      /teleop/direct_steer, and this key
+        MODEL order FL, BL, BR, FR  — the Lee-2015 kinematics, the xacro,
+                                      localization.yaml's wheel_positions
+      The controller converts between them explicitly. A value moved from one
+      list to the other without reordering swaps two wheels, and the failure is
+      silent because the magnitudes are nearly equal — only the 0.2 mm FR
+      asymmetry distinguishes them. This project has already been bitten once by
+      a model-order confusion (the 2026-08-24 LEFT/RIGHT odometry sign fault),
+      which is why the order is declared here rather than left to a comment.
+
+      Omitting the key leaves the controller on an all-zero default, i.e. on
+      king-pin behaviour, and it says so in its configure log.
+    value:
+      - 0.055572     # FL
+      - -0.055372    # FR
+      - 0.055572     # BL
+      - -0.055571    # BR
+    consumers:
+      - gripperx_control/config/ros2_controllers.yaml::swerve_controller.wheel_lateral_offset
+      - gripperx_swerve_controller/test/test_swerve_kinematics.cpp::cpp_array[kOffsetsJointOrder]
+
+  # ---------------------------------------------------------------------------
+  # DERIVED FRAME QUANTITIES
+  # ---------------------------------------------------------------------------
+
+  track_width:
+    value: 0.2174
+    decimals: 4
+    unit: metre
+    provenance: derived
+    date: 2026-08-19
+    status: TO-VERIFY
+    derived_from: 2 * half_track_kingpin
+    rationale: |
+      Full king-pin track. Superseded 0.33112, which belonged to the obsolete
+      CAD and produced the retired "track differs by 34 %" warning.
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.core.xacro::xacro:property[track_width]
+
+  wheelbase:
+    value: 0.3618
+    decimals: 4
+    unit: metre
+    provenance: derived
+    date: 2026-08-19
+    status: TO-VERIFY
+    derived_from: 2 * half_wheelbase_kingpin
+    rationale: |
+      Full king-pin wheelbase. Superseded 0.406 from the obsolete CAD.
+    consumers: []   # core.xacro computes it as ${front_axle_x - rear_axle_x};
+                    # verified internally against half_wheelbase_kingpin
+
+  steer_mount_z_nominal:
+    value: 0.0303
+    decimals: 4
+    unit: metre
+    provenance: cad
+    date: 2026-08-19
+    status: accepted
+    rationale: Height of the steering-axis mount above base_link.
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.core.xacro::xacro:property[steer_mount_z_nominal]
+
+  base_footprint_to_base_link_z:
+    value: 0.1566
+    decimals: 4
+    unit: metre
+    provenance: derived
+    date: 2026-08-19
+    status: accepted
+    derived_from: chassis underside 0.0866 + wheel_radius_geometric 0.070
+    coupled_to: wheel_radius_geometric
+    rationale: |
+      COUPLING, AND IT HAS BROKEN BEFORE. This is ride height: base_footprint is
+      ground, base_link is the chassis. It is not independent — it moves with
+      wheel_radius_geometric. When the tyre went 0.070 -> 0.065 and this stayed
+      put, the model had its wheels 4.2 mm underground. Changing the wheel
+      radius without changing this is always a bug.
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.core.xacro::xacro:property[base_footprint_to_base_link_z]
+
+# =============================================================================
+# OPEN QUESTIONS — recorded, deliberately NOT resolved here
+#
+# This file transcribes values that exist. It does not invent, round or decide.
+# Anything needing a decision is written down as a question and surfaces in the
+# consistency test as a KNOWN_DIVERGENCE, so it stays visible instead of being
+# quietly settled by whoever edits next.
+# =============================================================================
+
+open_questions:
+
+  GQ-1:
+    RESOLVED: 2026-08-21
+    resolution: |
+      Answered, and the premise was wrong. They are neither roundings nor
+      deliberate second values: they are an independent TAPE MEASUREMENT of the
+      same king-pin quantity (commit 275246c, 2026-08-13). The user decided for
+      the CAD figures as one quantity. See the `decision` block on
+      half_wheelbase_kingpin / half_track_kingpin. The residual physical
+      verification is now GQ-4.
+    title: Are the control configs rounded versions of the CAD figures, or different values?
+    detail: |
+      CAD says a = 0.1809 and b = 0.1087. The three control configs carry
+      a = 0.180 and b = 0.110 — 0.5 % and 1.2 % away. Either they are the same
+      quantity written to fewer digits (then the tolerance belongs in this file
+      and the generator should emit the CAD figures), or somebody chose those
+      numbers for a reason (then they are their own quantity and need their own
+      entry and rationale). Until decided, the consistency test carries the gap
+      as a known divergence rather than asserting either reading.
+    blocks: Phase 1 generation of swerve_cmd.yaml, teleop_joint_commands.yaml, ros2_controllers.yaml
+    owner: user
+
+  GQ-2:
+    RESOLVED: 2026-08-25
+    resolution: |
+      ANSWERED BY DERIVATION, not by choice, and the derivation is already in
+      gripperx_swerve_controller/src/swerve_kinematics.cpp:145-165.
+
+      The lateral no-slip constraint at the contact patch is
+      n(delta) . u_i + omega * t_i = 0, where t_i is the LONGITUDINAL king-pin ->
+      contact offset. The LATERAL offset h_i drops out of it exactly. So for the
+      STEERING ANGLES the king-pin and contact-patch answers are identical --
+      bit for bit, not merely close. There was never a choice to make there.
+
+      Where the two DO differ, the contact patch is already used:
+        wheel speeds        offset_speed = omega * h_i   (applied after the fold)
+        forward kinematics  rolling row taken at the contact point
+      So the controller that drives the robot is already contact-patch
+      kinematics everywhere it matters.
+
+      RESIDUAL, named rather than hidden: t_i is not identically zero. The URDF
+      gives +/-0.000065 m, worth 0.0176 deg at the in-place spin pose -- 855x
+      smaller than the modelled h_i and about 1/20 of one servo count. It stays
+      unmodelled deliberately: carrying it would move the steering angles in
+      their last digits for no measurable benefit, and "angles unchanged" is the
+      property that makes the correction reviewable against the machine.
+
+      A TRAP THAT SURVIVES THIS ANSWER, recorded so it is not rediscovered as a
+      bug: swerve_kinematic_model.py (Python) has NO offset term and is pure
+      king-pin. It is DORMANT, not wrong -- swerve_controller is the active and
+      only drive path (internal requirements document, line 1663) and swerve_cmd_node is deliberately
+      not started (real_robot.launch.py:305), so what the Python model still
+      produces live is ANGLES, which the derivation above makes identical. But
+      reactivating swerve_cmd_node would bring king-pin SPEEDS back, i.e. the
+      OP-29 error the C++ path fixed. The resolution is the NFR-10 deletion
+      round (#345), already owed, which removes those files -- not porting the
+      correction into code that is scheduled to disappear.
+
+      A CONDITION: the correction only runs where wheel_lateral_offset is
+      configured. The default is [0,0,0,0], i.e. king-pin behaviour, and the
+      controller says so in its configure log. ros2_controllers.yaml carries the
+      key; whether the Pi has that file is a deploy question, not a model one.
+
+      Empirical confirmation is ROBOT_DAY block D1 (OP-29 spin acceptance).
+    title: Should the inverse kinematics use the contact-patch pair instead of the king-pin pair?
+    detail: |
+      This is OP-29 stated as a geometry question. The controller commands all
+      four wheels the same speed for a pure rotation, which is only correct if
+      all four contact patches sit on one circle about the centroid. They do
+      not: with the 55.572 mm lever arm, two sit at 0.15470 m and two at
+      0.26585 m, a ratio of 1.718. Whether the fix is to feed the controller
+      half_track_contact or to change the model is an OP-29 decision, not a
+      value edit, and this file must not pre-empt it.
+    blocks: nothing in Phase 0 or Phase 1
+    owner: OP-29
+
+  GQ-4:
+    RESOLVED: 2026-08-21
+    resolution: |
+      Answered by the owner: the robot is mainly 3D-PRINTED, so the parts carry
+      their CAD dimensions. Printing tolerance is a few tenths of a millimetre
+      over the spans involved, against a tape/CAD gap of 0.9 mm on a and 1.3 mm
+      on b — an order of magnitude apart. The disagreement is therefore
+      MEASUREMENT ERROR IN THE TAPE, not build deviation, which is consistent
+      with the king-pin axis not being touchable once the steering assembly is
+      mounted.
+
+      This retires the doubt GQ-1's decision was taken under. The CAD figures
+      describe the robot that exists, not merely the one that was designed, and
+      no caliper measurement is owed.
+
+      SCOPE, so this is not read wider than it is: it covers the printed parts
+      that carry the king-pin spacing. It says nothing about the aluminium
+      profile lengths, which are cut and remain their own question.
+    title: Is the CAD king-pin spacing right for the AS-BUILT robot?
+    detail: |
+      GQ-1 settled which figure the workspace declares. It did not settle
+      whether 0.1809 / 0.1087 describe the robot that exists. CAD describes the
+      DESIGN; the chassis was hand-rebuilt, and profile cut tolerance and
+      assembly slop do not appear in it. The tape measurement that disagreed by
+      0.9 / 1.3 mm was taken on the real machine, and is exactly the kind of
+      evidence that would show such a difference — it is simply too imprecise
+      to act on, because the king-pin axis is not directly touchable once the
+      steering assembly is mounted.
+
+      WHAT WOULD SETTLE IT: caliper onto a defined reference face on each
+      steering assembly (servo output flange or king-pin bolt), plus the CAD
+      offset from that face to the axis. Static, no movement, so no per-test
+      approval is needed. It resolves a and b together.
+
+      the internal requirements document carries both as TO-VERIFY and that stays true; this entry
+      does not close it.
+    blocks: nothing
+    owner: user
+
+  GQ-3:
+    RESOLVED: 2026-08-25
+    resolution: |
+      DECIDED BY THE USER: leave it as a known, accepted gap. The value stays
+      the SCALAR 0.070, documented as a carpet / hard-floor figure.
+
+      This was decided in full knowledge of the cost, and that is why it is
+      written down rather than left implicit. 2026-08-25 was the LAST DAY with
+      the real robot. The measurement would have been hand-rolling -- the same
+      procedure as 2026-08-19, no motors, therefore no SR-1 approval, about 15
+      minutes, and it would not have competed with the motion blocks. It was
+      declined; the value is now not obtainable for the foreseeable future.
+      DO NOT record this as an oversight. It was a scheduling decision.
+
+      WHAT IS THEREFORE UNKNOWN: the tyres are lugged, not smooth, so the lugs
+      sink on soft ground and the effective rolling radius there is smaller than
+      on carpet. The radius scales odometry LINEARLY, so a 4 % smaller radius
+      outdoors makes the odometry over-report distance by 4.2 % -- 42 cm per
+      10 m -- and that lands directly on approach accuracy at GPS litter goals.
+      Nothing in the workspace currently characterises this.
+
+      THIS IS THE SECOND MEMBER OF A CLASS, NOT AN ISOLATED GAP. OP-32 already
+      records the firmware feedforward constant a = 19 as "calibrated for CARPET
+      and COMPILED INTO THE FIRMWARE ... changing surface needs a reflash, and
+      this is an OUTDOOR robot". Same cause, same surface, same open end. Anyone
+      characterising one should characterise the other in the same session --
+      they are one measurement campaign, not two.
+
+      IF IT IS EVER REOPENED: a single second surface answers the decision-
+      relevant question, which is not "what is the radius on grass" but "is this
+      quantity surface-sensitive enough to matter at all". Asphalt or gravel
+      would do; the comparison is the information, not the absolute value. The
+      entry would then become surface-indexed rather than scalar, which changes
+      its shape -- see the note on wheel_radius_effective.
+    title: Does wheel_radius_effective need a second, outdoor value?
+    detail: |
+      The measured 0.070 is a carpet/hard-floor figure and the tyres are lugged.
+      Outdoor operation on soft ground will roll on a different effective radius.
+      If that is confirmed, this becomes a surface-indexed quantity rather than
+      a scalar, which changes the shape of the entry. Not urgent; recorded so
+      the eventual change is not a surprise.
+    blocks: nothing
+    owner: user

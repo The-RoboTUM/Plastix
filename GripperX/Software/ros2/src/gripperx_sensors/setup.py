@@ -24,6 +24,7 @@ setup(
     entry_points={
         "console_scripts": [
             "sensor_mocks = gripperx_sensors.sensor_mocks:main",
+            "scan_range_filter = gripperx_sensors.scan_range_filter:main",
         ],
     },
 )

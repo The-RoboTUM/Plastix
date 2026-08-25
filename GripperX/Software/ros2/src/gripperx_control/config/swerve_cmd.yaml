@@ -1,18 +1,107 @@
 swerve_cmd_node:
   ros__parameters:
-    a: 0.203
-    b: 0.16556
-    wheel_radius: 0.052
+    # --- ROBOT GEOMETRY — DECLARED IN gripperx_geometry/config/geometry.yaml ---
+    # DO NOT EDIT THE VALUES BELOW BY HAND. They are checked against the
+    # declaration by gripperx_geometry's consistency test, which names every
+    # site that drifts. Change the quantity there, not here.
+    #
+    # a and b are KING-PIN quantities, which is exactly what they denote in
+    # FourWIS4WIDKinematicModel:
+    #   half-wheelbase (longitudinal)  a = 0.1809   CAD, king pin
+    #   half-track     (lateral)       b = 0.1087   CAD, king pin
+    #   wheel radius                   r = 0.070    measured, effective rolling
+    #
+    # SUPERSEDED 2026-08-24 by GQ-1: the tape measurement of 2026-08-13
+    # (wheelbase 360 mm -> a = 0.180, track 220 mm -> b = 0.110) and, before
+    # that, the obsolete CAD (a = 0.203, b = 0.16556, r = 0.052). Both are kept
+    # in the record here rather than deleted, because a number that vanishes
+    # gets reintroduced by the next person who finds it in an old document.
+    #
+    # !!! a and b remain TO-VERIFY, but NOT for the reason recorded here until
+    # 2026-08-20. The "34 % track contradiction" is RETIRED: it compared two
+    # DIFFERENT QUANTITIES, not two measurements of one.
+    #   a and b are KING-PIN quantities. swerve_kinematics.cpp computes each
+    #   wheel's velocity at modules_[i] and takes atan2 of it to get that
+    #   module's STEERING angle, so the point the model works at is by
+    #   construction the point the wheel steers about.
+    #   The 0.16556 it was compared against is a CONTACT-POINT quantity from
+    #   the obsolete CAD. King-pin track 2 x 0.1087 = 217.4 mm; contact-point
+    #   track 2 x 0.164272 = 328.5 mm; the difference is exactly twice the
+    #   documented king-pin-to-tyre-centre offset of 55.572 mm.
+    # RESOLVED 2026-08-24 (GQ-1 + GQ-4). The 2026-08-18 CAD gives a king-pin
+    # half-track of 0.1087 against the tape's 0.110; the pair are two
+    # INDEPENDENT MEASUREMENTS of one quantity, not a rounding (0.1087 rounds
+    # to 0.109). The user decided for CAD, and GQ-4 then removed the doubt it
+    # was decided under: the robot is mainly 3D-PRINTED, so the parts hold
+    # their CAD dimensions to a few tenths of a millimetre and the 0.9/1.3 mm
+    # gap was tape error, not build deviation. The king-pin axis is not
+    # touchable once the steering assembly is mounted, which is why the tape
+    # reading was the imprecise one.
+    # The 34 % framing never was an open question.
+    # Found 2026-08-20 by the Octopus and battery tracks reading this file.
+    # NOTE the same 55.572 mm offset is the leading candidate for OP-29's
+    # in-place-spin half: the controller treats the contact point as
+    # coincident with the king pin, and at 51 % of the half-track that puts
+    # two wheels on a 0.15470 m radius and two on 0.26585 m while all four are
+    # commanded the same speed. See OP-29.
+    #
+    # wheel_radius RESOLVED 2026-08-19: for odometry the EFFECTIVE ROLLING radius
+    # counts, not half the geometric diameter — a loaded tyre rolls smaller than its
+    # own geometric radius. Measured by rolling the robot forward/backward by hand
+    # in a straight line, marking one wheel's tyre at the ground contact point, and
+    # counting both the physical revolutions and the encoder counts (all four
+    # steering axes held within +/-0.35 deg of straight, encoder provenance `Live`,
+    # COUNTS_PER_OUTPUT_REV = 3200):
+    #   Run 1, FL marked, forward 2 rev: 885 mm -> r = 70.43 mm
+    #   Run 2, BL marked, backward 2 rev: 900 mm -> r = 71.62 mm
+    # The unmarked wheel in each run showed large, variable skid from hand-pushing
+    # (up to 23.7 % spread) and is not usable; there is no evidence of a per-wheel
+    # radius difference. User-decided fixed constant: r = 0.070 m. This is the
+    # carpet/hard-floor value — the tyres are lugged/profiled, not smooth, so the
+    # effective rolling radius is surface-dependent (lugs sink in on soft ground).
+    #
+    # Why this matters more than it looks: it interacts with the encoder constant
+    # fixed the same day. COUNTS_PER_OUTPUT_REV was 2200 against a real 3200
+    # (+45 % on reported revolutions) while r was 0.052 against ~0.070 (-26 % on
+    # distance per revolution) — the two errors nearly cancelled, leaving odometry
+    # only ~8 % long. Correcting the encoder alone would have left it 26 % short.
+    # The pair has to move together.
+    #
+    # Effect on the in-place spin pose: atan2(a, b) goes 50.80 -> 58.57 deg. Still
+    # comfortably inside the 100 deg outward window (41 deg of margin), so spin
+    # stays reachable; the steering windows below are unaffected by this change.
+    a: 0.1809   # declared in gripperx_geometry/config/geometry.yaml
+    b: 0.1087   # declared in gripperx_geometry/config/geometry.yaml
+    wheel_radius: 0.070
     cmd_vel_topic: /cmd_vel
     joint_state_topic: /joint_states
     command_topic: /swerve_cmd_joint_states
-    # 2026-07-16 (user decision): raised 45deg->60deg (0.7854->1.0472 rad) so the
-    # IK can plan the true tangential in-place-spin angle atan2(a,b)=50.8deg with
-    # margin (no scrub). SIM/planning only — the real servos stay clamped at 45deg
-    # by steer_servo_node + calibration (SR-6 enforced) until rework recalibration.
-    steering_angle_limit: 1.0472
+    # --- PER-WHEEL, PER-DIRECTION STEERING WINDOW (stage B, 2026-08-13) --------
+    # Replaces the single symmetric steering_angle_limit. The mechanical range is
+    # asymmetric (~100deg outward, ~30deg inward) AND the outward direction differs
+    # per wheel, so one number cannot describe it: 30 would throw away 70deg of
+    # outward travel, 100 would keep asking for angles steer_servo_node then
+    # silently clamps.
+    #
+    # SOURCE OF TRUTH is gripperx_control/config/steer_servo.yaml (calibrated on
+    # the machine; its clamp is the last line of defence). These three keys mirror
+    # the same-named keys there and MUST be changed together with them —
+    # swerve_cmd_node logs the resolved window at startup so a mismatch is visible.
+    #
+    # Joint order FL, FR, BL, BR. Both limits are magnitudes; steering_outward_sign
+    # says which sign of the joint angle is physically outward and was MEASURED
+    # (a URDF-only reading gives [1,-1,1,-1] and is wrong on the front pair —
+    # under it the in-place spin would be impossible). Resulting windows:
+    #   FL [-100, +35]  FR [-35, +100]  BL [-35, +100]  BR [-100, +35]  deg
+    steering_outward_limit_deg: 100.0
+    steering_inward_limit_deg: 35.0
+    steering_outward_sign: [-1, 1, 1, -1]
     steer_alignment_min_scale: 0.45
     steer_alignment_deadband_rad: 0.12
+    # Normalisation of the slew braking (how big is a "big" steering error), NOT a
+    # limit — kept at the value the old symmetric steering_angle_limit carried so
+    # the braking behaviour is unchanged by the stage-B rework.
+    steer_alignment_reference_rad: 1.0472
     max_wheel_angular_speed: 12.0
     # Fix 7 / NFR-1 (#11): 50 -> 30 Hz. Downstream consumer ros2_control
     # only processes commands at controller_manager update_rate=30 anyway
@@ -21,13 +110,28 @@ swerve_cmd_node:
     # against all dependent timeouts/time constants remain >= factor 9
     # (steer_diff_time_constant_sec=0.3s, cmd_vel_timeout_sec/
     # steer_states_timeout_sec=0.5s, GripperXInterface command_timeout_sec=0.5s).
-    # Details/table: gripperx_control/docs/FIX7_DEPLOY.md
+    # Details and the full table: internal deploy note FIX7 (tracked
+    # internally, not in this repository)
     control_rate_hz: 30.0
     cmd_vel_timeout_sec: 0.5
     use_direct_ik: true
     # Steering differential from /hw/steer_states feedback (Task #21, default off).
     # Details/deployment: gripperx_control/docs/STEER_DIFFERENTIAL.md
-    enable_steer_feedback_differential: false
+    #
+    # Enabled 2026-08-17 after the a/d cornering analysis: in keyboard mode
+    # teleop_mux zeroes angular.z, so swerve_cmd_node sees omega=0 and
+    # inverse_kinematics() gives all four wheels the SAME speed regardless of the
+    # real servo angle (the steering itself bypasses the IK via /teleop/direct_steer).
+    # With a=0.1809, b=0.1087 (see robot-geometry block above) the outer/
+    # inner wheel speed ratio the geometry actually needs is 1.56 at full lock
+    # (inner radius 0.360 m, outer 0.561 m, ICR on the lateral axis at
+    # yc=0.4218 m -- the tightest turn the FL 30deg inward limit allows) and still
+    # 1.16 at a gentle 7.4deg steer; it was 1.0 in both cases before this change.
+    # The ratio itself is therefore TO-VERIFY on the ground, being derived from a
+    # and b. steer_diff_min_ratio/max_ratio below do NOT clamp this: referenced to
+    # the mean speed, full-lock splits to inner 0.78 / outer 1.22, inside [0.5, 1.5].
+    # Prerequisite verified this session: /hw/steer_states publishes at 30 Hz.
+    enable_steer_feedback_differential: true
     steer_diff_omega_gate: 0.05
     steer_diff_min_speed_mps: 0.03
     steer_diff_time_constant_sec: 0.3
@@ -37,11 +141,14 @@ swerve_cmd_node:
     # Full swerve for teleop/manual. Nav2 forward-only limits are in gripperx_planning/config/nav2.yaml (DWB).
     enforce_front_forward: false
     allow_reverse: true
-    # Back to false (2026-07-16): now that the steer limit is 60deg (> the 50.8deg
-    # tangential angle), pure rotation uses the SWERVE spin — wheels roll on the
-    # rotation tangent, zero scrub/drift — which is smoother than the tank turn's
-    # straight-wheel skid. Keeping point_turn on would hide the very tangential
-    # spin this limit raise enables. (Tank turn stays available as a manual option.)
+    # Back to false (2026-07-16, confirmed by the 2026-08-13 calibration): pure
+    # rotation uses the SWERVE spin — wheels roll on the rotation tangent, zero
+    # scrub/drift — which is smoother than the tank turn's straight-wheel skid.
+    # The spin pose (+-59.0deg, corrected from 50.7 on 2026-08-21 — that was the
+    # retired b = 0.16556 geometry — and from 58.6 on 2026-08-24 with GQ-1's move
+    # to the CAD pair) turns every wheel OUTWARD, so it sits well inside
+    # the 100deg outward range and is never reduced. Keeping point_turn on would
+    # hide that. (Tank turn stays available as a manual option.)
     enable_point_turn: false
     point_turn_steer_target: 0.0
     point_turn_vx_threshold: 0.01
@@ -61,7 +168,8 @@ swerve_cmd_node:
     # Enable only via control.launch.py argument use_integrated_bridge:=true
     # (control.launch.py then takes over the values below from
     # swerve_cmd_bridge.yaml and disables the separate joint_command_bridge node).
-    # Details: gripperx_control/docs/FIX7_DEPLOY.md
+    # Details: internal deploy note FIX7 (tracked internally, not in
+    # this repository)
     enable_integrated_bridge: false
     steering_command_topic: /steering_position_controller/commands
     wheel_command_topic: /wheel_velocity_controller/commands

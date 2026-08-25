@@ -1,0 +1,23 @@
+# Switchable LD06 power branch (HWR-23) — see lidar_power_node.py for the
+# fail-safe reasoning behind invert_logic.
+lidar_power_node:
+  ros__parameters:
+    # RP1 header GPIO chip of the Raspberry Pi 5 (device-tree rp1/gpio@d0000).
+    # Verified 2026-08-18: mode 0660, group dialout, and the Pi user `ubuntu` is
+    # in dialout — no root needed. NOT gpiochip0 (that is a different bank).
+    gpio_chip_path: /dev/gpiochip4
+    # BCM GPIO23 = header pin 16 = line offset 23 on the chip above (HWR-23
+    # decision 2026-07-19: GPIO23 primary, GPIO24 alternative).
+    gpio_line_offset: 23
+    # Shows up as the line's consumer in `gpioinfo`, so a claimed line can be
+    # traced back to this node.
+    gpio_consumer_name: gripperx_lidar_power
+    # INVERTED vs. WIRING_PLAN.md, measured on the machine: the relay is wired
+    # normally-closed, so logical ON (LiDAR powered) = line LOW / coil
+    # de-energized, and driving the line HIGH energizes the relay and cuts the
+    # LiDAR. Setting this to false would invert the fail-safe direction — only
+    # change it if the relay wiring itself changes.
+    invert_logic: true
+    # Off-phase of /lidar/power_cycle. Must be long enough for the LD06's supply
+    # rail to actually collapse; 2.0 s is the working value, not a measurement.
+    power_cycle_off_duration_sec: 2.0

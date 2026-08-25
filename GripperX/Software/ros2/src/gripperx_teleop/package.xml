@@ -12,10 +12,23 @@
   <depend>rclpy</depend>
   <depend>geometry_msgs</depend>
   <depend>std_msgs</depend>
+  <!-- Second source for the measured steering angles when /hw/steer_states has
+       no publisher (the twin). See web_teleop_node._measured_steer. -->
+  <depend>sensor_msgs</depend>
+  <!-- Crab/spin (FR-7): the keyboard teleop predicts the steering pose
+       swerve_cmd_node will command, so its transition guard waits for exactly
+       the angles the servos are being driven to. Reusing the kinematic model
+       and the calibrated per-wheel windows instead of restating them here
+       keeps one source of truth for a safety-relevant comparison. -->
+  <depend>gripperx_control</depend>
+  <!-- Arm/disarm keys call the external authority gate's SetArming service
+       (gripperx_external/goal_gateway_node). -->
+  <exec_depend>gripperx_external_msgs</exec_depend>
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
 
+  <test_depend>gripperx_geometry</test_depend>
   <export>
     <build_type>ament_python</build_type>
   </export>

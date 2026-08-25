@@ -25,9 +25,14 @@ def generate_launch_description():
     directly as TF odom->base_footprint via `ground_truth_odom_bridge`
     (gripperx_localization); slam_toolbox builds the map on top of that.
 
-    Once `ros-jazzy-robot-localization` is installed, this should be switched
-    to the full Stack-B EKF chain (`localization.launch.py`, wheel odom +
-    laser_scan_matcher + IMU) -> DT-9/M4.
+    The full Stack-B EKF chain (`localization.launch.py`: wheel odom +
+    laser_scan_matcher + IMU) is AVAILABLE as of 2026-08-21 — `robot_localization`
+    and `ros2_laser_scan_matcher` are both built and present, and
+    `sim_navigation.launch.py` wires it as `odom_source:=ekf`. The precondition
+    this comment used to state ("once ros-jazzy-robot-localization is installed")
+    has lapsed. Switching THIS launch over is still open work, not a blocked one:
+    the ground-truth bridge stays the default here on purpose, because a mapping
+    run wants a clean odom source rather than one under test.
     """
     gripperx_gazebo = get_package_share_directory("gripperx_gazebo")
     gripperx_localization_share = Path(get_package_share_directory("gripperx_localization"))

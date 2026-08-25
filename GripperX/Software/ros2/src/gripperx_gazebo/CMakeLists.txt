@@ -14,6 +14,7 @@ install(
 install(
   PROGRAMS
     scripts/sim_with_logging
+    scripts/clock_ready_gate
   DESTINATION lib/${PROJECT_NAME}
 )
 

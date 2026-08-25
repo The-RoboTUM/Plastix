@@ -5,3 +5,9 @@ teleop_mux:
     publish_rate_hz: 20.0
     # If the active source is silent for longer than cmd_timeout_sec → send zero
     cmd_timeout_sec: 0.5
+    # Crab walk / in-place spin on the arrow keys (FR-7). In keyboard mode the
+    # mux used to forward linear.x only and zero everything else, which made
+    # both manoeuvres unreachable no matter what the teleop published.
+    # Behaviour-neutral for W/S/A/D: in cornering mode the keyboard node
+    # publishes linear.x only. Setting this to false disables crab and spin.
+    keyboard_pass_manoeuvre_axes: true

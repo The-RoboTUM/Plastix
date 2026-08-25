@@ -31,6 +31,7 @@ def all_configs(*conditions: PythonExpression) -> PythonExpression:
 def generate_launch_description():
     localization_share = Path(get_package_share_directory("gripperx_localization"))
     enable_laser_odometry = LaunchConfiguration("enable_laser_odometry")
+    fuse_laser_odometry = LaunchConfiguration("fuse_laser_odometry")
     enable_gps = LaunchConfiguration("enable_gps")
     enable_slam = LaunchConfiguration("enable_slam")
     enable_saved_map_localization = LaunchConfiguration("enable_saved_map_localization")
@@ -114,7 +115,7 @@ def generate_launch_description():
         name="ekf_filter_node",
         output="screen",
         condition=IfCondition(
-            all_configs(config_is_true(enable_laser_odometry), config_is_false(enable_gps))
+            all_configs(config_is_true(fuse_laser_odometry), config_is_false(enable_gps))
         ),
         parameters=[localization_params, sim_time_param],
     )
@@ -125,7 +126,7 @@ def generate_launch_description():
         name="ekf_filter_node",
         output="screen",
         condition=IfCondition(
-            all_configs(config_is_true(enable_laser_odometry), config_is_true(enable_gps))
+            all_configs(config_is_true(fuse_laser_odometry), config_is_true(enable_gps))
         ),
         parameters=[localization_params, sim_time_param, gps_odom_fusion],
     )
@@ -136,7 +137,7 @@ def generate_launch_description():
         name="ekf_filter_node",
         output="screen",
         condition=IfCondition(
-            all_configs(config_is_false(enable_laser_odometry), config_is_false(enable_gps))
+            all_configs(config_is_false(fuse_laser_odometry), config_is_false(enable_gps))
         ),
         parameters=[
             localization_params,
@@ -170,7 +171,7 @@ def generate_launch_description():
         name="ekf_filter_node",
         output="screen",
         condition=IfCondition(
-            all_configs(config_is_false(enable_laser_odometry), config_is_true(enable_gps))
+            all_configs(config_is_false(fuse_laser_odometry), config_is_true(enable_gps))
         ),
         parameters=[
             localization_params,
@@ -271,6 +272,27 @@ def generate_launch_description():
         ],
     )
 
+    # THE ONE CHECK IN THE STACK THAT IS NOT SELF-REFERENTIAL. Every Nav2 tolerance
+    # compares the robot pose against the goal in the SAME estimated frame, so an
+    # error in the estimate cancels out of the comparison exactly -- that is how a
+    # run ended 2.47 m off target with SUCCEEDED and zero recoveries on 2026-08-21.
+    # Ground truth does not exist outside simulation, but wheel odometry and laser
+    # odometry measure the same motion by physically different means and are
+    # therefore independent OF EACH OTHER. This node says when they part company.
+    # It reports; it never decides which source is right and never touches a command.
+    #
+    # Deliberately placed HERE rather than in a sim-only launch: the defect it
+    # catches is in laser_scan_matcher and robot_localization, not in Gazebo, and
+    # the real robot has no ground truth to fall back on. Same file, both platforms.
+    odom_divergence_monitor = Node(
+        package="gripperx_localization",
+        executable="odom_divergence_monitor",
+        name="odom_divergence_monitor",
+        output="screen",
+        condition=IfCondition(enable_laser_odometry),
+        parameters=[localization_params, sim_time_param],
+    )
+
     rviz = Node(
         package="rviz2",
         executable="rviz2",
@@ -286,7 +308,28 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "enable_laser_odometry",
                 default_value="true",
-                description="Start laser odometry and fuse /laser/odom into the EKF.",
+                description=(
+                    "Run the laser scan matcher, i.e. publish /laser/odom. Since "
+                    "2026-08-21 this NO LONGER implies fusing it — see "
+                    "fuse_laser_odometry. Keep it true even when not fusing: the "
+                    "topic is the second, independent source odom_divergence_monitor "
+                    "cross-checks the wheel odometry against, and with it off the "
+                    "monitor has nothing to compare and stays silent."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "fuse_laser_odometry",
+                default_value="false",
+                description=(
+                    "Fuse /laser/odom into the EKF as odom1. DEFAULT false since "
+                    "2026-08-21: localization.yaml fuses it as an ABSOLUTE POSE while "
+                    "laser_scan_matcher fills neither pose nor twist covariance, so "
+                    "robot_localization reads it as near-certainty with no rejection "
+                    "threshold to gate it. A silent scan-matcher lock-up then drove "
+                    "the estimate 2.62 m off over one 5.4 s straight leg while Nav2 "
+                    "reported SUCCEEDED; the same case without the fusion ended 0.10 m "
+                    "out. Safe to re-enable only once the covariance is real."
+                ),
             ),
             DeclareLaunchArgument(
                 "enable_gps",
@@ -333,6 +376,7 @@ def generate_launch_description():
             ekf_with_laser,
             ekf_without_laser_with_gps,
             ekf_without_laser,
+            odom_divergence_monitor,
             slam_toolbox_node,
             configure_slam,
             activate_slam_on_inactive,

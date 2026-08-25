@@ -164,6 +164,19 @@ def normalize_position_ticks(raw: int) -> int:
     return int(raw) & 0x0FFF
 
 
+def calibrated_counts_bounds(counts_at_pos_limit: int, counts_at_neg_limit: int) -> tuple[int, int]:
+    """Hard count window a calibrated conversion may never leave.
+
+    Both arguments are raw positions that were physically reached during
+    calibration, so anything between them is mechanically safe and anything
+    outside is not — independent of any angle labelling. This is the safety
+    property of the calibrated conversion; keep it applied last.
+    """
+    low = int(round(min(counts_at_neg_limit, counts_at_pos_limit)))
+    high = int(round(max(counts_at_neg_limit, counts_at_pos_limit)))
+    return low, high
+
+
 def calibrated_angle_to_counts(
     angle_rad: float,
     center: int,
@@ -171,7 +184,14 @@ def calibrated_angle_to_counts(
     counts_minus_90: int,
     limit_rad: float,
 ) -> int:
-    """Map angle to ticks. counts_plus/minus are the safe endpoints at ±limit_rad."""
+    """Symmetric legacy mapping: one limit for both directions.
+
+    DEPRECATED — kept unchanged for API compatibility and as the fallback for
+    configs that carry only the old keys. `counts_plus_90`/`counts_minus_90` are
+    NOT the counts at ±90 deg; they are the counts recorded at ±`limit_rad`
+    (misleading legacy names). Use `calibrated_angle_to_counts_asym()` for the
+    per-direction model.
+    """
     if limit_rad <= 0.0:
         return center
 
@@ -181,8 +201,7 @@ def calibrated_angle_to_counts(
     else:
         counts = center + (counts_minus_90 - center) * (angle_rad / -limit_rad)
 
-    low = int(round(min(counts_minus_90, counts_plus_90)))
-    high = int(round(max(counts_minus_90, counts_plus_90)))
+    low, high = calibrated_counts_bounds(counts_plus_90, counts_minus_90)
     return max(low, min(high, int(round(counts))))
 
 
@@ -193,6 +212,7 @@ def calibrated_counts_to_rad(
     counts_minus_90: int,
     limit_rad: float,
 ) -> float:
+    """Symmetric legacy inverse of `calibrated_angle_to_counts`. DEPRECATED."""
     counts = normalize_position_ticks(counts)
     if limit_rad <= 0.0:
         return 0.0
@@ -204,6 +224,92 @@ def calibrated_counts_to_rad(
         span = float(center - counts_minus_90)
         angle = 0.0 if abs(span) < 1e-6 else -limit_rad * (center - counts) / span
     return max(-limit_rad, min(limit_rad, angle))
+
+
+# --- Per-direction (asymmetric) calibration model ----------------------------
+#
+# The steering range is mechanically asymmetric: a wheel can swing much further
+# away from the chassis than towards it (100 deg / 30 deg, measured by the user
+# 2026-08-13). A single shared limit cannot express that — see the module-level
+# discussion in steer_servo_node.py.
+#
+# These two functions deliberately know nothing about "outward"/"inward". They
+# work purely on the SIGN of the joint angle: one limit and one recorded
+# endpoint count per sign. Which sign is physically outward differs per wheel
+# and is resolved by the caller (steer_servo_node: `steering_outward_sign`).
+#
+# `pos_limit_rad`/`neg_limit_rad` are magnitudes (both > 0). The negative-side
+# limit means "the joint may reach -neg_limit_rad".
+
+
+def calibrated_angle_to_counts_asym(
+    angle_rad: float,
+    center: int,
+    counts_at_pos_limit: int,
+    counts_at_neg_limit: int,
+    pos_limit_rad: float,
+    neg_limit_rad: float,
+) -> int:
+    """Map a joint angle to raw counts with one limit per direction.
+
+    Linear between `center` (0 rad) and the endpoint count recorded at the limit
+    of the respective side; the result is hard-clamped to the recorded endpoint
+    window (`calibrated_counts_bounds`), so a wrong angle label can never push
+    the servo past a position that was physically reached during calibration.
+
+    Reduces exactly to `calibrated_angle_to_counts()` when both limits are equal.
+    """
+    if angle_rad >= 0.0:
+        limit_rad = pos_limit_rad
+        counts_at_limit = counts_at_pos_limit
+    else:
+        limit_rad = neg_limit_rad
+        counts_at_limit = counts_at_neg_limit
+
+    if limit_rad <= 0.0:
+        return center
+
+    angle_rad = max(-limit_rad, min(limit_rad, angle_rad))
+    counts = center + (counts_at_limit - center) * (abs(angle_rad) / limit_rad)
+
+    low, high = calibrated_counts_bounds(counts_at_pos_limit, counts_at_neg_limit)
+    return max(low, min(high, int(round(counts))))
+
+
+def calibrated_counts_to_rad_asym(
+    counts: int,
+    center: int,
+    counts_at_pos_limit: int,
+    counts_at_neg_limit: int,
+    pos_limit_rad: float,
+    neg_limit_rad: float,
+) -> float:
+    """Inverse of `calibrated_angle_to_counts_asym`.
+
+    The side is picked by the count DIRECTION of the positive endpoint, not by
+    `counts >= center`: a servo whose counts decrease with a growing joint angle
+    (mirrored mount) is expected after the rework calibration, and with two
+    different spans the naive `counts >= center` test would scale the readback
+    with the wrong span. For a non-mirrored mount (`counts_at_pos_limit >
+    center`) this is identical to the legacy branch.
+    """
+    counts = normalize_position_ticks(counts)
+    if pos_limit_rad <= 0.0 and neg_limit_rad <= 0.0:
+        return 0.0
+
+    delta = float(counts - center)
+    pos_span = float(counts_at_pos_limit - center)
+    neg_span = float(counts_at_neg_limit - center)
+
+    on_pos_side = abs(pos_span) >= 1e-6 and (delta * pos_span) >= 0.0
+    if on_pos_side:
+        angle = 0.0 if pos_limit_rad <= 0.0 else pos_limit_rad * delta / pos_span
+    elif abs(neg_span) < 1e-6 or neg_limit_rad <= 0.0:
+        angle = 0.0
+    else:
+        angle = -neg_limit_rad * delta / neg_span
+
+    return max(-neg_limit_rad, min(pos_limit_rad, angle))
 
 
 def rad_to_counts(angle_rad: float, center_counts: int, counts_per_rev: int, sign: float) -> int:

@@ -23,6 +23,11 @@
   <exec_depend>nav2_planner</exec_depend>
   <!-- Runtime: needs map + map→odom from gripperx_localization (AMCL or SLAM). -->
   <exec_depend>gripperx_localization</exec_depend>
+  <!-- Runtime: config/nav2.yaml names gripperx_behaviors::CrabWalk in
+       behavior_server.behavior_plugins, and pluginlib resolves that through the
+       ament index. Without this package installed alongside, behavior_server
+       fails to configure - the whole Nav2 stack then never reaches active. -->
+  <exec_depend>gripperx_behaviors</exec_depend>
 
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

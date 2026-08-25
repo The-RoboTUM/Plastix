@@ -66,13 +66,15 @@
     </link>
   </xacro:macro>
 
-  <xacro:macro name="steer_joint" params="name xyz parent child limit effort velocity damping friction">
+  <!-- lower/upper are per wheel and NOT symmetric — see the steering-window
+       block in the gripperx_robot macro below. -->
+  <xacro:macro name="steer_joint" params="name xyz parent child lower upper effort velocity damping friction">
     <joint name="${name}" type="revolute">
       <origin xyz="${xyz}" rpy="0 0 0" />
       <parent link="${parent}" />
       <child link="${child}" />
       <axis xyz="0 0 1" />
-      <limit lower="${-limit}" upper="${limit}" effort="${effort}" velocity="${velocity}" />
+      <limit lower="${lower}" upper="${upper}" effort="${effort}" velocity="${velocity}" />
       <dynamics damping="${damping}" friction="${friction}" />
     </joint>
   </xacro:macro>
@@ -90,45 +92,240 @@
 
   <xacro:macro name="gripperx_robot" params="mesh_dir">
     <xacro:property name="mesh_uri_root" value="${mesh_dir}" />
-    <!-- Per-wheel steering joint limit. Raised 45->60 deg (2026-07-16, user
-         decision) so the sim can reach the tangential in-place-spin angle
-         atan2(a,b)=50.8 deg without clamping. This is the SIM model limit; the
-         real servos stay clamped at 45 deg by steer_servo_node + calibration
-         (SR-6) until the rework recalibration. Deliberate sim/real divergence. -->
-    <xacro:property name="front_steer_limit" value="1.0472" />
-    <xacro:property name="rear_steer_limit" value="1.0472" />
+    <!-- STEERING WINDOW — asymmetric and per wheel (calibrated on the machine
+         2026-08-13; source of truth: gripperx_control/config/steer_servo.yaml).
+         Every wheel reaches ~100 deg OUTWARD (tyre swings away from the chassis)
+         and only ~30 deg INWARD, and which SIGN of the joint angle is outward
+         differs per wheel — MEASURED as [-1,+1,+1,-1] for FL, FR, BL, BR. It is
+         NOT derivable from this model: each wheel hangs on a lateral lever arm
+         off its king pin (*_wheel_offset_xyz, y = +-0.0556 m), so turning the
+         joint swings the wheel fore/aft around the pin, and a URDF-only reading
+         gives [+1,-1,+1,-1] — wrong on the front pair. The lever is shorter
+         than the +-0.072 this comment claimed until 2026-08-19, but it is the
+         SIGN of the offset that flips the reading, not its length, so the
+         measured pattern above is unaffected. That +-0.072 was the last
+         survivor of the 42cbcd9 old-CAD export of 2026-07-06 — see the
+         LATERAL LEVER ARM block below for why it outlived two correction
+         rounds. A stale value left in prose is exactly how it hid.
+
+         Resulting joint windows (all four joints turn about base_link +Z, so
+         +angle points a wheel to the robot's left):
+             f_left_steer   [-100, +30]      b_leftsteer   [-30, +100]
+             f_right_steer  [ -30, +100]     b_rightsteer  [-100, +30]  deg
+
+         This is the digital twin's model too: the twin must not be able to reach
+         a pose the real robot cannot, so these are the real limits and NOT a
+         relaxed sim variant. The former symmetric front_steer_limit /
+         rear_steer_limit (1.0472 = 60 deg both ways) is gone — it allowed the
+         twin 60 deg inward, twice what the mechanics has, while wasting 40 deg
+         of the outward travel. The in-place spin pose (+-58.57 deg, outward on
+         all four) still fits comfortably. -->
+    <xacro:property name="steer_outward_limit" value="1.745329" />
+    <xacro:property name="steer_inward_limit" value="0.610865" />
+    <!-- inward 30 -> 35 deg (0.523599 -> 0.610865) on 2026-08-18, tracking
+         gripperx_control/config/steer_servo.yaml (source of truth). Both the
+         35 deg limit and the inward travel it sits in are TO-VERIFY - see the
+         unresolved inward-stop contradiction documented in that file. -->
     <xacro:property name="joint_effort" value="10" />
     <xacro:property name="joint_velocity" value="10" />
     <xacro:property name="joint_damping" value="0.1" />
     <xacro:property name="joint_friction" value="0.1" />
     <xacro:property name="wheel_rgba" value="0.964705882352941 0.964705882352941 0.952941176470588 1" />
     <xacro:property name="base_rgba" value="0.854901960784314 0.349019607843137 0.349019607843137 1" />
-    <xacro:property name="wheel_collision_length" value="0.062" />
+    <xacro:property name="wheel_collision_length" value="0.080" />
 
-    <xacro:property name="wheel_radius" value="0.052" />
-    <xacro:property name="track_width" value="0.33112" />
-    <xacro:property name="front_axle_x" value="0.201335" />
-    <xacro:property name="rear_axle_x" value="-0.204665" />
+    <!-- GEOMETRY — CAD-CONFIRMED 2026-08-18 (fresh Onshape import), values below
+         are the CAD ones in ROS axes (x forward, y left, z up) relative to
+         base_link. base_link sits exactly at the centroid of the four king-pin
+         axes, which the CAD confirms.
+
+         The 2026-08-13 tape measurements were essentially right: CAD wheelbase
+         0.3618 m vs measured 0.360 m, CAD track 0.2174 m vs measured 0.220 m.
+         The earlier comments here cited a CONTRADICTING CAD (0.201335 /
+         -0.204665 / 0.33112 / 0.052 and a "track differs by 34 %" warning) —
+         those figures came from an obsolete CAD version and are simply stale.
+         Removed, do not reinstate them.
+
+         Wheel: tyre 140 mm diameter x 80 mm wide, so the geometric radius is
+         0.070 (2026-08-19 import; the previous import modelled a 130 mm tyre and
+         gave 0.065). Tyres sit 95.6 mm outboard of the king-pin axes and the
+         steering axis is at z +0.0303 relative to base_link — both unchanged.
+         The wheel axis is NOT taken from this CAD; see the CLOSED VERTICAL
+         CHAIN block below, which is anchored on the measured scan-plane height
+         instead.
+
+         !!! wheel_radius here doubles as collision_radius, so it also sets the
+         ride height, and it is therefore COUPLED to
+         base_footprint_to_base_link_z and to *_wheel_offset_xyz z: they are one
+         chain and must only be changed together.
+
+         MASSES AND INERTIAS ARE NOT FROM THIS CAD AND WERE NOT TOUCHED. The
+         2026-08-19 import returns mass = 0.0 for all 37 parts (no materials
+         assigned, no electronics or battery modelled), so it carries nothing to
+         transplant. The values below are the older figures, left as they were.
+         TO-VERIFY, see HWR-32.
+
+         The former TO-VERIFY on the effective ROLLING radius is CLOSED. It is
+         no longer an open question here: the user measured the rolling
+         circumference on the machine 2026-08-19 and fixed the radius at 0.070,
+         which is also what this CAD version models geometrically. The two
+         agree, so the geometric/effective distinction that the note in
+         gripperx_control/config/swerve_cmd.yaml describes no longer separates
+         two different numbers. -->
+    <xacro:property name="wheel_radius" value="0.070" />
+    <xacro:property name="track_width" value="0.2174" />
+    <!-- CAD wheelbase 0.3618 m, split symmetrically about the king-pin centroid. -->
+    <xacro:property name="front_axle_x" value="0.1809" />
+    <xacro:property name="rear_axle_x" value="-0.1809" />
     <xacro:property name="wheelbase" value="${front_axle_x - rear_axle_x}" />
     <xacro:property name="left_steer_y" value="${track_width / 2.0}" />
     <xacro:property name="right_steer_y" value="${-track_width / 2.0}" />
-    <xacro:property name="steer_mount_z_nominal" value="0.04325" />
+    <!-- CLOSED VERTICAL CHAIN, rev 2026-08-19b. These five values are ONE unit
+         and must only be changed together:
+             steer_mount_z_nominal          +0.0303   (steering axis vs base_link)
+             *_wheel_offset_xyz z           -0.1169   (wheel axis vs steering joint)
+             -> wheel axis                  -0.0866   vs base_link
+             wheel_radius                    0.070
+             base_footprint_to_base_link_z   0.1566   (= 0.0866 + 0.070)
 
-    <xacro:property name="front_left_steer_xyz" value="${front_axle_x + 0.000065} ${left_steer_y} ${steer_mount_z_nominal + 0.000001}" />
+         THE GROUND PLANE IS ANCHORED ON A MEASUREMENT, NOT ON THIS CAD, and
+         that is the one thing to understand before touching any of the five.
+         The anchor is the user-measured LiDAR scan-plane height of 260 mm above
+         ground, explicitly confirmed 2026-08-19 as having been measured WITH
+         the real 70 mm tyres fitted. The LiDAR sits at z +0.1034 vs base_link
+         (gripperx_v1.lidar.xacro), so base_link is 0.260 - 0.1034 = 0.1566 m
+         above ground, and the tyre axle must therefore be 0.1566 - 0.070 =
+         0.0866 m below base_link for the tyre to touch that ground.
+
+         THE CAD DISAGREES BY EXACTLY 5 mm, AT THE DRIVE AXIS ONLY. The
+         2026-08-19 import still puts the drive joints at z -0.0916 vs base_link
+         (wheel offset -0.1219), unchanged from the 130 mm-tyre version, while
+         the tyre grew from 130 to 140 mm. Read literally the CAD would put the
+         tyre bottom at -0.1616 and the scan plane at 265 mm — 5 mm above what
+         was measured. The 5 mm is exactly the radius growth, which is what
+         identifies where the error sits: the old model was fitted to the real
+         ride height with a too-small tyre, so a 5 mm-too-low drive axis
+         compensated it and stayed invisible. The measurement wins; the drive
+         axis moves up 5 mm and NOTHING ELSE in this chain moves.
+
+         Everything that was RE-VERIFIED against the 2026-08-19 import and
+         reproduces exactly: king pins +-0.1809 / +-0.1087, steering axis
+         z +0.0303, LiDAR housing centre x +0.2488 and z span +0.0800..+0.1133
+         vs base_link (so the +0.1034 scan-plane placement is untouched and the
+         anchor above is still the same anchor), lateral wheel offsets
+         +-0.055572 / +0.055372 / -0.055571, zero toe on all four.
+
+         VISIBLE SIDE EFFECT, accepted deliberately: the steering-housing meshes
+         stay at their CAD height (their frame is steer_mount_z_nominal, which
+         did not move), so in the rendered model the gap between housing bottom
+         and tyre is 5 mm smaller than in the CAD. That is the CAD error made
+         visible, not a modelling mistake — do not "fix" it by moving the
+         housing, which would break the measured anchor.
+
+         Changing any single one of them puts the wheels above or below the
+         declared ground plane. That exact failure was live here before this
+         import: the z values were left on the old CAD (0.04325 / -0.13909) while
+         wheel_radius and base_footprint_to_base_link_z had already moved, which
+         sank the wheels 4.2 mm underground.
+
+         NO PER-CORNER z DELTAS. The CAD import gives all four steering axes an
+         IDENTICAL z (+0.0303) and all four drive axes an IDENTICAL z (-0.1219,
+         carried into this file as -0.1169 by the 5 mm correction above, again
+         identically on all four).
+         Any future per-corner z delta in this file is therefore a SYMPTOM, not a
+         measurement — it means someone edited one link of the chain in isolation.
+         The old CAD left two such deltas here (+0.000001 on front_left and
+         +0.001999 on back_left steer z, mirrored by back_left/back_right wheel
+         offset z of -0.14109/-0.1361). They looked like real geometry, they were
+         residue, and chasing them cost two rounds of rework. Removed 2026-08-18.
+
+         OBSERVATION, deliberately NOT normalised: the CAD drive-axis x values are
+         not perfectly symmetric — 0.0230711 on three corners against 0.0228711 on
+         front_right, a 0.2 mm difference. That is below anything currently
+         verifiable, so it is recorded rather than rounded away. The wheel-offset
+         x/y values below likewise keep their per-corner CAD values: only the
+         vertical axis is unambiguous in both the CAD and the URDF frame. -->
+    <xacro:property name="steer_mount_z_nominal" value="0.0303" />
+
+    <xacro:property name="front_left_steer_xyz" value="${front_axle_x + 0.000065} ${left_steer_y} ${steer_mount_z_nominal}" />
     <xacro:property name="front_right_steer_xyz" value="${front_axle_x - 0.000065} ${right_steer_y} ${steer_mount_z_nominal}" />
-    <xacro:property name="back_left_steer_xyz" value="${rear_axle_x - 0.000065} ${left_steer_y} ${steer_mount_z_nominal + 0.001999}" />
+    <xacro:property name="back_left_steer_xyz" value="${rear_axle_x - 0.000065} ${left_steer_y} ${steer_mount_z_nominal}" />
     <xacro:property name="back_right_steer_xyz" value="${rear_axle_x + 0.000065} ${right_steer_y} ${steer_mount_z_nominal}" />
 
-    <xacro:property name="front_left_wheel_offset_xyz" value="-0.00095872 0.072001 -0.13909" />
-    <xacro:property name="back_left_wheel_offset_xyz" value="-0.0005765 0.072005 -0.14109" />
-    <xacro:property name="back_right_wheel_offset_xyz" value="-0.00071852 -0.073582 -0.1361" />
-    <xacro:property name="front_right_wheel_offset_xyz" value="-0.00076762 -0.072004 -0.13909" />
+    <!-- LATERAL LEVER ARM — CORRECTED 2026-08-19, and MEASURED ON THE MACHINE.
+         The y values here were +-0.072. That was wrong: the true king-pin ->
+         tyre-mid-plane offset is +-0.0556, so the wheels sat 16.4 mm too far
+         outboard and every derived lateral figure (track over the tyres, swept
+         envelope, odometry yaw lever) was too large.
 
-    <xacro:property name="front_left_wheel_rpy" value="-1.5708 0 0.015251" />
-    <xacro:property name="back_left_wheel_rpy" value="-1.5708 0 0.0099427" />
-    <xacro:property name="back_right_wheel_rpy" value="-1.5708 0 -0.0078748" />
-    <xacro:property name="front_right_wheel_rpy" value="-1.5708 0 -0.0087292" />
-    <xacro:property name="base_footprint_to_base_link_z" value="0.1478" />
+         SETTLED BY TAPE, not just by CAD. Predicted width over the tyre outer
+         faces: 408.4 mm from these values, 441 mm from the old +-0.072.
+         Measured on the robot 2026-08-19: 409 mm. The old value is dead.
+
+         PROVENANCE — this is the actual lesson. +-0.072 arrived on 2026-07-06
+         with 42cbcd9 as an rsync mirror from the Pi, as part of ONE coherent
+         old-CAD export:
+             wheel_radius 0.052        track_width 0.33112
+             front_axle_x 0.201335     wheel z -0.13909 / -0.14109 / -0.1361
+             collision_size 0.480668 x 0.396114
+             steer collision 0.051519 x 0.142418
+         TWO later correction rounds replaced everything around it — the tape
+         measurements (0.052->0.070, 0.33112->0.220, 0.201335->0.180 — and that
+         tape radius 0.070 is the value this file carries AGAIN since
+         2026-08-19; the 0.065 in between was the 130 mm-tyre CAD version) and
+         then
+         the 180d92e CAD import — and BOTH left the lateral term untouched. It
+         was the last survivor of that export. When a stale block is corrected
+         piecemeal, the terms nobody happens to look at survive silently, and
+         they look authoritative precisely because everything around them is
+         fresh. Correct such a block whole, or not at all.
+
+         HOW IT HID FROM THE 180d92e IMPORT. The OBSERVATION block above records
+         "the CAD drive-axis x values ... 0.0230711 on three corners against
+         0.0228711 on front_right". Correct in CAD axes — but the CAD
+         longitudinal axis is y, not x, so the import needs Rz(+90 deg), and
+         under that rotation CAD x becomes ROS *y*. Those numbers are the
+         LATERAL king-pin -> drive-axis offsets. Filed as an x-axis curiosity,
+         they never challenged the y slot.
+
+         Two independent derivations from the 2026-08-19 import agree:
+             joint origins:  king pin -> drive axis    = 0.023071 (FR 0.022871)
+             tyre mesh bbox: king pin -> tyre midplane = 0.055572 (FR 0.055372)
+         The joint origin may sit anywhere ALONG the spin axis without changing
+         any kinematics, so it is placed at the TYRE MID-PLANE. That makes the
+         wheel link origin the tyre centre, lets collision_origin be exactly
+         0 0 0, and makes the odometry lever readable straight off these y
+         values (gripperx_localization/config/localization.yaml, b = 0.164222).
+
+         The x values (+-0.000065) exactly cancel the +-0.000065 in *_steer_xyz
+         above, so all four wheel centres land on x = +-0.1809. Per-corner
+         asymmetry is kept: front_right really is 0.2 mm different in the CAD. -->
+    <xacro:property name="front_left_wheel_offset_xyz" value="-0.000065 0.055572 -0.1169" />
+    <xacro:property name="back_left_wheel_offset_xyz" value="0.000065 0.055572 -0.1169" />
+    <xacro:property name="back_right_wheel_offset_xyz" value="-0.000065 -0.055571 -0.1169" />
+    <xacro:property name="front_right_wheel_offset_xyz" value="0.000065 -0.055372 -0.1169" />
+
+    <!-- NO TOE. These carried yaw terms of +0.87 / +0.57 / -0.45 / -0.50 deg
+         (0.015251 / 0.0099427 / -0.0078748 / -0.0087292 rad) until 2026-08-19.
+         The CAD gives every one of the four tyre meshes a cylinder axis of
+         exactly [0, 1, 0] — the wheels are parallel, there is no toe to model.
+         Same origin as the +-0.072 above: the 42cbcd9 old-CAD export, left
+         standing by both correction rounds. Zeroing them does NOT move the
+         wheel contact points: the joint origin is set by *_wheel_offset_xyz,
+         which is applied BEFORE this rotation, so only the mesh and the
+         collision cylinder's axis rotate about a fixed centre. Verified. -->
+    <xacro:property name="front_left_wheel_rpy" value="-1.5708 0 0" />
+    <xacro:property name="back_left_wheel_rpy" value="-1.5708 0 0" />
+    <xacro:property name="back_right_wheel_rpy" value="-1.5708 0 0" />
+    <xacro:property name="front_right_wheel_rpy" value="-1.5708 0 0" />
+    <!-- 0.1566 m is NOT derived from the wheel: it comes from the measured
+         260 mm scan-plane height minus the LiDAR's +0.1034 z. The wheel axis
+         (0.0866 m below base_link) and tyre radius (0.070) are then chosen to
+         MEET it — see the CLOSED VERTICAL CHAIN block above, which is also
+         where the 5 mm disagreement with the CAD is explained. COUPLED to
+         wheel_radius and *_wheel_offset_xyz z; change the chain as a whole or
+         the ride height goes wrong. -->
+    <xacro:property name="base_footprint_to_base_link_z" value="0.1566" />
 
     <link name="base_footprint" />
 
@@ -152,14 +349,139 @@
       izz="0.017855946897602"
       mesh_file="base_link.stl"
       rgba="${base_rgba}"
-      collision_origin="-0.001575 0 0.069"
-      collision_size="0.480668 0.396114 0.150001"
+      collision_origin="0.021541 0 0.021047"
+      collision_size="0.493083 0.330200 0.202094"
       mesh_uri_root="${mesh_uri_root}" />
 
     <joint name="base_to_chassis_joint" type="fixed">
       <origin xyz="0 0 0" rpy="0 0 0" />
       <parent link="base_link" />
       <child link="chassis_link" />
+    </joint>
+
+    <!-- ================= ARM, RIGID PLACEHOLDER ASSEMBLY =====================
+         Added 2026-08-20. The arm is in the model as ONE FIXED BODY. It has no
+         joints, on purpose, and this is an intermediate step - user decision:
+         "4. is enough for now. At some point we should build the arm in
+         properly."
+
+         WHY NO JOINTS. A movable model needs a tick<->radian mapping for the six
+         Feetech servos and real end stops, and neither exists in a calibrated
+         form:
+           - the CAD import gives +-pi on all six joints (Arm_1..Arm_6), which is
+             the exporter's default for a revolute joint, not a measured limit;
+           - gripperx_arm/config/arm_poses.yaml carries the full 12-bit servo
+             range, which is the register width, not a reachable range.
+         Both are placeholders. An articulated model built on them would publish a
+         joint state and a TF for every arm link, i.e. it would ASSERT a pose the
+         robot is not in, and every consumer downstream - costmap footprint
+         sources, collision checks, a future grasp pipeline - would believe it.
+         A rigid body asserts only "something of this size is bolted here", which
+         is true. Making it movable is issue #340 and needs movement approval to
+         calibrate.
+
+         THE POSE IN THIS MESH IS THE CAD FOLDED (STOWED) POSE. It sits ABOVE
+         and BEHIND the LiDAR, which is where the user reports the real arm sits
+         both while driving and in the present home pose.
+
+         CORRECTED 2026-08-25 - the previous wording here claimed this pose reaches
+         "about 10 mm IN FRONT of the LiDAR" and warned against deriving anything
+         from it. That was an AABB artefact: it compared x extents and ignored
+         height. Re-measured on the installed mesh:
+           - the point at x_max +0.2584 sits at z +0.2723, i.e. 169 mm ABOVE the
+             LiDAR scan plane, not in front of it in any meaningful sense;
+           - inside the LiDAR housing band (z +0.0800...+0.1133) the arm's
+             forwardmost point is 29.8 mm BEHIND the LiDAR, at 0.032-0.060 m range,
+             i.e. below the declared min_range of 0.10 m and discarded anyway;
+           - in the scan plane +-5 mm there is not a single vertex;
+           - 98.3 % of the mesh lies above the scan plane AND behind the LiDAR in x.
+         So this link does NOT occlude the scanner and does not contradict the
+         driving pose. Detail: dated re-teach record, tracked internally, not in
+         this repository.
+
+         What remains true: this is ONE frozen pose with no joints, so it still
+         asserts nothing about where the arm is at any given moment.
+
+         Extents in chassis_link, measured on the merged mesh:
+           x [+0.0716, +0.2584]  y [-0.0312, +0.0375]  z [+0.0691, +0.3696]
+         NO EFFECT ON THE FOOTPRINT, and the footprint is deliberately not
+         touched: the costmap footprint is +-0.300 x +-0.230, taken from the swept
+         wheel envelope, and both the CAD stow pose (0.2584) and the real driving
+         pose (< 0.2488) sit inside 0.2994. The arm does not stick out of the
+         wheels in either pose.
+
+         MESH: meshes/arm_stowed.stl, a NEW file - none of the existing ten meshes
+         is touched. Built from the six CAD parts limb1_1..limb6_1 of the 70 mm
+         import with the CAD joint values and the global Rz(+90 deg) baked in,
+         then expressed in this link's own frame. Quadric-decimated from 171334 to
+         34263 triangles (8.17 MB -> 1.63 MB); the merged bounding box moves by at
+         most 0.027 mm, so the decimation is irrelevant at the scale anything here
+         is used for.
+
+         FRAME. The fixed joint puts this link at the Arm_1 axis, i.e. at the
+         shoulder, not at the mesh centroid. That costs nothing now and is the
+         frame the articulated version will need as the root of the real joint
+         chain, so #340 can add joints below it without moving this link.
+
+         PARENT is chassis_link, not base_link. Geometrically the two are the same
+         frame (base_to_chassis_joint has an all-zero origin), so this is a
+         semantic choice: chassis_link is the body - it carries the hull mesh, the
+         hull collision box and the entire non-trivial mass, and it is already the
+         parent of the LiDAR, the IMU and all four steering assemblies. base_link
+         is the bare kinematic root that base_footprint and the vertical chain
+         hang off, and it stays free of geometry. The arm is bolted to the body,
+         so it hangs off the body.
+
+         INERTIAL IS A PLACEHOLDER AND IS DECLARED AS ONE. The CAD masses for the
+         six limbs are 1e-09 kg, i.e. unusable, and the real arm has not been
+         weighed - so no mass is invented here. 0.001 kg with 1e-6 diagonal
+         inertia is the same minimal stand-in already used for imu_link above: it
+         is non-zero, so nothing downstream trips over a zero-mass link, and it is
+         small enough to be dynamically inert (against the 2.2668 kg chassis it
+         moves the combined centre of mass by well under a millimetre, so the
+         tuning done without the arm still holds). TO-VERIFY: the real arm mass
+         and centre of mass. Until measured, this model must not be used for any
+         statement about tipping, payload or traction.
+
+         COLLISION is a single box, not the mesh - a 34k-triangle collision body
+         would be paid for on every costmap and physics query for no gain at this
+         fidelity. The box is the tight axis-aligned bounding box of the assembly
+         in this link's frame, so it encloses the mesh completely. Because the
+         joint rotation is a signed axis permutation (rpy pi/0/pi/2 maps this
+         link's axes onto chassis axes), the box stays axis-aligned in
+         chassis_link too, and is therefore also the tight AABB there. -->
+    <link name="arm_stowed_link">
+      <inertial>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <mass value="0.001" />
+        <inertia ixx="1e-6" ixy="0.0" ixz="0.0" iyy="1e-6" iyz="0.0" izz="1e-6" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="${mesh_uri_root}/arm_stowed.stl" />
+        </geometry>
+        <material name="">
+          <color rgba="${base_rgba}" />
+        </material>
+      </visual>
+      <collision>
+        <origin xyz="0.003300 -0.006237 -0.104046" rpy="0 0 0" />
+        <geometry>
+          <box size="0.068653 0.186842 0.300523" />
+        </geometry>
+      </collision>
+    </link>
+
+    <!-- Origin = Arm_1 axis in chassis_link, straight out of the CAD import
+         (R90 * world[limb1_1]). The rotation is not decoration: the CAD arm
+         frame is rolled 180 deg and yawed 90 deg against the chassis frame, and
+         the mesh above is stored in THAT frame, so origin and mesh belong
+         together. Changing one without the other silently moves the arm. -->
+    <joint name="arm_stowed_joint" type="fixed">
+      <origin xyz="0.171223 -0.000151 0.115294" rpy="${pi} 0 ${pi/2}" />
+      <parent link="chassis_link" />
+      <child link="arm_stowed_link" />
     </joint>
 
     <link name="imu_link">
@@ -188,8 +510,8 @@
       izz="0.000169195629547439"
       mesh_file="front_left_steer.stl"
       rgba="${wheel_rgba}"
-      collision_origin="0.000305 0.000836 -0.079148"
-      collision_size="0.051519 0.142418 0.160397"
+      collision_origin="-0.000065 -0.005429 -0.075450"
+      collision_size="0.043246 0.057000 0.150900"
       mesh_uri_root="${mesh_uri_root}" />
 
     <xacro:steer_joint
@@ -197,7 +519,8 @@
       xyz="${front_left_steer_xyz}"
       parent="chassis_link"
       child="front_left_steer"
-      limit="${front_steer_limit}"
+      lower="${-steer_outward_limit}"
+      upper="${steer_inward_limit}"
       effort="${joint_effort}"
       velocity="${joint_velocity}"
       damping="${joint_damping}"
@@ -215,7 +538,7 @@
       izz="0.000211939042658774"
       mesh_file="front_left_wheel.stl"
       rgba="${wheel_rgba}"
-      collision_origin="-0.000145 0 -0.031"
+      collision_origin="0 0 0"
       collision_radius="${wheel_radius}"
       collision_length="${wheel_collision_length}"
       mesh_uri_root="${mesh_uri_root}" />
@@ -244,8 +567,8 @@
       izz="0.000169195628565899"
       mesh_file="back_left_steer.stl"
       rgba="${wheel_rgba}"
-      collision_origin="0.000199 0.000894 -0.081148"
-      collision_size="0.050992 0.142279 0.160397"
+      collision_origin="0.000065 -0.005429 -0.075450"
+      collision_size="0.043246 0.057000 0.150900"
       mesh_uri_root="${mesh_uri_root}" />
 
     <xacro:steer_joint
@@ -253,7 +576,8 @@
       xyz="${back_left_steer_xyz}"
       parent="chassis_link"
       child="back_left_steer"
-      limit="${rear_steer_limit}"
+      lower="${-steer_inward_limit}"
+      upper="${steer_outward_limit}"
       effort="${joint_effort}"
       velocity="${joint_velocity}"
       damping="${joint_damping}"
@@ -271,7 +595,7 @@
       izz="0.000211939042658999"
       mesh_file="back_left_wheel.stl"
       rgba="${wheel_rgba}"
-      collision_origin="-0.000145 0 -0.031"
+      collision_origin="0 0 0"
       collision_radius="${wheel_radius}"
       collision_length="${wheel_collision_length}"
       mesh_uri_root="${mesh_uri_root}" />
@@ -300,8 +624,8 @@
       izz="0.00016798247146896"
       mesh_file="back_right_steer.stl"
       rgba="${wheel_rgba}"
-      collision_origin="0.000157 -0.001704 -0.096554"
-      collision_size="0.050786 0.143797 0.119607"
+      collision_origin="-0.000065 0.005429 -0.075450"
+      collision_size="0.043246 0.057000 0.150900"
       mesh_uri_root="${mesh_uri_root}" />
 
     <xacro:steer_joint
@@ -309,7 +633,8 @@
       xyz="${back_right_steer_xyz}"
       parent="chassis_link"
       child="back_right_steer"
-      limit="${rear_steer_limit}"
+      lower="${-steer_outward_limit}"
+      upper="${steer_inward_limit}"
       effort="${joint_effort}"
       velocity="${joint_velocity}"
       damping="${joint_damping}"
@@ -327,7 +652,7 @@
       izz="0.000211939042659798"
       mesh_file="back_right_wheel.stl"
       rgba="${wheel_rgba}"
-      collision_origin="0.000145 0 0.031"
+      collision_origin="0 0 0"
       collision_radius="${wheel_radius}"
       collision_length="${wheel_collision_length}"
       mesh_uri_root="${mesh_uri_root}" />
@@ -338,7 +663,7 @@
       rpy="${back_right_wheel_rpy}"
       parent="back_right_steer"
       child="back_right_wheel"
-      axis="0 0 -1"
+      axis="0 0 1"
       effort="${joint_effort}"
       velocity="${joint_velocity}"
       damping="${joint_damping}"
@@ -356,8 +681,8 @@
       izz="0.000169195626775715"
       mesh_file="front_right_steer.stl"
       rgba="${wheel_rgba}"
-      collision_origin="0.000175 -0.000905 -0.079148"
-      collision_size="0.050871 0.142241 0.160397"
+      collision_origin="0.000065 0.005629 -0.075450"
+      collision_size="0.043246 0.057000 0.150900"
       mesh_uri_root="${mesh_uri_root}" />
 
     <xacro:steer_joint
@@ -365,7 +690,8 @@
       xyz="${front_right_steer_xyz}"
       parent="chassis_link"
       child="front_right_steer"
-      limit="${front_steer_limit}"
+      lower="${-steer_inward_limit}"
+      upper="${steer_outward_limit}"
       effort="${joint_effort}"
       velocity="${joint_velocity}"
       damping="${joint_damping}"
@@ -383,7 +709,7 @@
       izz="0.000211939042659837"
       mesh_file="front_right_wheel.stl"
       rgba="${wheel_rgba}"
-      collision_origin="0.000145 0 0.031"
+      collision_origin="0 0 0"
       collision_radius="${wheel_radius}"
       collision_length="${wheel_collision_length}"
       mesh_uri_root="${mesh_uri_root}" />
@@ -394,7 +720,7 @@
       rpy="${front_right_wheel_rpy}"
       parent="front_right_steer"
       child="front_right_wheel"
-      axis="0 0 -1"
+      axis="0 0 1"
       effort="${joint_effort}"
       velocity="${joint_velocity}"
       damping="${joint_damping}"
