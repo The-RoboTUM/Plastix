@@ -23,7 +23,7 @@ Raspberry Pi 5.
 | [`Software/ros2/`](Software/ros2/README.md) | ROS 2 Jazzy colcon workspace (packages, maps, scripts) — used on both the laptop (simulation) and the Pi (real robot) |
 | [`Software/microros/`](Software/microros/README.md) | ESP32 micro-ROS firmware for motor control |
 | [`Software/pi_env/`](Software/pi_env/README.md) | Reference snapshot of the Raspberry Pi's system environment (systemd units, udev rules, package lists) |
-| [`documentation/`](documentation/README.md) | Electrical/wiring schematics |
+| [`documentation/`](documentation/README.md) | Electrical/wiring schematics, and the interface documents for the external Octopus system |
 
 See [`Software/README.md`](Software/README.md) for a short index of the
 software folders, and the READMEs linked above for details on each.

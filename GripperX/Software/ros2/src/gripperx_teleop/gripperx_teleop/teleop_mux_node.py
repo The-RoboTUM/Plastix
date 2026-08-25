@@ -6,10 +6,14 @@ Forwards the active cmd_vel input to /cmd_vel.
 Switch mode: publish to topic /teleop/set_mode (std_msgs/String).
 Valid modes: keyboard | controller | autonomous
 
-In keyboard mode (default, parameter keyboard_pass_angular_z=false → real behavior
-unchanged):
-  - Steering → directly via /teleop/direct_steer (steer_servo_node, no swerve)
-  - Drive    → /teleop/keyboard/cmd_vel (linear.x only) → /cmd_vel → swerve_cmd_node
+In keyboard mode:
+  - A/D steering → directly via /teleop/direct_steer (steer_servo_node, no swerve)
+  - W/S drive    → /teleop/keyboard/cmd_vel (linear.x) → /cmd_vel → swerve_cmd_node
+  - Arrow keys   → crab (linear.y) / in-place spin (angular.z) on the same
+                   cmd_vel, forwarded because keyboard_pass_manoeuvre_axes=true
+                   (FR-7). While an arrow is held the keyboard node stops
+                   publishing /teleop/direct_steer, so the swerve IK owns the
+                   steering servos for the duration of the manoeuvre.
 
 DT-4/M2 digital twin: in the sim no steer_servo_node runs, so /teleop/direct_steer
 goes unused. Parameter keyboard_pass_angular_z=true additionally passes angular.z
@@ -40,11 +44,28 @@ class TeleopMuxNode(Node):
         # sim sets this to true (no steer_servo_node present). See DT-10
         # for the planned real servo steering path in the sim.
         self.declare_parameter('keyboard_pass_angular_z', False)
+        # Crab walk / in-place spin (FR-7, arrow keys): the keyboard teleop
+        # requests these as linear.y / angular.z, because a fixed per-wheel
+        # pattern on /teleop/direct_steer cannot express their wheel poses and
+        # has no per-wheel limit awareness. Zeroing those two axes here is what
+        # used to make the manoeuvres unreachable, so keyboard mode now passes
+        # the full planar twist.
+        #
+        # Behaviour-neutral for the existing keys: in cornering mode the
+        # keyboard node publishes linear.x only (angular.z stays 0 unless the
+        # sim helper publish_steer_cmd_vel is on), so there is nothing new to
+        # forward until an arrow key is actually held. Default true because the
+        # opposite default would leave the manoeuvres silently dead on the
+        # robot with no visible cause.
+        self.declare_parameter('keyboard_pass_manoeuvre_axes', True)
 
         self._mode    = str(self.get_parameter('initial_mode').value)
         rate          = float(self.get_parameter('publish_rate_hz').value)
         self._timeout = float(self.get_parameter('cmd_timeout_sec').value)
         self._pass_angular_z = bool(self.get_parameter('keyboard_pass_angular_z').value)
+        self._pass_manoeuvre_axes = bool(
+            self.get_parameter('keyboard_pass_manoeuvre_axes').value
+        )
 
         # latest[mode] = (Twist, timestamp_sec)
         self._latest: dict = {}
@@ -93,12 +114,18 @@ class TeleopMuxNode(Node):
             kbd = self._latest.get('keyboard')
             if kbd and (now - kbd[1]) < self._timeout:
                 out.linear.x = kbd[0].linear.x
-                if self._pass_angular_z:
+                if self._pass_manoeuvre_axes:
+                    # Crab (linear.y) and in-place spin (angular.z) — the arrow
+                    # keys. Only ever non-zero while an arrow is held; A/D
+                    # steering still travels via /teleop/direct_steer.
+                    out.linear.y  = kbd[0].linear.y
+                    out.angular.z = kbd[0].angular.z
+                elif self._pass_angular_z:
                     # Sim helper steering (DT-4/M2, see DT-10): no
                     # steer_servo_node present -> A/D must run via /cmd_vel,
                     # instead of (real) via /teleop/direct_steer.
                     out.angular.z = kbd[0].angular.z
-                # otherwise (default) deliberately 0 — steering via direct_steer
+                # otherwise deliberately 0 — steering via direct_steer
         else:
             entry = self._latest.get(self._mode)
             if entry and (now - entry[1]) < self._timeout:

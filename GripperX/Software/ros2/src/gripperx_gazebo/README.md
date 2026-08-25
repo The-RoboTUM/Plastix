@@ -19,6 +19,8 @@ bash scripts/install_jazzy_sim_deps.sh
   with a narrow section (chicane, ~0.9 m remaining width), four rooms
   (NW/SW/NE/SE) with door openings, scattered columns/boxes/table.
 - `worlds/empty.world.sdf` — empty world (for teleop/physics tests).
+- `worlds/testworld_simple.world.sdf` — reduced version of the tuning world.
+- `worlds/demo_area_2m5.world.sdf` — 2.5 m demo area.
 
 ## Current 3-terminal set
 
@@ -33,7 +35,7 @@ source scripts/sim_env.sh
 
 Around every run: check `ros2 node list` for leftovers before starting, and do a
 PID-exact teardown (individual `kill -9`, then `ros2 daemon stop`) after — a plain
-Ctrl-C is not sufficient (orphaned `swerve_cmd_node`/`joint_command_bridge` are the
+Ctrl-C is not sufficient (orphaned sim nodes are the
 usual survivors).
 
 **Terminal 1 — sim + GUI + SLAM:**
@@ -107,3 +109,18 @@ ros2 run nav2_map_server map_saver_cli -f <path>/<name> --ros-args -p save_map_t
   | 3 | `gripperx_planning` | `navigation.launch.py` |
 
 See [`../gripperx_localization/README.md`](../gripperx_localization/README.md).
+
+## Known defect — the twin is not weight-true
+
+**The twin has been standing 40 % lopsided in every run ever made.** Total
+simulated mass is 3.72 kg of bare CAD shell: `chassis_link` carries 2.27 kg with
+no battery, Pi, motors or electronics, and `arm_stowed_link` and `imu_link` weigh
+one gram each. The real mass and centre of gravity are not documented anywhere.
+There is also not one friction or contact parameter in the whole workspace — no
+`mu`, `mu2`, `slip`, `kp/kd`, no `<surface>` — so every tyre is Gazebo default on
+a smooth cylinder.
+
+Consequence: **any load-sensitive twin result is tainted.** Traction, tipping,
+slip, motor effort and anything derived from them do not transfer to the robot.
+Geometry, topic wiring and control logic do transfer, and that is what the twin is
+for.

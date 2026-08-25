@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<title>GripperX Teleop</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>&#127918;</text></svg>">
+</head>
+<body>
+
+<header class="bar">
+  <div class="brand">
+    <span class="dot" id="link-dot"></span>
+    <strong>GripperX</strong><span class="sub">Teleop</span>
+  </div>
+  <div class="bar-right">
+    <span class="chip" id="chip-mode" title="Active teleop mux mode">mode —</span>
+    <span class="chip" id="chip-role" title="Only one session may drive at a time">connecting…</span>
+    <button class="takeover" id="btn-takeover">Take control</button>
+  </div>
+</header>
+
+<!-- Status strip. ALWAYS present, fixed height: warnings change its colour and
+     its text, never the page layout. A banner that appears and disappears
+     shifts everything under it, which is exactly when the operator is reading
+     it. Idle it carries the calm summary rather than sitting empty. -->
+<div id="banner" class="banner info">
+  <span class="banner-icon" id="banner-icon">•</span>
+  <span class="banner-text" id="banner-text">connecting…</span>
+</div>
+
+<main>
+
+  <!-- ─────────────── Left: the key deck ─────────────── -->
+  <section class="panel deck">
+    <h2>Controls <span class="hint">hold a key — release stops the robot</span></h2>
+
+    <div class="clusters">
+
+      <div class="cluster">
+        <div class="cluster-title">Drive &amp; steer</div>
+        <div class="keygrid wasd">
+          <div class="cell w">
+            <button class="keycap hold" data-key="w"><b>W</b></button>
+            <span class="cap">forward</span>
+          </div>
+          <div class="cell a">
+            <button class="keycap spring" data-key="a"><b>A</b></button>
+            <span class="cap">steer left</span>
+          </div>
+          <div class="cell s">
+            <button class="keycap hold" data-key="s"><b>S</b></button>
+            <span class="cap">backward</span>
+          </div>
+          <div class="cell d">
+            <button class="keycap spring" data-key="d"><b>D</b></button>
+            <span class="cap">steer right</span>
+          </div>
+        </div>
+        <p class="note">
+          <span class="swatch hold"></span>hold to drive ·
+          <span class="swatch spring"></span>steering builds while held and
+          <em>springs back to straight</em> when released
+          <span class="dim" id="rd-return"></span>
+        </p>
+      </div>
+
+      <div class="cluster">
+        <div class="cluster-title">Crab <span class="tag">wheels move first</span></div>
+        <div class="keygrid arrows">
+          <div class="cell up">
+            <button class="keycap hold" data-key="up"><b>&uarr;</b></button>
+            <span class="cap">steer crab<br>towards front</span>
+          </div>
+          <div class="cell left">
+            <button class="keycap hold" data-key="left"><b>&larr;</b></button>
+            <span class="cap">crab left</span>
+          </div>
+          <div class="cell down">
+            <button class="keycap hold" data-key="down"><b>&darr;</b></button>
+            <span class="cap">steer crab<br>towards rear</span>
+          </div>
+          <div class="cell right">
+            <button class="keycap hold" data-key="right"><b>&rarr;</b></button>
+            <span class="cap">crab right</span>
+          </div>
+        </div>
+        <p class="note">
+          &larr;/&rarr; pick the side; &uarr;/&darr; then rotate the
+          <em>direction of travel</em>. It cannot sweep freely &mdash; the
+          steering windows leave four 45&deg; gaps with no pose in them, drawn
+          as the red bands on the dial. The heading jumps those gaps and the
+          robot waits while the modules swing.
+        </p>
+      </div>
+
+      <div class="cluster spin-cluster">
+        <div class="cluster-title">Spin in place</div>
+        <div class="keygrid spins">
+          <div class="cell">
+            <button class="keycap hold" data-key="0"><b>0</b></button>
+            <span class="cap">spin clockwise</span>
+          </div>
+          <div class="cell">
+            <button class="keycap hold" data-key="9"><b>9</b></button>
+            <span class="cap">spin counter-<br>clockwise</span>
+          </div>
+        </div>
+        <p class="note">
+          Moved off the arrows on 2026-08-24: arrow&nbsp;&uarr; used to mean
+          &ldquo;spin clockwise&rdquo;, which read as &ldquo;forward&rdquo; to
+          everyone who had not been told.
+        </p>
+      </div>
+    </div>
+
+    <button class="estop" id="btn-estop">
+      <span class="estop-key">SPACE</span>
+      <span class="estop-label">EMERGENCY STOP</span>
+      <span class="estop-sub">stop &middot; wheels straight &middot; back to keyboard mode</span>
+    </button>
+
+    <div class="cluster-title">Modes, arm &amp; gate</div>
+    <div class="actions">
+      <div class="cell"><button class="keycap action" data-key="k" data-event="mode_keyboard"><b>K</b></button><span class="cap">keyboard mode</span></div>
+      <div class="cell"><button class="keycap action" data-key="g" data-event="mode_autonomous"><b>G</b></button><span class="cap">autonomous (Nav2)</span></div>
+      <div class="cell gap"><button class="keycap action" data-key="p" data-event="pick"><b>P</b></button><span class="cap">grip sequence</span></div>
+      <div class="cell"><button class="keycap action" data-key="o" data-event="open_gripper"><b>O</b></button><span class="cap">open gripper</span></div>
+      <div class="cell"><button class="keycap action" data-key="i" data-event="home"><b>I</b></button><span class="cap">arm home</span></div>
+      <div class="cell gap"><button class="keycap action" data-key="u" data-event="arm_gate"><b>U</b></button><span class="cap">arm gate 120 s</span></div>
+      <div class="cell"><button class="keycap action" data-key="l" data-event="disarm_gate"><b>L</b></button><span class="cap">disarm gate</span></div>
+      <div class="cell gap"><button class="keycap danger" data-key="Q" data-event="quit" data-confirm="1"><b>&#8679;Q</b></button><span class="cap">shut down teleop</span></div>
+    </div>
+  </section>
+
+  <!-- ─────────────── Right: what the robot is doing ─────────────── -->
+  <section class="panel scope">
+    <h2>Robot <span class="hint" id="scope-hint">top view &middot; joint order FL FR BL BR</span></h2>
+
+    <div class="scope-body">
+      <svg id="robot" viewBox="-150 -170 300 340" role="img"
+           aria-label="Top view of the robot showing the four steering modules">
+        <defs>
+          <marker id="arrowhead" markerWidth="6" markerHeight="6" refX="4.6" refY="3"
+                  orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="currentColor"/></marker>
+        </defs>
+
+        <!-- chassis -->
+        <g id="chassis">
+          <rect class="body" x="-60" y="-110" width="120" height="220" rx="16"/>
+          <path class="nose" d="M-16,-116 L0,-134 L16,-116 Z"/>
+          <text class="front-label" x="0" y="-142" text-anchor="middle">FRONT</text>
+        </g>
+
+        <!-- reachable translation headings; filled in by app.js -->
+        <g id="dial"></g>
+
+        <!-- one group per module, filled in by app.js -->
+        <g id="modules"></g>
+
+        <!-- commanded body twist -->
+        <g id="twist" class="twist"></g>
+      </svg>
+
+      <div class="readouts">
+        <div class="state" id="state-chip">
+          <span class="state-name" id="state-name">—</span>
+          <span class="state-note" id="state-note">waiting for the node</span>
+        </div>
+
+        <dl class="kv">
+          <dt>Manoeuvre</dt><dd id="rd-manoeuvre">—</dd>
+          <dt>Steering</dt>
+          <dd>
+            <span id="rd-steer">0.0&deg;</span>
+            <span class="meter"><i id="rd-steer-bar"></i></span>
+            <span class="dim" id="rd-steer-limit"></span>
+          </dd>
+          <dt>Crab heading</dt><dd id="rd-psi">&mdash;</dd>
+          <dt>Command</dt><dd class="mono" id="rd-cmd">vx 0.000  vy 0.000  &omega; 0.000</dd>
+          <dt>Alignment</dt><dd id="rd-align">—</dd>
+          <dt>External gate</dt><dd id="rd-gate">unknown</dd>
+          <dt>Link</dt><dd id="rd-link">—</dd>
+        </dl>
+
+        <div class="legend">
+          <span><i class="lg-target"></i>commanded pose</span>
+          <span><i class="lg-measured"></i><span id="lg-measured-label">measured servo</span></span>
+          <span><i class="lg-reach"></i>reachable heading</span>
+          <span><i class="lg-dead"></i>no pose exists</span>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ─────────────── Full width: log ─────────────── -->
+  <section class="panel logpanel">
+    <h2>Events</h2>
+    <ol id="log" class="log"></ol>
+  </section>
+
+</main>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -1,17 +1,63 @@
 <?xml version="1.0" encoding="utf-8"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <!-- Mount position, CAD-derived 2026-08-18 (fresh Onshape import). Relative to
+       base_link; chassis_link sits on base_link with a zero offset, see
+       base_to_chassis_joint. This replaces the estimates of earlier the same day
+       ('0.260 0 0.1122'), which were derived from tape measurements alone.
+
+       x = 0.2488: CAD puts the LiDAR housing centre at x +0.2488, y exactly
+       0.000.
+
+       z = 0.1034: the CAD housing spans z +0.0800…+0.1133 relative to base_link,
+       i.e. 236.6…269.9 mm above ground. The user's tape-measured scan plane at
+       260 mm above ground falls inside that span, so the ground height is taken
+       as authoritative and converted:
+           0.260 - base_footprint_to_base_link_z (0.1566) = 0.1034
+       The ground-level number is the one that matters: it decides whether litter
+       is visible to the scanner at all, and most litter lies well below it. If
+       base_footprint_to_base_link_z is ever corrected, re-derive this z from the
+       0.260 m ground height rather than keeping 0.1034.
+
+       TO-VERIFY: the exact OPTICAL CENTRE inside the housing. The housing centre
+       is not necessarily the scan plane; resolving this needs the LD06 datasheet
+       or a dedicated `frame_lidar` connector in the CAD.
+
+       NOTE, not a defect: the LiDAR is the FRONTMOST object on the robot — its
+       bracket reaches x +0.2681, past the tyres at +0.2459. The user has accepted
+       this overhang; it is why the Nav2 footprint is asymmetric in x.
+
+       BLIND REAR WEDGE, added 2026-08-19. min_angle/max_angle were +-180 deg (a
+       full sweep); they are now +-160 deg. These two parameters feed ONLY the
+       <gazebo> sensor below — the real-robot URDF instantiates this macro with
+       add_gazebo="false" and never reads them — so this changes the SIMULATED
+       scanner only, to match what the REAL one actually delivers: the LD06
+       driver is configured with angle_crop 160-200 deg in
+       gripperx_bringup/launch/real_robot.launch.py, which zeroes a +-20 deg
+       wedge behind the sensor (self-occlusion by the arm and gripper). A twin
+       that scans the full 360 deg cannot reproduce the single most
+       safety-relevant property of this sensor, and the reverse-recovery guard in
+       gripperx_planning/config/nav2.yaml is unverifiable without it.
+
+       The crop is symmetric about 180 deg, so it maps onto the robot's rear
+       regardless of which way the driver counts angles (laser_scan_dir); only a
+       yawed physical mount would move it, and lidar_joint rpy is 0 0 0.
+       TO-VERIFY against a real scan (SESSION_BRIEF item 4) — the mount
+       orientation itself is still unvalidated.
+
+       sample_count 640 keeps the angular resolution at 0.5 deg/sample that the
+       previous 720-over-360-deg setting had. -->
   <xacro:macro
     name="gripperx_lidar"
     params="
       parent:=chassis_link
-      xyz:='0 0 0.15'
+      xyz:='0.2488 0 0.1034'
       rpy:='0 0 0'
       add_gazebo:=false
       topic:=/scan
       update_rate:=15.0
-      sample_count:=720
-      min_angle:=-3.14159
-      max_angle:=3.14159
+      sample_count:=640
+      min_angle:=-2.79253
+      max_angle:=2.79253
       min_range:=0.10
       max_range:=12.0">
 

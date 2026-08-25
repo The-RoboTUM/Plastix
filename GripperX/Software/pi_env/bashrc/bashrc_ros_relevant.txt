@@ -1,5 +1,11 @@
 119:# ROS 2 Jazzy
 120:source /opt/ros/jazzy/setup.bash
-121:export ROS_DOMAIN_ID=42
-122:export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
-123:source ~/microros_ws/install/setup.bash
+121:export ROS_DOMAIN_ID=20
+122:# FastRTPS, matching the four gripperx-*.service scripts. Mixed RMW was the
+123:# state until 2026-08-13: a CycloneDDS shell silently ignores
+124:# FASTRTPS_DEFAULT_PROFILES_FILE, so the UDP-only hardening that fixed the
+125:# 2026-07-09 "discovery ok, 0 Hz data" failure did not apply to interactive
+126:# diagnosis at all (OP-8).
+127:export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+128:export FASTRTPS_DEFAULT_PROFILES_FILE=/home/ubuntu/fastdds_udp_only.xml
+129:source ~/microros_ws/install/setup.bash

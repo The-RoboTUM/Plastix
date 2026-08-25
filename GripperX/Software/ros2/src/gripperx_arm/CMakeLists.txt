@@ -11,7 +11,12 @@ install(PROGRAMS gripperx_arm/arm_action_server.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
-install(DIRECTORY launch
+install(PROGRAMS gripperx_arm/arm_pose_teach.py
+  RENAME arm_pose_teach
+  DESTINATION lib/${PROJECT_NAME}
+)
+
+install(DIRECTORY launch config
   DESTINATION share/${PROJECT_NAME}
 )
 

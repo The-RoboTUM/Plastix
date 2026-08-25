@@ -1,4 +1,3 @@
-# /etc/systemd/system/gripperx-wifi.service
 [Unit]
 Description=GripperX WiFi Reconnect
 After=network.target wpa_supplicant.service

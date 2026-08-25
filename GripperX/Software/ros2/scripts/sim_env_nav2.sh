@@ -1,9 +1,15 @@
 #!/bin/bash
 # Layers the locally-extracted Nav2 debs (.rosdeps_local, gitignored, 194MB)
 # on top of the standard sim_env.sh, so the Nav2 core packages missing from the
-# system install become available WITHOUT sudo/system changes. Domain 7 (SR-8).
-# Usage: source this file (from ~/gripperx_ws/Software/ros2).
-WS="$HOME/gripperx_ws/Software/ros2"
+# system install become available WITHOUT sudo/system changes. Twin domain 220 (SR-8),
+# inherited from sim_env.sh — was 7 until 2026-08-13.
+# Usage: source this file (works from any cwd).
+#
+# WS is derived from BASH_SOURCE, NOT from $HOME: the repo is checked out as
+# several git worktrees in parallel (~/gripperx_ws, ~/gripperx_ws_nav2, ...).
+# A hardcoded "$HOME/gripperx_ws/..." made a worktree session silently source
+# install/ and .rosdeps_local of the SHARED tree instead of its own.
+WS="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$WS/scripts/sim_env.sh"
 
 R="$WS/.rosdeps_local/opt/ros/jazzy"

@@ -1,0 +1,68 @@
+# /etc/systemd/system/gripperx-button.service
+#
+# HWR-40 clean-shutdown button: one button, two functions by press duration.
+#   short press (< 1 s)  -> Mode R, restart the ROS2 stack, Pi stays up
+#   1-3 s                -> DEAD ZONE, discarded on purpose
+#   long press (>= 3 s)  -> Mode H, stack down, then the Pi halts
+#
+# NOT ENABLED ON DELIVERY. Nothing here is in effect until someone installs the
+# daemon, installs /etc/gripperx/gripperx-button.conf and runs
+# `systemctl enable --now gripperx-button.service`. That is a deliberate act.
+#
+# SUPERSEDES dtoverlay=gpio-shutdown -- that overlay emits one KEY_POWER event,
+# cannot measure press duration, and would claim the same GPIO line. The two are
+# mutually exclusive; do NOT enable both.
+[Unit]
+Description=GripperX shutdown button (GPIO17, short=stack restart / long=halt)
+# Deliberately NO dependency on any gripperx-* unit. The button exists precisely
+# for the case where the ROS2 stack is wedged, so it must not be ordered after
+# it, must not require it, and must not be PartOf=gripperx.target -- being taken
+# down together with the stack it is meant to control would be exactly backwards.
+After=local-fs.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/gripperx-button-daemon.py
+
+# PRIVILEGES -- recommendation, and the reason it is not simply root.
+# GPIO itself needs no root: /dev/gpiochip4 is mode 0660 group dialout and
+# `ubuntu` is in dialout (same basis as the LiDAR power node). The ONLY
+# privileged thing the daemon does is invoke the stop sequence, which runs
+# `systemctl stop/start` and `systemctl poweroff`. So the daemon runs
+# unprivileged and gets exactly one sudo right, rather than running a
+# permanently-resident root process to hold a GPIO line it does not need root
+# for. Required sudoers drop-in (/etc/sudoers.d/gripperx-button, mode 0440):
+#
+#   ubuntu ALL=(root) NOPASSWD: /usr/local/bin/gripperx-stack-stop --mode=restart
+#   ubuntu ALL=(root) NOPASSWD: /usr/local/bin/gripperx-stack-stop --mode=halt
+#
+# Both modes are listed explicitly rather than with a wildcard, so the grant
+# cannot widen if the script ever gains further modes.
+# ALTERNATIVE if the sudoers route is unwanted: drop User=/Group= (daemon runs as
+# root) and set stop_command to the bare script path. Simpler, broader blast
+# radius. The user's call; this file ships the narrower option.
+User=ubuntu
+Group=ubuntu
+
+# Restart=always per the design constraint: a daemon that has quietly died is a
+# button that silently does nothing, which is the worst failure mode for a
+# control an operator is trusting under stress. It also covers the legitimate
+# start-time failures (config absent, GPIO line already claimed) -- the daemon
+# exits 1 with an explicit reason and systemd retries, so the journal shows the
+# reason repeatedly instead of once.
+Restart=always
+RestartSec=5
+
+# Modest hardening only, and the omissions are deliberate:
+# NoNewPrivileges= is NOT set -- it would break the sudo call above.
+# ProtectSystem=strict / PrivateDevices= are NOT set -- the first blocks the
+# systemctl calls the sequence needs, the second hides /dev/gpiochip4, which is
+# the one device this daemon exists to read.
+ProtectHome=yes
+PrivateTmp=yes
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

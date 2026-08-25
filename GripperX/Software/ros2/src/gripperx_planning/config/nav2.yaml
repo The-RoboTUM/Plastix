@@ -5,13 +5,69 @@ planner_server:
     planner_plugins: ["GridBased"]
     GridBased:
       plugin: "nav2_navfn_planner::NavfnPlanner"
-      tolerance: 0.6
+      # INVARIANT, do not break: tolerance < controller_server
+      # goal_checker.xy_goal_tolerance (0.10). It was 0.6 against a goal
+      # tolerance of 0.35 and that inversion was a real defect, reproduced and
+      # then fixed on the twin 2026-08-19:
+      #   goal 0.60 m ahead -> SUCCEEDED after 74 ms, robot never moved, final
+      #   distance to goal 0.600 m. Same with a goal 0.30 m ahead (53 ms).
+      #   Setting ONLY this parameter to 0.05 and repeating: the same 0.60 m goal
+      #   drove 0.531 m and finished 0.069 m from the goal.
+      # Mechanism (nav2 1.3.12): when the requested goal cell has no finite
+      # NavFn potential, makePlan() searches a +-tolerance box around it for the
+      # nearest cell that has one, and returns a path ending THERE. The
+      # controller does not check the goal checker against the requested goal at
+      # all — it checks against path.poses.back() (ControllerServer::end_pose_).
+      # With tolerance >= the distance to the goal, that relocated endpoint is
+      # the robot's own cell, so the goal checker is satisfied before a single
+      # command is sent. Confirmed directly on ComputePathToPose: for every
+      # requested distance up to 0.60 m the returned path ended exactly on the
+      # start pose (last_to_start = 0.000).
+      # Consequence to keep in mind: this parameter adds DIRECTLY to the
+      # achievable position error, because the robot is steered to the relocated
+      # endpoint, not to the goal. Total worst case = tolerance +
+      # xy_goal_tolerance.
+      # Why 0.05 and not smaller: the relocation search steps in costmap
+      # resolution (0.05 m), so anything below one cell cannot express a
+      # different outcome. 0.05 still lets a goal that lands one cell inside an
+      # inflated boundary snap to the adjacent free cell, which is what keeps
+      # grasp-offset goals (FR-12) plannable at all, while being half the goal
+      # tolerance.
+      tolerance: 0.05
       # A* explores alternate routes when the shortest corridor is blocked.
       use_astar: true
       allow_unknown: true
 controller_server:
   ros__parameters:
     use_sim_time: true
+    # Unstamped geometry_msgs/Twist across the whole autonomous branch: the last
+    # consumer, teleop_mux, subscribes to Twist (gripperx_teleop/teleop_mux_node.py).
+    # Pinned rather than left to the Nav2 default so an upstream default flip
+    # cannot silently break the link (a type mismatch shows up as "no data", not
+    # as an error). Must stay identical on behavior_server and velocity_smoother.
+    enable_stamped_cmd_vel: false
+
+    # ADDED 2026-08-24, and it is not cosmetic. This key was ABSENT, so the node fell
+    # back to its nav2_controller package default. That was survivable only by
+    # accident: the robot's autostart used to start rf2o_laser_odometry, which
+    # publishes on the bare topic /odom, and the controller happened to find it there.
+    # The moment the autostart was repointed at localization.launch.py (which publishes
+    # the fused estimate on /odometry/filtered and does NOT publish /odom), an unset
+    # key would have left the controller with no velocity feedback at all — DWB
+    # sampling every trajectory from a standing start, with nothing logged.
+    #
+    # Pinned for the same reason enable_stamped_cmd_vel above is pinned: the failure
+    # mode of a wrong odometry topic is silence, not an error. bt_navigator already
+    # named this topic explicitly (see its block); the controller now does too, so no
+    # Nav2 node depends on a package default for its odometry source.
+    #
+    # NOT VERIFIED HERE: what the nav2_controller default actually is. nav2_controller
+    # is not installed on the development laptop, so it could not be read out, and it
+    # is deliberately not guessed. It no longer matters — the key is explicit.
+    # Verify on the robot by listing, never by reading this file (DEPLOYMENT.md §4.4):
+    #   ros2 param get /controller_server odom_topic
+    odom_topic: "/odometry/filtered"
+
     controller_frequency: 10.0
     min_x_velocity_threshold: 0.01
     min_y_velocity_threshold: 0.01
@@ -23,28 +79,190 @@ controller_server:
 
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
+      # NOTE, deliberately left at 0.15 although that is now LARGER than
+      # xy_goal_tolerance (0.10). SimpleProgressChecker aborts when the robot
+      # fails to move required_movement_radius within movement_time_allowance, so
+      # a larger radius is the STRICTER setting, not the more forgiving one: the
+      # final approach and the closing rotation must complete inside 15 s or the
+      # navigation aborts. Measured on the twin at the new tolerance, the last
+      # 0.15 m plus the closing rotation take about 2-4 s, i.e. roughly a factor
+      # of 4 of margin, so this is not currently the binding constraint. It is
+      # the parameter to revisit first if 10 cm goals start aborting on the real
+      # robot, where the approach is slower and noisier.
       required_movement_radius: 0.15
-      movement_time_allowance: 15.0
+      # 15.0 -> 20.0 on 2026-08-25, INTERIM. 15.0 tolerates at most two alignment
+      # gate entries per 0.15 m of progress, and the gate was switched on the same
+      # day with alignment_timeout_sec 5.0, so a healthy manoeuvre can consume the
+      # allowance without anything being wrong. 20.0 covers three entries
+      # (16.25 s) with 3.75 s of margin.
+      # THIS LOOSENS IN THE "FAILS LATER" DIRECTION and is therefore the weaker
+      # kind of fix. The real one is not to count held time at all.
+      movement_time_allowance: 20.0
 
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
-      xy_goal_tolerance: 0.35
-      yaw_goal_tolerance: 0.40
+      # User decision 2026-08-19: "the nav tolerance should be at most 10 cm".
+      # Was 0.35. Two independent things used to stop the robot short:
+      #   - this value (a goal closer than 0.35 m is accepted on the spot, which
+      #     is correct behaviour for a 0.35 m tolerance, just too coarse), and
+      #   - planner_server GridBased.tolerance 0.6 (a genuine defect, see there).
+      # After both changes the no-motion radius equals the tolerance, as it
+      # should. Whoever raises this must re-check GridBased.tolerance with it.
+      # Keep FollowPath.RotateToGoal.xy_goal_tolerance EQUAL to this value.
+      xy_goal_tolerance: 0.10
+      # User decision 2026-08-20: 0.10 rad. Was 0.40 (23 deg), which was
+      # conspicuously loose next to 10 cm of position accuracy, and the grasp
+      # sequence is what paid for it: FR-12 places goals with a ~360 mm offset so
+      # the gripper lands on the target, and a 23 deg heading error at 360 mm
+      # moves the gripper ~145 mm sideways, well past the 100 mm the position
+      # number is held to. At 0.10 rad (5.7 deg) the same offset costs ~36 mm.
+      # This value only became ENFORCEABLE at all with the RotateToGoal critic
+      # added below — before that nothing in the critic set drove the robot
+      # towards the goal orientation.
+      # INVARIANT, do not break: FollowPath.Oscillation.reset_angle must stay
+      # <= this value. Whoever changes one must change the other; the full
+      # derivation and the deadlock it prevents are written out at reset_angle.
+      # SimpleGoalChecker accepts on fabs(dyaw) <= yaw_goal_tolerance (non-strict,
+      # nav2 1.3.12 simple_goal_checker.cpp), which is what makes equality safe.
+      yaw_goal_tolerance: 0.10
       stateful: true
 
     FollowPath:
       plugin: "dwb_core::DWBLocalPlanner"
-      debug_trajectory_details: false
+      # TEMPORARILY true, 2026-08-25. The failing run produced "No valid
+      # trajectories out of 194" -- a count with no reason, because this was
+      # false. Those 194 had already PASSED the velocity filter and were thrown
+      # out by the CRITICS, a different layer that no velocity floor reaches.
+      # This is the one key that says which critic. Log volume only.
+      # REVERT once the question is answered.
+      debug_trajectory_details: true
       # Forward only, front (+X) leads. Tighter path tracking, gentler turns near walls.
       min_vel_x: 0.0
-      max_vel_x: 0.70
+      # HALVED 2026-08-21 (was 0.70) so slam_toolbox keeps up: scan matching
+      # degrades with distance travelled per scan, and the map is being built
+      # live on the real robot with no saved map to fall back on.
+      # LOWERED 0.35 -> 0.25 on 2026-08-25. This is the vx SAMPLING range, and it
+      # was wider than max_speed_xy: 0.25, which filters the result -- so the top
+      # 5 of 18 samples were generated and then thrown away every cycle. Aligning
+      # the two makes all 18 usable. Counted against the steering-feasible set:
+      # executable samples 98 -> 130. A LOWERING of a limit, so not the
+      # safety-relevant direction.
+      max_vel_x: 0.25
       min_vel_y: 0.0
       max_vel_y: 0.0
-      max_vel_theta: 1.5
-      min_speed_xy: 0.0
-      max_speed_xy: 0.50
-      min_speed_theta: 0.0
+      # HALVED 2026-08-21 (was 1.5). Angular rate matters MORE than linear
+      # for scan matching -- a fast turn smears the scan against a reference
+      # that is no longer aligned, which is the mechanism behind a matcher
+      # lock-up. Keep behavior_server.max_rotational_vel and
+      # velocity_smoother.max_velocity[2] in step with this.
+      # LOWERED AGAIN 2026-08-21, 0.75 -> 0.40, on a measurement rather than a
+      # feeling: the LD06 needs 0.0999 s per revolution, so the robot's own
+      # rotation smears the scan by omega * 0.1 rad. At 0.75 that is 4.3 deg of
+      # smear against a 0.795 deg angle_increment; at 0.40 it is 2.3 deg. The
+      # scan is still not an instant, but the error drops with the rate and this
+      # is the only lever in the stack that acts on the CAUSE — the smear is in
+      # the data before any SLAM parameter sees it.
+      # CORRECTED 0.40 -> 0.55 on 2026-08-21, same day, because 0.40 was BELOW
+      # WHAT THE MACHINE CAN TURN. During a spin every wheel runs at
+      # omega * r_eff with r_eff = 0.2665 m, so the 0.12 m/s floor below which
+      # this robot does not reliably move puts a hard floor on omega at
+      # 0.12 / 0.2665 = 0.450 rad/s. At 0.40 Nav2 would have commanded rotations
+      # the drivetrain cannot execute, and the failure looks like a stuck robot,
+      # not like a bad parameter.
+      # 0.55 also sits above the wheel regulator's arming threshold (2.0 rad/s
+      # wheel rate = 0.525 rad/s body rate), so the regulator is active through
+      # the turn and keeps the four wheels matched. The 0.3 deg of extra scan
+      # smear that costs is worth less than an unregulated rotation.
+      # RAISED 0.55 -> 0.80 on 2026-08-25 (user decision), FORCED BY THE FLOOR
+      # BELOW. The 2026-08-21 correction 0.40 -> 0.55 used the same reasoning as
+      # the floor and inherited the same error; with the floor now measured at
+      # 0.60, a ceiling of 0.55 would put the floor ABOVE the ceiling and DWB
+      # would reject every trajectory containing rotation. The usable band was
+      # 0.45-0.55 -- ENTIRELY BELOW THE MEASURED KNEE, so every rotation Nav2
+      # commanded sat in the degraded regime. It is now 0.60-0.80, entirely above
+      # it, and both edges are measured (0.60 -> 103.8 %, 0.85 -> 107.9 %).
+      # ⚠ THE SCAN-SMEAR COST IS REAL AND IS BEING PAID KNOWINGLY. The LD06 needs
+      # 0.0999 s per revolution, so smear is omega * 0.1 rad: 3.15 deg at 0.55,
+      # 4.6 deg at 0.80, against a 0.795 deg angle_increment. That is the cost the
+      # 2026-08-21 lowering to 0.40 was buying. It is accepted because the
+      # alternative is commanding rotations the drivetrain does not execute, and
+      # a smeared scan during a turn the robot actually makes beats a clean scan
+      # during a turn it does not.
+      # Still above the wheel regulator's arming threshold (2.0 rad/s wheel rate
+      # = 0.525 rad/s body rate), which was the other constraint on 0.55.
+      max_vel_theta: 0.80
+      # SET 0.0 -> 0.12 on 2026-08-25. THE NUMBER WAS ALREADY IN THIS FILE,
+      # three lines below, as prose: "it does not move reliably below ~0.12 m/s
+      # and not at all at 0.06". It was documented and not enforced, so DWB kept
+      # selecting speeds the machine cannot execute. Measured again the same day,
+      # independently, by an operator watching the robot: it first genuinely
+      # drives off at 0.120 m/s (the encoder's own net-displacement threshold is
+      # lower, 0.055-0.090, and is a DIFFERENT quantity -- the wheel turns while
+      # the vehicle stands).
+      #
+      # WHAT WAS OBSERVED WITHOUT IT: Nav2 commanded vx=0.04 m/s, the robot
+      # jerked and did not move, and the run ended in "Failed to make progress"
+      # -> "Aborting handle". The comment below predicted exactly that failure
+      # mode: "the failure looks like a stuck robot, not like a bad parameter".
+      #
+      # SEMANTICS, so this is not read as a blanket minimum: DWB rejects a
+      # trajectory only when the linear speed is below min_speed_xy AND |theta|
+      # is below min_speed_theta. A pure rotation above the theta floor survives,
+      # and so does a straight run above this one. What it removes is exactly the
+      # set that moves the robot not at all.
+      min_speed_xy: 0.12
+      # HALVED 2026-08-21 (was 0.50). This is the binding limit for straight
+      # driving. 0.25 m/s still sits well clear of this machine's floor: it
+      # does not move reliably below ~0.12 m/s and not at all at 0.06.
+      max_speed_xy: 0.25
+      # SET 0.0 -> 0.45 on 2026-08-25, and this file had already derived it:
+      # "0.12 / 0.2665 = 0.450 rad/s. At 0.40 Nav2 would have commanded rotations
+      # the drivetrain cannot execute". Same arithmetic reached independently
+      # from the 2026-08-25 break-away measurement: 1.714 rad/s at the wheel,
+      # r_contact 0.266571, r_wheel 0.070 -> 0.450 rad/s body rate.
+      # A third route agrees: Pi-side commit 26fb599, "rotation: 0.40 rad/s was
+      # below what this machine can turn - correct to 0.55".
+      #
+      # ⚠ THE USABLE BAND IS NARROW AND THIS IS NOT SETTLED: 0.450 floor against
+      # max_vel_theta 0.55, across vtheta_samples 14. Whether that leaves DWB
+      # enough to work with is TO-VERIFY, and raising max_vel_theta is a
+      # safety-relevant user decision, not something to slip in here. It also
+      # interacts with the regulator's arming threshold at 0.525 rad/s body rate,
+      # which max_vel_theta 0.55 was deliberately set just above.
+      # RAISED 0.45 -> 0.60 on 2026-08-25 (user decision) ON A ROTATION SWEEP.
+      # The 0.450 above was derived as 0.120 / 0.2665 -- the STRAIGHT-LINE
+      # drive-off divided by the spin contact radius. That derivation assumes a
+      # spin costs what rolling straight costs. It does not: a spin scrubs all
+      # four wheels sideways. Measured in place, descending from a primed spin:
+      #     1.00 -> 108.6 %   0.85 -> 107.9 %   0.70 -> 105.9 %   0.60 -> 103.8 %
+      #     -------------------------- KNEE --------------------------
+      #     0.50 ->  79.1 % (momentary standstill inside the window)
+      #     0.45 ->  71.2 %   0.40 -> 58.5 %   0.35 -> 59.3 %
+      # The cross-check is exact: 0.45 rad/s IS 0.120 m/s at the wheel, the very
+      # figure it was derived from, and it delivers 71 %. At the knee the wheel
+      # runs 0.60 * 0.266571 = 0.160 m/s, about a third above the straight-line
+      # 0.120 m/s -- that third is the scrub.
+      # ⚠ The knee is BRACKETED between 0.50 and 0.60, not pinned. 0.60 is the
+      # conservative end; a fine sweep would pin it.
+      min_speed_theta: 0.60
       acc_lim_x: 1.2
+      # acc_lim_y / decel_lim_y stay 0.0 and are NOT the crab recovery's ramp.
+      # These two keys belong to dwb_plugins::KinematicParameters and are read by
+      # DWB's own velocity iterator while it samples trajectories. With
+      # max_vel_y 0.0 and vy_samples 1 the y sample set is {0} whatever they say,
+      # so nothing DWB does can produce a vy. The crab recovery does not pass
+      # through DWB at all: behavior_server publishes its own twist straight onto
+      # /nav/cmd_vel_raw (same remap as controller_server) and the ramp is applied
+      # by the velocity_smoother, a different node with its own parameters.
+      #
+      # MEASURED, not argued, 2026-08-19: with velocity_smoother.max_accel y set
+      # to 0.0 at runtime, a crab_walk goal put vy = 0.10 on /nav/cmd_vel_raw and
+      # 0.0 on /teleop/autonomous/cmd_vel; the robot did not move at all
+      # (ground-truth displacement 0.000 m) and the behavior ended in TIMEOUT
+      # (error 721). Restoring 1.2 made it run again. The lateral ramp is
+      # therefore entirely the smoother's, and these two keys are inert on this
+      # path. They are left at 0.0 rather than "fixed": a non-zero value here
+      # would change nothing and would falsely suggest DWB may crab.
       acc_lim_y: 0.0
       acc_lim_theta: 1.8
       decel_lim_x: -1.2
@@ -52,18 +270,118 @@ controller_server:
       decel_lim_theta: -1.2
       vx_samples: 18
       vy_samples: 1
-      vtheta_samples: 14
+      # 14 -> 15 on 2026-08-25. ⚠ THE REASON FIRST GIVEN FOR THIS WAS WRONG, and
+      # the correction is kept here rather than tidied away, because this file's
+      # comments are how derivations survive.
+      #
+      # CLAIMED, and deployed on the strength of it: an EVEN sample count over a
+      # symmetric range never lands on zero, so DWB could not propose a straight
+      # line. The grid arithmetic is right -- across [-0.55, +0.55] with 14
+      # samples the step is 1.1/13 and the nearest grid point to zero is
+      # 0.0423 rad/s.
+      #
+      # REFUTED by reading the source on the Pi the same evening
+      # (/opt/ros/jazzy/include/dwb_plugins/one_d_velocity_iterator.hpp):
+      # reset() sets return_zero_ = true UNCONDITIONALLY, and operator++ inserts
+      # an extra zero sample whenever a step would cross from negative to
+      # positive. So 14 samples yield 14 grid points PLUS an inserted zero = 15
+      # actual, and 15 samples yield 15 grid points with zero hit exactly (no
+      # double count -- the crossing condition needs current_+increment_ > 0.0,
+      # which is false when the sum is exactly 0). **DWB could always command a
+      # straight line.**
+      #
+      # THE CHANGE IS KEPT because it is harmless and marginally cleaner: an odd
+      # count reaches zero on the grid instead of through a special case, and the
+      # step becomes 1.1/14 = 0.0786 rather than 0.0846. It buys NOTHING that was
+      # claimed for it, and the executable-sample figure of 130 -> 139 quoted in
+      # the commit rests on the refuted premise and should not be reused.
+      vtheta_samples: 15
       sim_time: 1.1
       linear_granularity: 0.05
       angular_granularity: 0.02
       transform_tolerance: 0.2
+      # NOT inert, and not only a dwb_core setting: RotateToGoalCritic reads its
+      # "translation has stopped" threshold from THIS key (searchAndGetParam on
+      # <plugin>.trans_stopped_velocity), verified at runtime on the twin.
+      # 0.05 m/s sits above one vx sample step (max_vel_x 0.70 / (vx_samples 18
+      # - 1) = 0.041 m/s), so the stopped state is reachable in one deceleration
+      # step from the slowest non-zero sample DWB can generate.
       trans_stopped_velocity: 0.05
+      # RotateToGoalCritic's WINDOW. It has to live here, at DWB-plugin level:
+      # in nav2 1.3.12 the critic reads <plugin>.xy_goal_tolerance, NOT
+      # <plugin>.RotateToGoal.xy_goal_tolerance — a critic-scoped key is silently
+      # ignored and the critic falls back to its 0.25 m default. That was
+      # measured, not assumed: with the default in place the robot parked 0.209 m
+      # short of a 0.65 m goal and could only rotate, until the progress checker
+      # aborted (twin, 2026-08-19).
+      # THE RULE AGAINST goal_checker.xy_goal_tolerance (0.10) IS ONE-SIDED, and
+      # the earlier note here got that wrong by demanding equality. Correct rule:
+      #     this key <= goal_checker.xy_goal_tolerance
+      # LARGER IS FATAL, and that half is measured: once the critic is inside its
+      # window AND translation has stopped it declares every trajectory with a
+      # non-zero vx illegal ("Nonrotation command near goal"), so a window wider
+      # than the goal tolerance strands the robot at the window edge, allowed
+      # only to rotate, until the progress checker aborts — the 0.209 m failure
+      # described above, with the 0.25 m plugin default against a 0.10 m
+      # tolerance.
+      # SMALLER IS LEGAL, and it is the LEVER on position accuracy. Equality is
+      # merely the loosest admissible value, not the correct one: below the goal
+      # tolerance the lock-out happens LATER, so the controller keeps driving the
+      # position error down for longer before it may only rotate. The error the
+      # robot ends up with is essentially the window it was allowed to stop in.
+      #
+      # MEASURED 2026-08-20, twin, ground truth, three fresh-twin runs per window,
+      # identical goals (0.60 m ahead, +0.9 rad offset), goal_checker left at
+      # 0.10/0.10 throughout — only this key moved:
+      #   window 0.10 : xy error 0.0508 m   yaw error max 0.0749   4.944 s sim
+      #   window 0.06 : xy error 0.0260 m   yaw error max 0.0817   5.831 s sim
+      #   window 0.04 : xy error 0.0172 m   yaw error max 0.0745   6.000 s sim
+      # 9 of 9 SUCCEEDED, zero recoveries, zero progress-checker failures. The
+      # 0.10 and 0.04 error bands do not overlap (0.0476..0.0535 vs
+      # 0.0144..0.0224), so the effect is far larger than the run-to-run spread.
+      # 0.04 is set because it gives the smallest position error (2.95x better
+      # than 0.10) while the declared yaw tolerance is still met with the largest
+      # margin of the three. It costs +1.06 s of sim time per goal (+21%).
+      #
+      # WHAT WOULD BREAK IT, so the next reader knows where the floor is: the
+      # robot has to be SAMPLED inside the window for the closing rotation to
+      # start at all, and the controller runs at 10 Hz. At the fastest speed
+      # actually commanded in these runs (0.4941 m/s on
+      # /teleop/autonomous/cmd_vel) 0.04 m is crossed in 0.081 s, already under
+      # one 0.1 s cycle; at the configured max_vel_x 0.70 it would be 0.057 s.
+      # It did not bite here because the approach to a goal is slow (0.6 m in
+      # ~6 s), but this is the first number to revisit if the real robot ever
+      # stops closing its heading. Fallback in that case is 0.06, which measured
+      # cleanly too and still beat the control by a factor of two.
+      # NOT evidence against 0.04: a probe with a 1.5 m LATERAL goal failed to
+      # close the yaw once at this window — but the same goal degrades identically
+      # at 0.10 (same 4 progress-checker failures, same 72 s, same 2.2 m of path),
+      # so that pathology belongs to the goal profile, not to this key.
+      # 0.04 -> 0.06 on 2026-08-25. This is the RotateToGoal critic's window, not
+      # the goal checker's. 0.04 was measured on the TWIN at a ~0.10 m/s approach
+      # that the real robot can no longer perform: it first drives off at
+      # 0.120 m/s (measured on the machine, operator-observed, 2026-08-25). At
+      # that floor the 0.04 window is about 3.3 control cycles wide and the coast
+      # eats roughly a third of it. 0.06 is this file's own named fallback,
+      # measured cleanly. Costs position accuracy: twin 0.0260 m against 0.0172 m.
+      xy_goal_tolerance: 0.06
       prune_plan: true
       short_circuit_trajectory_evaluation: true
+      # DEAD KEY, kept only so nobody re-adds it believing it does something:
+      # DWBLocalPlanner declares no "stateful" parameter (that is a goal-checker
+      # concept, set at goal_checker.stateful above). Confirmed against the
+      # running node's parameter list 2026-08-20.
       stateful: true
+      # Order matters only for short_circuit_trajectory_evaluation: safety
+      # critics first, then the goal-phase gate, then the path critics.
+      # RotateToGoal added 2026-08-19: without it NOTHING in this set rewarded
+      # reaching the goal ORIENTATION. GoalDist only scores distance, and a
+      # rotation in place reduces no distance, so yaw_goal_tolerance was
+      # satisfied by luck or not at all.
       critics:
         - Oscillation
         - ObstacleFootprint
+        - RotateToGoal
         - PathDist
         - PathAlign
         - GoalDist
@@ -72,8 +390,109 @@ controller_server:
       PathAlign.scale: 15.0
       PathDist.scale: 30.0
       GoalDist.scale: 26.0
-      Oscillation.reset_dist: 0.08
-      Oscillation.reset_angle: 0.35
+      # KEY NAMES, do not "simplify" them: OscillationCritic reads
+      # <plugin>.<critic>.oscillation_reset_dist / _angle / _time — the
+      # "oscillation_" prefix is part of the key, unlike every other critic in
+      # this file. nav_2d_utils::searchAndGetParam does NOT search up the
+      # namespace despite its name; it declares the exact string and reads it
+      # back, so a near-miss is silently the plugin default.
+      # THIS WAS LIVE AND WRONG until 2026-08-20: the file said
+      # Oscillation.reset_dist/reset_angle, which nothing reads, so the twin ran
+      # on the defaults 0.05 m / 0.2 rad and the 0.08/0.35 in this file had never
+      # taken effect. Verified against the running controller_server with
+      # `ros2 param list`: the declared names are the oscillation_* ones, and
+      # FollowPath.Oscillation.reset_angle does not exist as a parameter.
+      # reset_dist is NOT an escape during the closing rotation — RotateToGoal
+      # forbids translation there, so the robot cannot travel 0.08 m to clear a
+      # flag. It is the escape while the robot is still driving (phases 1 and 2),
+      # where OscillationCritic::reset() clears ALL THREE trends at once, the
+      # theta flag included. Note also that on this configuration the x and y
+      # trends can never flip at all: min_vel_x is 0.0 (DWB never commands a
+      # negative vx; the reverse recovery bypasses DWB) and vy_samples 1 with
+      # max_vel_y 0.0 pins vy to exactly 0. Theta is the only trend that moves.
+      Oscillation.oscillation_reset_dist: 0.08
+      # 0.05 rad, lowered from 0.35 together with yaw_goal_tolerance 0.40 -> 0.10
+      # on 2026-08-20 (user decision). THE OLD COMMENT HERE WAS RIGHT ABOUT THE MECHANISM AND ITS
+      # CONCLUSION HELD ONLY FOR 0.40; at 0.10 the same mechanism deadlocks.
+      #
+      # INVARIANT, do not break: reset_angle <= goal_checker.yaw_goal_tolerance.
+      # Read out of nav2 1.3.12 dwb_critics/src/oscillation.cpp, not inferred:
+      #   - CommandTrend::update() sets a flag when the sign of a commanded
+      #     component REVERSES. The flag is per axis (x_trend_, y_trend_,
+      #     theta_trend_), and it is directional: after a +->- flip only negative
+      #     commands stay legal, after -->+ only positive ones. scoreTrajectory()
+      #     throws IllegalTrajectoryException for the forbidden sign; a zero
+      #     command is never illegal (0.0 is neither < 0 nor > 0).
+      #   - setOscillationFlags() only updates the theta trend while
+      #     |cmd_vel.x| <= x_only_threshold (0.05 default, not set here), i.e.
+      #     essentially only in the closing-rotation phase.
+      #   - resetAvailable() is an OR of reset_dist, reset_angle and reset_time,
+      #     and reset() then clears all three trends. reset_time is -1 (off) by
+      #     default and is not set here, so only dist and angle can fire.
+      #   - The angle test is |pose.theta - theta_at_the_flip| > reset_angle:
+      #     rotation ACCUMULATED SINCE THE FLIP, not the remaining yaw error.
+      # The deadlock: let e1 be the yaw error when the command flips sign and e2
+      # the overshoot on the other side. Rotation since the flip is |e1| + |e2|.
+      # The robot is stuck if the flags are still set (|e1| + |e2| <= reset_angle)
+      # while the goal checker still refuses (|e2| > yaw_goal_tolerance) — it then
+      # needs the forbidden sign, every non-zero legal command turns it further
+      # AWAY (worse RotateToGoal score than standing still), so DWB picks 0,
+      # nothing moves, |Delta theta| stops growing and no reset can ever arrive.
+      # It ends as an ABORT via the progress checker, 15 s later.
+      # With reset_angle <= yaw_goal_tolerance the two conditions are mutually
+      # exclusive: |e2| <= |e1| + |e2| <= reset_angle <= yaw_goal_tolerance.
+      # At the old pair (0.35 vs 0.40) that also held, by the same inequality —
+      # which is why the old setting was safe and this one has to move with it.
+      # Why strictly below 0.10 and not exactly on it: the critic measures
+      # |Delta theta| in the LOCAL costmap frame against its own remembered pose,
+      # while the goal checker measures against the goal in the GLOBAL frame, so
+      # map->odom yaw correction during the rotation breaks the exact equality
+      # the inequality above relies on. 0.05 leaves 0.05 rad of margin.
+      # Why not smaller than ~0.023: DWB's theta sample spacing is
+      # (v_max - v_min)/(samples - 1) over the acceleration-reachable window
+      # (StandardTrajectoryGenerator passes sim_time 1.1 s as the accel time),
+      # which computes to 0.178..0.225 rad/s here; held for one 10 Hz control
+      # cycle that is at most 0.023 rad of yaw. Below that, a single cycle of
+      # committed rotation clears every flag and the critic has no authority over
+      # theta at all. 0.05 is a little over two such cycles: small enough to keep
+      # the invariant with margin, large enough that the critic still bites.
+      Oscillation.oscillation_reset_angle: 0.05
+      # ---- RotateToGoal (dwb_critics::RotateToGoalCritic) -------------------
+      # Window and "stopped" threshold are NOT set here — see
+      # FollowPath.xy_goal_tolerance / FollowPath.trans_stopped_velocity above,
+      # which is where this critic actually reads them from.
+      # The two keys below were written "FollowPath.RotateToGoal.<x>" INSIDE the
+      # FollowPath block until 2026-08-20, which resolves to
+      # FollowPath.FollowPath.RotateToGoal.<x> — a name nothing reads. The critic
+      # therefore ran at its defaults, scale 1.0 instead of 32.0, for every
+      # measurement taken before that date. Inside this block the critic name
+      # alone is the correct prefix, exactly as for ObstacleFootprint.scale and
+      # PathDist.scale above.
+      # slowing_factor ranks the decelerating trajectories in the sub-phase between entering the
+      # window and standing still (score = speed^2 * factor + |yaw error|).
+      # Pinned at the plugin default rather than left implicit.
+      RotateToGoal.slowing_factor: 5.0
+      # Scale 32.0. The critic returns 0.0 for every trajectory outside its
+      # 0.10 m window, so this number cannot trade off against path-following
+      # quality anywhere else — it is inert until the robot is on the goal.
+      # Inside the window the competition is: PathAlign disables itself within
+      # forward_point_distance (0.30 m) of the goal, and PathDist/GoalDist score
+      # position only, so they are identical across pure rotations and cancel.
+      # What remains is that RotateToGoal must outrank the strongest position
+      # critic still active during the deceleration sub-phase, PathDist at 30.0.
+      # 32.0 is the smallest round value above it. Value chosen from the critic
+      # set in this file, not copied from a tutorial.
+      # RE-CHECKED against yaw_goal_tolerance 0.10 on 2026-08-20, unchanged, and
+      # the reason is structural rather than empirical: RotateToGoalCritic never
+      # reads yaw_goal_tolerance. Its onInit (nav2 1.3.12 rotate_to_goal.cpp)
+      # takes only <plugin>.xy_goal_tolerance, <plugin>.trans_stopped_velocity,
+      # .slowing_factor and .lookahead_time; its window and both phase
+      # transitions are position- and speed-based, and scoreRotation returns a
+      # raw angle in radians, not a fraction of any tolerance. So nothing in the
+      # weighting shifts when the goal checker gets stricter — the tighter
+      # tolerance only makes the robot stay in phase 3 longer, and there the
+      # position critics cancel and the scale does not arbitrate anything.
+      RotateToGoal.scale: 32.0
 
 bt_navigator:
   ros__parameters:
@@ -95,19 +514,559 @@ bt_navigator:
 behavior_server:
   ros__parameters:
     use_sim_time: true
+    # See controller_server: unstamped Twist across the autonomous branch.
+    enable_stamped_cmd_vel: false
     local_frame: odom
     global_frame: odom
     robot_base_frame: base_footprint
     transform_tolerance: 0.2
     simulate_ahead_time: 2.0
-    max_rotational_vel: 1.4
+    # DEAD KEYS, all three. Found 2026-08-20 by comparing every key in this file
+    # against `ros2 param list` of every running node. They are declared by
+    # libnav2_spin_behavior.so, i.e. by nav2_behaviors::Spin — and `spin` is not
+    # in behavior_plugins above, so nothing on this server declares or reads
+    # them. Verified twice: they are absent from the behavior_server parameter
+    # list at runtime, and `strings libnav2_spin_behavior.so` is the only place
+    # on this machine where the three names occur outside this file.
+    # LEFT IN PLACE ON PURPOSE and NOT renamed: this is not a typo that a
+    # correct spelling would fix, it is configuration for a plugin that is not
+    # loaded. Removing them or loading Spin are both decisions, not cleanups.
+    # Same treatment as FollowPath.stateful above: keep it visible, label it, so
+    # nobody re-adds it believing it does something.
+    # CONSEQUENCE WORTH KNOWING, because two comments further down still cite
+    # these as if they were live source limits: velocity_smoother takes the
+    # MAXIMUM over its sources, and for theta the phantom rotational_acc_lim 2.0
+    # is larger than the only live source (FollowPath acc_lim_theta 1.8). So
+    # max_accel/max_decel theta are 2.0/-2.0 where the live sources alone would
+    # give 1.8/-1.8. Harmless in direction (a looser RATE limit, the saturation
+    # cap still comes from FollowPath max_vel_theta 1.5), but the derivation
+    # written at velocity_smoother rests on a number nothing reads. Not changed
+    # here — reported, because changing a smoother limit is not a dead-key fix.
+    # HALVED 2026-08-21 (was 1.4), in step with FollowPath.max_vel_theta 0.75.
+    # min_rotational_vel below is NOT halved: 0.3 rad/s already puts the wheels
+    # at 0.3 * 0.2665 = 0.08 m/s, under the ~0.12 m/s this machine needs to move
+    # at all. Halving it would ask for a rotation the drivetrain cannot deliver.
+    # ⚠⚠ ALL THREE ROTATIONAL ENTRIES BELOW ARE DEAD. VERIFIED ON HARDWARE
+    # 2026-08-25 by reading the live node, not the file: `ros2 param list
+    # /behavior_server` contains NO rotational parameter at all, and
+    # `ros2 param get /behavior_server max_rotational_vel` answers
+    # "Parameter not set".
+    #
+    # THE REASON, and it is a good one: these three belong to the Spin behaviour,
+    # and Spin IS NOT LOADED on this robot. behavior_plugins reads
+    #     ['drive_on_heading', 'backup', 'crab_walk', 'wait']
+    # A 4WIS machine recovers by crab-walking, not by spinning in place, so Spin
+    # was never in the list. The comment further down already suspected this for
+    # rotational_acc_lim ("the phantom rotational_acc_lim 2.0"); it holds for all
+    # three.
+    #
+    # THEY ARE KEPT, NOT DELETED, because the derivations attached to them are
+    # the record of two real measurements. But DO NOT TUNE THEM EXPECTING AN
+    # EFFECT: they read like live limits on rotation and are not. If Spin is ever
+    # added to behavior_plugins, revisit every one of them against the 0.60 rad/s
+    # knee measured 2026-08-25 -- min_rotational_vel 0.3 would then be asking for
+    # 0.080 m/s at the wheel, half the 0.160 m/s a spin needs to move at all.
+    #
+    # max_rotational_vel was changed 0.70 -> 0.80 on 2026-08-25 to hold the "keep
+    # in step with FollowPath max_vel_theta" rule stated at the top of this file.
+    # That rule is real; this half of it turned out to be inert. The value is
+    # left at 0.80 so a future reader does not conclude 0.70 meant something.
+    max_rotational_vel: 0.80
     min_rotational_vel: 0.3
     rotational_acc_lim: 2.0
-    behavior_plugins: ["drive_on_heading", "wait"]
+    # BackUp is LOADED, but only as a hard-bounded last-resort recovery
+    # (user decision 2026-08-19: "on KNOWN ground a short reverse (<30 cm)
+    # should be possible for recovery"). It replaces the previous blanket ban.
+    #
+    # Why the ban existed, and why it is not enough on its own: the LD06 is
+    # angle-cropped in gripperx_bringup/launch/real_robot.launch.py (160-200 deg
+    # removed), so a +-20 deg wedge behind the robot is BLIND — not filtered,
+    # not degraded: no returns at all. Reversing there is unguarded by any live
+    # sensor reading.
+    #
+    # What makes a bounded reverse defensible is COSTMAP MEMORY, and it only
+    # works because three things hold together (all three verified on the twin,
+    # 2026-08-19 — change any one and the guard is gone):
+    #   1. local_costmap.track_unknown_space is now TRUE (see local_costmap
+    #      below). Never-observed cells are NO_INFORMATION (255), and
+    #      FootprintCollisionChecker scores 255 >= LETHAL_OBSTACLE (254), so
+    #      BackUp's own isCollisionFree() REFUSES to reverse into ground the
+    #      robot has never seen. With the previous default (false) unknown was
+    #      cost 0 = free and that check was worthless.
+    #   2. The obstacle layer never resets: it clears only along raytraces, and
+    #      no ray enters the blind wedge, so an obstacle marked while driving
+    #      past it STAYS marked after it falls into the wedge.
+    #   3. footprint_clearing_enabled (default true) clears the robot's own
+    #      footprint to FREE every cycle, so the strip the robot has physically
+    #      driven over is "known free" rather than unknown — that strip is
+    #      exactly the ground a recovery reverse retraces.
+    #
+    # WHAT THIS DOES NOT COVER (residual risk, do not paper over): anything that
+    # MOVED IN BEHIND the robot after it drove past — a person, an animal, a
+    # rolling object — is neither in the costmap nor visible to the cropped
+    # scanner. No costmap history can represent it. The mitigations against that
+    # case are only the bounded distance and the deliberately low speed below.
+    #
+    # Distance is bounded TWICE, independently (nav2 1.3.12 has NO server-side
+    # distance parameter — DriveOnHeading::onRun takes the distance straight
+    # from the action goal, so the BT port is the only primary limit):
+    #   (a) BT port backup_dist=0.20 in BOTH config/*.xml recovery subtrees.
+    #   (b) BT port time_allowance=2.8 s combined with the smoother's hard
+    #       reverse cap of 0.10 m/s (velocity_smoother.min_velocity below):
+    #       0.10 m/s * 2.8 s = 0.28 m, plus ~0.004 m ramp-down at
+    #       max_decel -1.2 m/s^2 -> 0.284 m worst case. Under 0.30 m even if
+    #       backup_dist is wrong or an external client calls /backup directly.
+    #
+    # ---- crab_walk (gripperx_behaviors::CrabWalk), added 2026-08-19 ----------
+    # User decision: make CRAB a bounded RECOVERY, not a sampling dimension of
+    # the planner. DWB stays forward-only (max_vel_y 0.0, vy_samples 1); the
+    # only thing on this robot that may command vy is this behavior.
+    #
+    # Why it is a custom plugin at all: nav2_behaviors::DriveOnHeading rejects
+    # every goal with target.y != 0 ("DrivingOnHeading in Y and Z not
+    # supported"), and its collision check sweeps the footprint along the
+    # HEADING (cos/sin of theta times linear.x), so even a relaxed input check
+    # would have probed the wrong ground. Package: gripperx_behaviors (new,
+    # ament_cmake — a nav2_core::Behavior is C++ and gripperx_planning is
+    # ament_python).
+    #
+    # WHY EXACTLY 90 deg. For a PURE TRANSLATION every point of the body moves
+    # in the same direction, so every wheel must stand perpendicular to it: the
+    # lateral lever arm between king pin and tyre changes nothing about that.
+    # 90 deg is not a choice, it is the only solution — and the chassis reaches
+    # it through the +-180 deg module equivalence (a wheel at -90 deg spun
+    # backwards is the same motion as +90 deg spun forwards). The steering
+    # windows are FL [-100,+35] FR [-35,+100] BL [-35,+100] BR [-100,+35] deg
+    # (gripperx_control/config/steer_servo.yaml), so the required 90 deg sits
+    # 10 deg inside the outward stop on every wheel and there is no reserve at
+    # all towards the inward stop. That is why the behavior commands vy alone
+    # and never mixes in vx or wz: any mix moves the required angle off 90 deg,
+    # and the +-10 deg that exist are the whole budget.
+    # MEASURED on the twin, 16 runs: the joints settle at
+    # FL -89.95..-89.99, FR +89.95..+89.99, BL +89.95..+89.99,
+    # BR -89.95..-89.99 deg, i.e. outward on all four, as the sign pattern
+    # [-1,+1,+1,-1] predicts. (An earlier draft of this block claimed ~ -+86 deg
+    # "because of the lever arm". That was wrong for the reason given above and
+    # is not what the twin does.)
+    #
+    # THE GUARD IS STRUCTURALLY STRONGER THAN FOR BackUp. The LD06's blind wedge
+    # is +-20 deg around -x, i.e. at the REAR; sideways the sensor sees live, so
+    # costmap memory is a second line here rather than the only one. Unknown
+    # ground still blocks by itself through track_unknown_space: true, exactly
+    # as for the reverse (verified laterally, see the A1 analogue in the twin
+    # log).
+    #
+    # THE HEADING ERROR — MEASURED, AND SMALLER THAN THE DESIGN ASSUMPTION.
+    # A crab leaves the robot pointing slightly off where it started, and the
+    # wheel odometry cannot see any of it: the pure-lateral IK solution has
+    # omega = 0 by construction, and /wheel/odom duly reported a yaw change of
+    # exactly 0.0 deg in every single run. In the twin SLAM corrects the pose;
+    # on the real robot, with all three EKF inputs dead, nothing does.
+    #
+    # 16 runs of the configured manoeuvre (0.20 m at 0.10 m/s), 8 on each of two
+    # freshly started twins, ground truth vs /wheel/odom:
+    #     leftward strokes   mean -0.0062 rad (-0.36 deg)
+    #     rightward strokes  mean +0.0089 rad (+0.51 deg)
+    #     worst single run    0.0138 rad  (0.79 deg)
+    # The sign follows the direction of travel, so it is a BIAS and it
+    # accumulates if the same side is used repeatedly — but the magnitude is
+    # roughly 30x below the ~-0.05 rad/s at vy 0.2 that this behavior was
+    # designed against, and that changes which constraint binds (see below).
+    #
+    # WHERE THE ERROR COMES FROM, because it decides whether a shorter stroke
+    # would help. A per-cycle trace shows the steady lateral roll is almost
+    # clean: a separate plant sweep driving vy directly, with the steering
+    # transient excluded, gives yaw rates of 5e-5 .. 8e-4 rad/s over
+    # vy 0.05..0.30 m/s. Nearly the whole error appears in the two TRANSIENTS —
+    # the wheels swinging around their king pins into 90 deg, and unwinding out
+    # of it while the body is still coasting; in the traced run the heading was
+    # -0.11 deg when vy was cut and -0.79 deg after the steering had unwound.
+    # Those two transients cost the same whatever the stroke length, so
+    # SHORTENING THE STROKE WOULD NOT REDUCE THE HEADING ERROR - it would only
+    # buy less lateral clearance for the same price. Deriving the distance from
+    # the heading budget would therefore be a category error, and it is not what
+    # the 0.20 m below is derived from.
+    #
+    # AGAINST THE GOAL TOLERANCE. yaw_goal_tolerance is 0.10 rad since
+    # 2026-08-20 (it was 0.40 when these 16 runs were measured; the measurement
+    # is unaffected, only the budget it is compared against). One worst-case crab
+    # costs 0.0138 rad = 13.8 % of 0.10 rad, so it would take 7 same-side
+    # recoveries inside one uncorrected navigation run to spend the whole
+    # tolerance. That still leaves room, so the heading is NOT the binding
+    # constraint at 0.20 m — which is why the distance is set from the collision
+    # pre-check horizon instead (bound (a) below). It is, however, no longer a
+    # wide margin: at 0.10 rad this is the number to re-check first if repeated
+    # same-side crab recoveries start ending in a yaw the goal checker refuses.
+    #
+    # Distance is bounded THREE times, each independent of the others:
+    #   (a) crab_walk.max_distance below — server-side, binds every client
+    #       including one that bypasses the BT. BackUp could not have this
+    #       (upstream code, no such parameter); this plugin is ours, so it does.
+    #   (b) BT port dist_to_travel in BOTH config/*.xml recovery subtrees.
+    #   (c) BT port time_allowance combined with the smoother's hard +-0.10 m/s
+    #       lateral cap (velocity_smoother.max_velocity/min_velocity y).
+    behavior_plugins: ["drive_on_heading", "backup", "crab_walk", "wait"]
     drive_on_heading:
       plugin: "nav2_behaviors::DriveOnHeading"
+    backup:
+      plugin: "nav2_behaviors::BackUp"
+    crab_walk:
+      plugin: "gripperx_behaviors::CrabWalk"
+      # Bound (a). Rejects (does not clamp) an over-long goal, so a wrong BT
+      # port shows up as an aborted recovery instead of a silently shortened
+      # motion. Verified: 5.00 m and 0.25 m both refused with INVALID_INPUT and
+      # zero ground-truth motion; 0.20 m runs.
+      #
+      # WHAT THIS KEY BOUNDS, AND WHAT IT DOES NOT. It bounds the distance a
+      # client may REQUEST. It does not bound the distance the robot DRIVES:
+      # the stopping distance comes on top of it, outside the clamp. That
+      # distinction is the whole reason this value moved, so do not read it as
+      # "the robot travels at most max_distance".
+      #
+      # Was 0.20 until 2026-08-20. Measured on the twin against
+      # /ground_truth/odom, at rest (position identical at result+1/2/4/8 s,
+      # final speed 0.00000 m/s), a 0.20 m request drove 0.2227 m — i.e. 22.7 mm
+      # past the clamp the config claimed to enforce. A second session had
+      # measured 0.2231 m under the same conditions. User decision: lower the
+      # key so the DRIVEN distance stays under 0.20 m.
+      #
+      # DERIVATION, from the measurement and not from an estimate:
+      #   worst tail measured at the worst possible speed   0.0231 m
+      #   0.20 - 0.0231                                   = 0.1769 m
+      #   rounded DOWN to the next whole 10 mm            = 0.170 m
+      #   predicted driven distance 0.170 + 0.0231        = 0.1931 m  < 0.20 m
+      # The 6.9 mm left over is deliberate and is not trimmed: 0.175 would leave
+      # 1.9 mm, and every number here is from the TWIN — the real plant's
+      # roll-out has never been measured.
+      #
+      # WHY 0.10 m/s IS THE WORST CASE and no extrapolation is involved: the
+      # tail does grow with speed (measured 0.0148 m at 0.05 m/s against
+      # 0.0227 m at 0.10 m/s), but the speed is not the caller's to pick. A crab
+      # is pure vy and velocity_smoother clamps vy to +-0.10 m/s
+      # (max_velocity/min_velocity y below) for every client, BT or not. So the
+      # tail measured at 0.10 m/s is the largest one this manoeuvre can produce.
+      # Two speed points do not establish a law and none is fitted here; they
+      # only establish that the worst case sits at the cap, where it was
+      # measured.
+      #
+      # WHERE THE TAIL ACTUALLY COMES FROM — correcting the earlier note here,
+      # which attributed ~10 mm of it to the 10 Hz arrival check. It does not:
+      # at the instant the behavior returns SUCCEEDED the robot is only
+      # 0.4 .. 2.7 mm past the request (0.2004 m for a 0.20 m request). Nearly
+      # all of the 22.7 mm accrues AFTER stopRobot(), while the drive rolls out
+      # and the steering unwinds out of +-90 deg. See the stopping-path
+      # calculation at velocity_smoother.min_velocity — and open question (1) in
+      # this session's notes, because that block still cites 13.7 mm for the
+      # same segment that measures 22.3 mm here.
+      #
+      # STILL SATISFIED after the change: the pre-flight collision probe covers
+      # simulate_ahead_time * speed = 2.0 s * 0.10 m/s = 0.20 m in one go, so at
+      # 0.170 m the WHOLE manoeuvre is now checked before the first wheel turns,
+      # with 30 mm to spare instead of exactly none. (The probe is stepped in
+      # cycle_frequency increments and its last step falls one increment short —
+      # inherited from nav2_behaviors::DriveOnHeading and left as is; the check
+      # re-runs every 0.1 s during the motion and the footprint it sweeps is
+      # 0.42 m wide.)
+      #
+      # THE BT PORTS MUST MOVE WITH THIS VALUE. onRun REJECTS an over-long goal
+      # with INVALID_INPUT, it does not clamp it, so leaving dist_to_travel at
+      # 0.20 in the two recovery subtrees would not shorten the crab — it would
+      # disable it. Both config/navigate_*_w_replanning_and_recovery.xml carry
+      # 0.17 to match.
+      max_distance: 0.170
+      # Direction: the BT port carries the PREFERRED side, the behavior falls
+      # back to the mirrored side when the preferred one is blocked, and aborts
+      # when both are. Both sides are probed with the same costmap and the same
+      # footprint, so the fallback adds no new failure surface — it only avoids
+      # burning a whole RoundRobin entry on the side that happens to be blocked.
+      # Set false for a strictly BT-dictated direction (no rebuild needed).
+      # Kept TRUE after testing it: with the robot 0.45 m from a wall on its
+      # left, a left-preferring goal logged "preferred side (left) blocked,
+      # mirroring to right" and executed -0.204 m; with both sides blocked it
+      # refused with COLLISION_AHEAD and did not move. The fallback costs
+      # nothing in safety (both sides are probed with the same costmap and the
+      # same footprint) and it is the difference between a recovery that is
+      # available next to a wall and one that is not.
+      allow_mirrored_fallback: true
+
+      # ---- alignment_grace_sec, added 2026-08-24 --------------------------
+      # THE PROBLEM IT SOLVES. swerve_controller's alignment gate withholds
+      # drive while the four modules swing into the +-90 deg crab pose. During
+      # that time the robot correctly does not move — but the goal's own clock
+      # was running, and the arithmetic does not fit:
+      #
+      #     travel      0.17 m at 0.10 m/s              = 1.70 s
+      #     worst-case  alignment (gate timeout)        = 1.50 s
+      #     sum                                           3.20 s
+      #     BT port     time_allowance                 =  2.80 s
+      #
+      # so with the gate enabled a CORRECT crab would fail with TIMEOUT.
+      #
+      # WHY NOT SIMPLY A LARGER time_allowance: because that key is also a
+      # DISTANCE BOUND. The BT comment calls it bound (c) of three — speed x
+      # time, 0.10 x 2.8 = 0.28 m — the backstop that holds if max_distance AND
+      # dist_to_travel are both wrong. Raising it to 4.3 s would relax that
+      # backstop to 0.43 m, a 54 % loosening of a documented safety property, in
+      # order to pay for time the robot spends standing still by construction.
+      #
+      # So the plugin now spends time_allowance only once the robot is
+      # MEASURABLY MOVING (>= one cycle of travel, a derived figure and not a
+      # tuned one), and this key bounds the phase before that. Bound (c)
+      # survives as 0.10 x 2.8 + 0.01 = 0.29 m: a 3.5 % loosening instead of
+      # 54 %.
+      #
+      # INVARIANT, do not break: this MUST stay greater than swerve_controller's
+      # `alignment_timeout_sec` in gripperx_control/config/ros2_controllers.yaml
+      # (1.5 s). The gate releases the drive at that timeout even when the pose
+      # is unconfirmed, so a grace shorter than it would abort the recovery
+      # while the controller was still about to let it run. The two live in
+      # different files and different nodes and CANNOT be checked against each
+      # other automatically — that is why the number is written out here.
+      #
+      # 2.0 = 1.5 s gate timeout + 0.5 s for the command to cross
+      # velocity_smoother (20 Hz) and teleop_mux (20 Hz) and for the modules to
+      # settle inside the exit tolerance. Set deliberately above the invariant
+      # rather than at it.
+      #
+      # Safe with the gate DISABLED too, which is how it ships: nothing then
+      # withholds the drive, the robot starts moving on the first cycles, and
+      # the grace is never spent. A robot that fails to move for some OTHER
+      # reason now fails after 2.0 s instead of 2.8 s, with a message that says
+      # "never started moving" rather than "too slow" — a strictly better
+      # diagnosis of a different fault.
+      alignment_grace_sec: 2.0
     wait:
       plugin: "nav2_behaviors::Wait"
+
+# =============================================================================
+# velocity_smoother — autonomous cmd_vel chain (GAP-1 / SR-9)
+# =============================================================================
+# controller_server / behavior_server  --(cmd_vel remapped)-->  /nav/cmd_vel_raw
+#   --> velocity_smoother --(cmd_vel_smoothed remapped)--> /teleop/autonomous/cmd_vel
+#   --> teleop_mux --> /cmd_vel
+#
+# GAP-1 property preserved: teleop_mux remains the SINGLE publisher on /cmd_vel.
+# The smoother lives entirely inside the autonomous branch and never touches
+# /cmd_vel. Its input and output MUST stay different topic names — wire both to
+# the same name and it smooths its own output, recursively.
+#
+# Why a smoother earns its place on THIS robot. GripperX is 4WIS/4WID: the
+# swerve/IK stage turns every (vx, vy, wz) twist into four STEERING ANGLE
+# setpoints plus four wheel speeds. A step in the twist is therefore a step in
+# the demanded steering geometry, which the Feetech steering servos chase at full
+# slew — tyre scrub against the ground, a current spike on all four servos at
+# once, and a transient in which the four wheels point along mutually
+# inconsistent instantaneous-centre lines while they catch up. Rate-limiting the
+# twist upstream bounds how fast the demanded geometry may change. On a
+# differential-drive robot the same smoother would only be a comfort feature.
+#
+# NOT a stop path. teleop_mux zeroes /cmd_vel on mode change, on override and on
+# its own cmd_timeout_sec (0.5 s, gripperx_teleop/config/teleop_mux.yaml), all
+# downstream of the smoother, so nothing here can delay a stop command.
+#
+# use_sim_time is deliberately NOT hardcoded here: navigation.launch.py passes it
+# as the last parameter source for every node (default false since the OP-14
+# consolidation made the real robot the default consumer).
+velocity_smoother:
+  ros__parameters:
+    # See controller_server: unstamped Twist across the autonomous branch, because
+    # teleop_mux subscribes to geometry_msgs/Twist.
+    enable_stamped_cmd_vel: false
+
+    # 2x controller_frequency (10.0 Hz above) so the smoother interpolates rather
+    # than merely passing commands through, and equal to teleop_mux's
+    # publish_rate_hz (20.0) so it does not feed the mux faster than the mux
+    # forwards.
+    smoothing_frequency: 20.0
+
+    # Per-component clamping. `true` would rescale all components together to
+    # preserve the commanded direction when one of them saturates — arguably the
+    # better choice for a steering robot, where (vx, wz) define a turning radius.
+    # Left at the stack-A value because no decision covers the change; see the
+    # open question raised with the OP-14 consolidation.
+    scale_velocities: false
+
+    # OPEN_LOOP ramps from the smoother's own last output. CLOSED_LOOP would ramp
+    # from measured odometry, which on the real robot is currently fabricated or
+    # flat (all three EKF inputs dead — see the sensor reality check in
+    # gripperx_bringup/launch/real_autonomy.launch.py). Feeding that back would
+    # make the ramp track a fiction.
+    feedback: "OPEN_LOOP"
+
+    # ---- Saturation envelope, derived from the CANONICAL limits above --------
+    # These are an ENVELOPE, not a second limiter: the smoother must never clip
+    # what the canonical controller/behaviors are allowed to command, otherwise
+    # DWB's forward simulation predicts trajectories the plant will not follow.
+    # Each axis takes the maximum over every source that feeds /nav/cmd_vel_raw.
+    #
+    #   x     controller_server FollowPath max_vel_x           0.70
+    #         behavior_server DriveOnHeading (BT speed=0.25)   0.25   -> 0.70
+    #         behavior_server BackUp (BT backup_speed=0.10) is reverse-only and
+    #         is capped by min_velocity below, not by this line.
+    #         (DWB's own max_speed_xy 0.50 caps the emitted magnitude, so 0.70
+    #          never binds in practice — that is the point of an envelope.)
+    #   y     FollowPath max_vel_y                             0.0
+    #         behavior_server crab_walk (BT crab_speed=0.10)   0.10   -> 0.10
+    #         Changed from 0.0 on 2026-08-19 with the crab recovery. DWB is
+    #         still forward-only (max_vel_y 0.0, vy_samples 1) — the ONLY source
+    #         that may put a non-zero vy on /nav/cmd_vel_raw is the crab_walk
+    #         behavior. Like the reverse floor below, this is NOT an envelope
+    #         with headroom but a HARD CAP set exactly to the allowed crab
+    #         speed, so "the autonomous branch can never crab faster than
+    #         0.10 m/s" is a property of the wiring, not of a BT port.
+    #         A 0.0 here would have silently zeroed every lateral command — the
+    #         same structural block that made BackUp inert before 2026-08-19,
+    #         and the reason this line is being changed in the same commit as
+    #         the behavior itself rather than after it.
+    #         Verified both ways: a crab goal asking for 0.50 m/s put 0.50 on
+    #         /nav/cmd_vel_raw and exactly 0.10 on /teleop/autonomous/cmd_vel,
+    #         and a nominal 0.10 goal passed through unclamped at 0.10.
+    #   theta FollowPath max_vel_theta                         1.5
+    #         behavior_server max_rotational_vel               0.70   -> 0.75
+    # x and theta HALVED 2026-08-21 (were 0.70 / 1.5), in step with FollowPath.
+    # y stays 0.10: that entry is the hard cap on the autonomous branch's
+    # lateral speed, a property of the wiring rather than a tuning value, and
+    # it is already the slower of the two bounds on the crab recovery.
+    # theta RAISED 0.75 -> 1.00 on 2026-08-25, in step with max_vel_theta 0.80.
+    # At 0.75 the smoother would have CLIPPED the new ceiling and the raise would
+    # have been silently partial. This entry is an envelope with headroom, not a
+    # command source: 1.00 rad/s keeps the same 0.20 margin over the ceiling that
+    # 0.75 held over 0.55, and 1.00 itself measured 108.6 % delivery.
+    max_velocity: [0.35, 0.10, 1.00]
+
+    # x floor -0.10, changed from 0.0 on 2026-08-19 when BackUp was loaded (see
+    # behavior_server above). The old 0.0 was the structural block that made the
+    # branch unable to reverse at all; leaving it in place would have silently
+    # zeroed every BackUp command, exactly as the note here used to warn.
+    #
+    # This entry is deliberately NOT an envelope with headroom like max_velocity
+    # is. It is a HARD CAP set exactly to the reverse speed the recovery is
+    # allowed to use, so "the autonomous branch can never reverse faster than
+    # 0.10 m/s" is a property of the wiring, not of a BT port that anyone can
+    # edit. It is the speed half of the two-layer distance bound documented at
+    # behavior_server (0.10 m/s * 2.8 s time_allowance < 0.30 m).
+    #
+    # Why 0.10 m/s and not the 0.25 m/s of the forward DriveOnHeading recovery:
+    # the reverse goes into ground no live sensor covers, so the only thing that
+    # can stop it is costmap content that is already there. Total travel between
+    # a lethal cell being in the costmap and the robot standing still is
+    #   worst-case latency * v + v^2 / (2 * |max_decel_x|)
+    #   latency = 0.2 s (local_costmap publish_frequency 5.0 Hz, the behavior
+    #             server reads local_costmap/costmap_raw)
+    #           + 0.1 s (behavior_server cycle_frequency 10.0 Hz, measured on
+    #             the twin, not assumed)
+    #           + 0.05 s (smoothing_frequency 20.0 Hz)  = 0.35 s
+    #   at 0.10 m/s: 0.035 + 0.004 = 0.039 m  <  one costmap cell (0.05 m)
+    #   at 0.25 m/s: 0.088 + 0.026 = 0.114 m  =  more than two cells
+    # Only 0.10 m/s keeps the reaction distance inside the resolution the
+    # costmap can even represent. That is the derivation; the residual case of
+    # something that moved in behind the robot is not covered by it at all.
+    #
+    # NOTE: this is exactly at the cap, so raising BT backup_speed WITHOUT
+    # raising this value gets silently clipped here. Change both or neither.
+    #
+    # y floor -0.10, changed from 0.0 on 2026-08-19 with the crab recovery, and
+    # symmetric to max_velocity y above because crabbing must work to BOTH
+    # sides (the behavior may mirror the commanded side when the preferred one
+    # is blocked, so an asymmetric pair would make one of the two options
+    # silently inert — the worst kind of failure for a recovery).
+    #
+    # Why 0.10 m/s laterally, i.e. the SAME number as the reverse cap and not
+    # the 0.25 m/s of the forward DriveOnHeading recovery. Same stopping-path
+    # calculation as above; the latency chain is identical because it is the
+    # same costmap, the same behavior server and the same smoother:
+    #   worst-case latency * v + stopping distance once the command is cut
+    #   latency = 0.2 s (local_costmap publish_frequency 5.0 Hz)
+    #           + 0.1 s (behavior_server cycle_frequency 10.0 Hz)
+    #           + 0.05 s (smoothing_frequency 20.0 Hz)  = 0.35 s
+    #
+    # AND THE STOPPING DISTANCE IS THE MEASURED ONE, NOT v^2/(2*|max_decel_y|).
+    # The ideal ramp from 0.10 m/s at -1.2 m/s^2 is 4.2 mm; a per-cycle
+    # ground-truth trace of the real manoeuvre shows 13.7 mm between the last
+    # non-zero vy and standstill, because the plant keeps rolling past the
+    # smoother's ramp (drive inertia plus the steering unwinding out of 90 deg).
+    # Using the ideal figure here would have understated the reaction distance
+    # by a factor of three, so the measured one is what this line is set from:
+    #   at 0.10 m/s: 0.035 + 0.0137 = 0.049 m  <  one costmap cell (0.05 m)
+    #   at 0.15 m/s: 0.053 + ~0.021 = 0.074 m  =  more than one cell
+    #   at 0.25 m/s: 0.088 + ~0.034 = 0.122 m  =  more than two cells
+    # (the 0.15/0.25 coast figures scale the measured 13.7 mm linearly with v,
+    #  which is the optimistic direction and still fails the test)
+    # 0.10 m/s is therefore not "the same value again" by habit: it is the
+    # largest round value whose reaction distance still fits inside the
+    # resolution the costmap can represent — and at 0.049 m against a 0.05 m
+    # cell there is essentially no margin left, which is the real reason not to
+    # raise it. Sideways the sensor sees live, so the costmap content is fresher
+    # than for the reverse — but the arithmetic of latency and braking distance
+    # does not care where the data came from.
+    # theta is symmetric: turning both ways is required.
+    min_velocity: [-0.10, -0.10, -1.5]
+
+    # ---- Rate limits --------------------------------------------------------
+    # Again the maximum over the sources, so the smoother does not undercut a
+    # source's own ramp:
+    #   x     FollowPath acc_lim_x    1.2   (DriveOnHeading has no ramp of its
+    #                                        own — it steps straight to `speed`,
+    #                                        so here the smoother genuinely adds
+    #                                        the missing ramp)
+    #   y     1.2, and NOT taken from FollowPath.acc_lim_y. That key is 0.0 and
+    #         IRRELEVANT to this path: acc_lim_y/decel_lim_y live in
+    #         dwb_plugins::KinematicParameters and are read only by DWB's own
+    #         velocity iterator (XYThetaIterator/OneDVelocityIterator) when it
+    #         samples trajectories. With max_vel_y 0.0 and vy_samples 1 the y
+    #         sample set is {0} regardless of them, so they are doubly inert:
+    #         nothing DWB does can produce a vy, and nothing outside DWB reads
+    #         these keys. The velocity_smoother is a separate node reading THIS
+    #         array. They are therefore left at 0.0 rather than "fixed".
+    #         Where the 1.2 comes from instead: it is the same plant limit as x,
+    #         expressed on the rotated axis. At -+90 deg steering the lateral
+    #         motion IS wheel-rolling motion of the same four drive motors, so
+    #         the achievable acceleration envelope is the x one — not a new
+    #         number and not a guess.
+    #   theta FollowPath acc_lim_theta 1.8 vs behavior_server rotational_acc_lim
+    #                                  2.0  -> 2.0
+    #
+    # NOT optional for y: a rate limit of 0.0 does not mean "unlimited", it
+    # means the smoother may never change vy, so vy would stay pinned at its
+    # last value (0.0) forever even with the saturation limits opened above.
+    # Demonstrated rather than assumed — see the note at FollowPath.acc_lim_y:
+    # with this entry set to 0.0 at runtime the crab published vy 0.10 upstream,
+    # 0.0 downstream, moved 0.000 m and timed out.
+    max_accel: [1.2, 1.2, 2.0]
+    # Deceleration must never be TIGHTER than any source's, or the smoother
+    # lengthens every stop:
+    #   x     FollowPath decel_lim_x     -1.2
+    #   y     -1.2, same reasoning as max_accel y. This is the value the
+    #         stopping-path calculation at min_velocity uses as |max_decel_y|;
+    #         loosening it invalidates that derivation.
+    #   theta FollowPath decel_lim_theta -1.2 vs behaviors' symmetric
+    #                                     rotational_acc_lim 2.0 -> -2.0
+    max_decel: [-1.2, -1.2, -2.0]
+
+    # ---- Command timeout ----------------------------------------------------
+    # Must be longer than one controller period (1/10 Hz = 0.1 s) so a single
+    # dropped message is not read as a silent controller, and SHORTER than
+    # teleop_mux's cmd_timeout_sec (0.5 s) so the smoother cannot mask the
+    # controller going silent for longer than the mux's own watchdog would have
+    # tolerated. 3 controller periods. Stack A used 1.0 s, i.e. twice the mux
+    # timeout — the smoother there could keep republishing a stale command past
+    # the point the mux would have zeroed. Residual: the ramp-down after the
+    # timeout still reaches zero later than a bare mux timeout would; see the
+    # open question raised with the OP-14 consolidation.
+    velocity_timeout: 0.3
+
+    # No deadband. A non-zero value would suppress small commands near a goal,
+    # where DWB's trans_stopped_velocity is 0.05. TO-VERIFY: the drive/steering
+    # deadband has not been measured on the real robot, so no value is guessed
+    # here.
+    deadband_velocity: [0.0, 0.0, 0.0]
+
+    # Unused while feedback is OPEN_LOOP. Topic is the canonical fused estimate
+    # (same source bt_navigator uses), so a switch to CLOSED_LOOP reads the right
+    # thing. TO-VERIFY: odom_duration carried over from the stack-A set, never
+    # exercised.
+    odom_topic: "/odometry/filtered"
+    odom_duration: 0.1
 
 local_costmap:
   local_costmap:
@@ -122,8 +1081,67 @@ local_costmap:
       height: 6
       resolution: 0.05
       transform_tolerance: 0.2
-      # Slightly larger than chassis box: includes steer pods (URDF track b=0.166 m).
-      footprint: "[[0.27, 0.24], [0.27, -0.24], [-0.27, -0.24], [-0.27, 0.24]]"
+      # TRUE since 2026-08-19, and it is the safety core of the reverse recovery
+      # (see behavior_server). Costmap2DROS defaults this to FALSE
+      # (costmap_2d_ros.hpp: track_unknown_space_{false}; confirmed at runtime on
+      # the twin before the change), and false means never-observed cells carry
+      # cost 0 — indistinguishable from "seen and free". BackUp's collision check
+      # (CostmapTopicCollisionChecker on local_costmap/costmap_raw) would then
+      # read the blind rear wedge as free ground and reverse into it. With true,
+      # those cells are NO_INFORMATION (255) >= LETHAL_OBSTACLE (254) and the
+      # check aborts the behavior with COLLISION_AHEAD.
+      #
+      # KNOWN SIDE EFFECT, accepted: dwb_critics ObstacleFootprintCritic throws
+      # "Trajectory Hits Unknown Region." on NO_INFORMATION, so forward DWB
+      # trajectories whose footprint crosses never-observed cells are now
+      # rejected instead of silently assumed free. That is the same honesty in
+      # the forward direction; verified on the twin that normal path following
+      # still works, because footprint_clearing_enabled keeps the robot's own
+      # footprint FREE and the 320 deg scan covers everything the controller
+      # simulates ahead.
+      track_unknown_space: true
+      # SWEPT WHEEL ENVELOPE, not the chassis outline. M3 closed 2026-08-20: the
+      # user confirmed the gripper's foremost point stays BEHIND the LiDAR
+      # (x < 0.2488) and well above it while driving, so the arm does not set the
+      # front contour and does not occlude the scan. With the arm out of the way
+      # the WHEELS set the outline in every direction, and by a wide margin: the
+      # chassis mesh only spans x [-0.2251, +0.2681], y +-0.1651 (base_link.stl
+      # bounding box, measured 2026-08-20).
+      # Derivation, re-verified against the installed 140 mm wheel meshes rather
+      # than taken over: each tyre hangs on a lateral lever off its king pin
+      # (*_wheel_offset_xyz y = 0.055572 / 0.055372 / 0.055571). The tyre mesh
+      # bbox is 0.140 x 0.140 x 0.080, i.e. radius 0.070 and half width 0.040, so
+      # the outboard ground corner of a tyre sits at (0.070, 0.055572 + 0.040)
+      # from its king pin = 0.118465 m away, at 53.78 deg off the wheel's
+      # forward axis. King pins are at x +-0.1809, y +-0.1087, hence
+      #   x = 0.1809 + 0.118465 = 0.29937      y = 0.1087 + 0.118465 = 0.22717
+      # Both extremes are actually REACHABLE inside the steering window
+      # (100 deg outward / 35 deg inward, gripperx_v1.core.xacro): pointing that
+      # corner straight forward needs 53.78 deg outward, and pointing it straight
+      # outward needs 36.22 deg, which the rear wheels reach outward and the
+      # front wheels reach at their 35 deg inward stop (y = 0.22714, 0.03 mm
+      # short). Rounded OUTWARD to 5 mm and symmetrised.
+      #   r_inscribed 0.230   r_circumscribed 0.378021
+      # The 0.337 that stood here until 2026-08-20 was the CHASSIS envelope of
+      # 2026-08-18 and was wrong twice over: it did not include the swept wheels,
+      # and even for its own polygon the circumscribed radius was 0.342, not
+      # 0.337. Every consumer of the old number is stale — this value feeds the
+      # planner, dwb_critics ObstacleFootprint AND the collision pre-checks of
+      # BackUp and crab_walk, so a too-small footprint understates the robot in
+      # the dangerous direction on all four.
+      # The x asymmetry of the old polygon ([-0.25, +0.27]) was an artefact of
+      # looking at the chassis only and is gone: the wheels are symmetric.
+      footprint: "[[0.300, 0.230], [0.300, -0.230], [-0.300, -0.230], [-0.300, 0.230]]"
+      # PINNED at the nav2 default rather than left implicit. It was NOT set
+      # anywhere in this file and silently added 10 mm per side to every consumer
+      # of the polygon above (read back off the running node 2026-08-20:
+      # 0.009999999776482582). Effective outline is therefore x +-0.310,
+      # y +-0.240, r_inscribed 0.240, r_circumscribed 0.392 — that, not 0.378, is
+      # what the planner, ObstacleFootprint and the BackUp / crab_walk collision
+      # pre-checks actually test. Kept at 0.01 (the swept envelope is a hard
+      # geometric bound with no allowance of its own), but stated, because a
+      # hidden addend is how the 0.337 above survived two correction rounds.
+      footprint_padding: 0.01
       plugins: ["obstacle_layer", "inflation_layer"]
       obstacle_layer:
         plugin: "nav2_costmap_2d::ObstacleLayer"
@@ -136,13 +1154,44 @@ local_costmap:
           clearing: true
           marking: true
           raytrace_max_range: 12.0
-          raytrace_min_range: 0.0
+          # MIN RANGES 0.0 -> 0.10 on 2026-08-21. The LD06 reports from 2 cm
+          # (range_min 0.0200), and the arm and gripper sit permanently in the
+          # scan plane behind the sensor, so at 0.0 they were entering the
+          # costmap as obstacles under the robot - visible in RViz as black
+          # cells beneath the chassis, and a plausible contributor to the
+          # planner failing over a 1.2 m goal.
+          # Measured over 25 scans: EVERY self-return lies below 0.10 m, and
+          # nothing at all falls between 0.10 and 0.35 m. 0.10 therefore removes
+          # the self-returns completely without discarding any real reading.
+          #   140-150 deg   284 points < 0.10 m,  0 between 0.10 and 0.35
+          #   150-160 deg   291                   0
+          #   200-210 deg   307                   0
+          #   210-220 deg   117                   0
+          # Chosen over widening the rear angle crop, which was the other
+          # candidate: the self-returns reach +-40 deg, so the crop would have to
+          # blind a fifth of the field of view, and a cropped sector is BLIND
+          # rather than filtered - BackUp reverses into it with no sensor cover.
+          # A minimum range costs no sector, works in every direction, and keeps
+          # covering the rear if hardware is added there later.
+          raytrace_min_range: 0.10
           obstacle_max_range: 10.0
-          obstacle_min_range: 0.0
+          obstacle_min_range: 0.10
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        cost_scaling_factor: 4.0
-        inflation_radius: 0.45
+        # inflation_radius 0.50 / cost_scaling_factor 7.0, user decision
+        # 2026-08-20. 0.50 leaves 122 mm over the circumscribed radius 0.378.
+        # The COST CLIFF at the inflation edge is pushed down with csf, NOT with
+        # a bigger R. nav2_costmap_2d::InflationLayer::computeCost gives
+        # 252 * exp(-csf * (d - r_inscribed)); at d = 0.50 with r_inscribed 0.230
+        # that is 85.6 at csf 4.0 and 38.1 at csf 7.0 — the step down to free
+        # space more than halves.
+        # Why not simply widen R: since GridBased.tolerance went to 0.05, goals
+        # inside the inflated band FAIL HONESTLY instead of snapping back to the
+        # robot's own cell, and FR-12 places its goals ~360 mm from the litter,
+        # i.e. exactly in that band. A larger R would convert working grasp goals
+        # into planner failures.
+        cost_scaling_factor: 7.0
+        inflation_radius: 0.50
       always_send_full_costmap: true
   local_costmap_client:
     ros__parameters:
@@ -162,7 +1211,22 @@ global_costmap:
       transform_tolerance: 0.2
       resolution: 0.05
       track_unknown_space: true
-      footprint: "[[0.27, 0.24], [0.27, -0.24], [-0.27, -0.24], [-0.27, 0.24]]"
+      # Same polygon as local_costmap — the derivation is written out there.
+      # Swept wheel envelope x +-0.29937, y +-0.22717, rounded outward to 5 mm.
+      # r_inscribed 0.230, r_circumscribed 0.378021. Keep the two IDENTICAL:
+      # a planner that plans for a smaller robot than the controller drives
+      # produces paths the controller then refuses.
+      footprint: "[[0.300, 0.230], [0.300, -0.230], [-0.300, -0.230], [-0.300, 0.230]]"
+      # PINNED at the nav2 default rather than left implicit. It was NOT set
+      # anywhere in this file and silently added 10 mm per side to every consumer
+      # of the polygon above (read back off the running node 2026-08-20:
+      # 0.009999999776482582). Effective outline is therefore x +-0.310,
+      # y +-0.240, r_inscribed 0.240, r_circumscribed 0.392 — that, not 0.378, is
+      # what the planner, ObstacleFootprint and the BackUp / crab_walk collision
+      # pre-checks actually test. Kept at 0.01 (the swept envelope is a hard
+      # geometric bound with no allowance of its own), but stated, because a
+      # hidden addend is how the 0.337 above survived two correction rounds.
+      footprint_padding: 0.01
       plugins: ["static_layer", "obstacle_layer", "inflation_layer"]
       static_layer:
         plugin: "nav2_costmap_2d::StaticLayer"
@@ -178,13 +1242,36 @@ global_costmap:
           clearing: true
           marking: true
           raytrace_max_range: 12.0
-          raytrace_min_range: 0.0
+          # MIN RANGES 0.0 -> 0.10 on 2026-08-21. The LD06 reports from 2 cm
+          # (range_min 0.0200), and the arm and gripper sit permanently in the
+          # scan plane behind the sensor, so at 0.0 they were entering the
+          # costmap as obstacles under the robot - visible in RViz as black
+          # cells beneath the chassis, and a plausible contributor to the
+          # planner failing over a 1.2 m goal.
+          # Measured over 25 scans: EVERY self-return lies below 0.10 m, and
+          # nothing at all falls between 0.10 and 0.35 m. 0.10 therefore removes
+          # the self-returns completely without discarding any real reading.
+          #   140-150 deg   284 points < 0.10 m,  0 between 0.10 and 0.35
+          #   150-160 deg   291                   0
+          #   200-210 deg   307                   0
+          #   210-220 deg   117                   0
+          # Chosen over widening the rear angle crop, which was the other
+          # candidate: the self-returns reach +-40 deg, so the crop would have to
+          # blind a fifth of the field of view, and a cropped sector is BLIND
+          # rather than filtered - BackUp reverses into it with no sensor cover.
+          # A minimum range costs no sector, works in every direction, and keeps
+          # covering the rear if hardware is added there later.
+          raytrace_min_range: 0.10
           obstacle_max_range: 10.0
-          obstacle_min_range: 0.0
+          obstacle_min_range: 0.10
       inflation_layer:
         plugin: "nav2_costmap_2d::InflationLayer"
-        # Wider high-cost band on global map: planner avoids narrow gaps the controller cannot use.
-        cost_scaling_factor: 4.0
+        # Identical to local_costmap since 2026-08-20 (was 0.50/4.0 here and
+        # 0.45/4.0 there). The old split gave the planner a wider high-cost band
+        # than the controller saw; with both at 0.50/7.0 the planner no longer
+        # avoids gaps the controller would happily use, and vice versa.
+        # Derivation of the pair is written out in local_costmap.
+        cost_scaling_factor: 7.0
         inflation_radius: 0.50
       always_send_full_costmap: true
   global_costmap_client:

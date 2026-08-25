@@ -1,4 +1,12 @@
 <?xml version="1.0" encoding="UTF-8" ?>
+<!-- UDP-only FastDDS profile. SHM stays disabled (2026-07-09 orphaned-segment
+     incident, DEPLOYMENT.md 2.2). Addition 2026-08-13: an explicit 127.0.0.1
+     initial peer, because with useBuiltinTransports=false the micro-ROS agent
+     container established its XRCE session but its DDS participant was invisible
+     to every other process on the host -- topics never appeared. Host-to-host
+     processes were unaffected, so the default multicast bootstrap is what the
+     container loses. The initial peer ADDS a unicast discovery path; multicast
+     and remote peers (laptop teleop) keep working. -->
 <profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
     <transport_descriptors>
         <transport_descriptor>
@@ -12,6 +20,11 @@
                 <transport_id>udpv4_transport</transport_id>
             </userTransports>
             <useBuiltinTransports>false</useBuiltinTransports>
+            <builtin>
+                <initialPeersList>
+                    <locator><udpv4><address>127.0.0.1</address></udpv4></locator>
+                </initialPeersList>
+            </builtin>
         </rtps>
     </participant>
 </profiles>

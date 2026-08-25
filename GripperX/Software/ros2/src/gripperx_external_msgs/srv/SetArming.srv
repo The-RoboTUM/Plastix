@@ -1,0 +1,18 @@
+# Local ROS service only, on our own domain.
+#
+# Arming is NEVER a wire command: this service must not be reachable from the
+# external system, or the external system could arm the motion chain itself
+# (SR-1). It is deliberately absent from the rosbridge services_glob.
+
+bool arm
+
+# Required and > 0 when arm is true; ignored on disarm. There is no indefinite
+# arming window.
+float32 duration_sec
+
+# Operator/identity for the audit trail.
+string requested_by
+---
+bool success
+string message
+ArmingState state

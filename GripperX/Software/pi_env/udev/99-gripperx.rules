@@ -1,9 +1,25 @@
 # GripperX — stable device names
-# ESP32 (drive + micro-ROS)
-SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="0001", SYMLINK+="esp32", MODE="0666"
+#
+# All three active adapters are the same CH343 (1a86:55d3, bcdDevice 4.45) and are
+# distinguishable ONLY by ATTRS{serial} — rules without a serial would bind by plug
+# order, i.e. randomly. Never drop the serial from a rule here.
+
+# ESP32-S3 (drive + encoders + micro-ROS) — YD-ESP32-S3-N16R8 via its CH343 UART
+# bridge. Identified 2026-08-13 by unplug/replug (dmesg: hub port 4-1.2).
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5B7A022924", SYMLINK+="esp32", MODE="0666"
+
+# RETIRED 2026-08-13: old ESP32-WROOM-32 devkit (CP2102). The board was replaced by
+# the S3, but this rule stayed behind and made /dev/esp32 permanently absent — the
+# micro-ROS agent then ran into nothing ("Serial port not found"). Kept as history,
+# do not re-enable.
+# SUBSYSTEM=="tty", ATTRS{idVendor}=="10c4", ATTRS{idProduct}=="ea60", ATTRS{serial}=="0001", SYMLINK+="esp32", MODE="0666"
 
 # Waveshare Bus Servo Adapter A (steering ST3215)
 SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5A68010295", SYMLINK+="steering_servo", MODE="0666"
 
 # Seeed XIAO Bus Servo Board (arm STS3215)
-SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5AAF262825", SYMLINK+="arm_servo", MODE="0666"
+# Adapter REPLACED 2026-08-17: the original (serial 5AAF262825) died — it stopped
+# enumerating on two Pi hub ports that were both proven good by the steering adapter,
+# and on a second machine as well, i.e. no USB event at all. The old serial is kept
+# in this comment only so that a stale rule is recognisable if one resurfaces.
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5AAF263129", SYMLINK+="arm_servo", MODE="0666"

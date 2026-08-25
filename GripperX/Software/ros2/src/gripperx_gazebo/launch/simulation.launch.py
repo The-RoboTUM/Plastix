@@ -86,7 +86,21 @@ def generate_launch_description():
                 description="Gazebo world file.",
             ),
             DeclareLaunchArgument("use_lidar", default_value="true"),
-            DeclareLaunchArgument("use_camera", default_value="true"),
+            DeclareLaunchArgument(
+                # Default flipped true -> false on 2026-08-24. The RGBD sensor is
+                # the single most expensive thing in this sim on an integrated
+                # GPU: it renders a 640x480 colour AND a 640x480 depth image 15
+                # times a second, and gz_bridge.yaml then carries both across DDS.
+                # NOTHING SUBSCRIBES. No node in this workspace reads /camera/image,
+                # /camera/depth_image or /camera/camera_info -- it renders into the
+                # void. sim_mapping.launch.py and sim_navigation.launch.py already
+                # defaulted this to false for exactly that reason; this only brings
+                # the generic entry point in line with them.
+                # Pass use_camera:=true the moment litter detection needs it.
+                "use_camera",
+                default_value="false",
+                description="RGBD camera in the sim. Off by default: no node consumes it.",
+            ),
             DeclareLaunchArgument(
                 "initial_mode",
                 default_value="keyboard",

@@ -6,6 +6,8 @@ if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "Clang")
 endif()
 
 find_package(ament_cmake REQUIRED)
+find_package(geometry_msgs REQUIRED)
+find_package(gripperx_control_msgs REQUIRED)
 find_package(hardware_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp REQUIRED)
@@ -17,6 +19,8 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
 ament_target_dependencies(${PROJECT_NAME}
+  geometry_msgs
+  gripperx_control_msgs
   hardware_interface
   pluginlib
   rclcpp
@@ -41,11 +45,20 @@ if(BUILD_TESTING)
   set(ament_cmake_copyright_FOUND TRUE)
   set(ament_cmake_cpplint_FOUND TRUE)
   ament_lint_auto_find_test_dependencies()
+
+  # Decision core of the command watchdog (OP-18a / W2, SR-11). Header-only and
+  # ROS-free on purpose, so silence, divergence and every named false-positive
+  # mode are deterministic unit tests instead of a robot experiment.
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_command_watchdog test/test_command_watchdog.cpp)
+  target_include_directories(test_command_watchdog PRIVATE include)
 endif()
 
 ament_export_include_directories(include/${PROJECT_NAME})
 ament_export_libraries(${PROJECT_NAME})
 ament_export_dependencies(
+  geometry_msgs
+  gripperx_control_msgs
   hardware_interface
   pluginlib
   rclcpp

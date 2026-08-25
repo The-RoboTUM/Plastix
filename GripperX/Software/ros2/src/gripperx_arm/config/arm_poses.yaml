@@ -1,0 +1,63 @@
+arm_action_server:
+  ros__parameters:
+    # Startup homing. The node moves the arm to poses.home in its constructor, with
+    # torque on and without asking — and it runs with respawn=True in
+    # real_robot.launch.py, so every restart repeats the move. Set to false whenever the
+    # home pose is not trusted (mechanical change, re-teach in progress); then drive the
+    # arm deliberately with:  ros2 topic pub --once /arm/command std_msgs/String '{data: go_home}'
+    # PERMANENTLY FALSE — user decision 2026-08-25, taken after the home pose was
+    # re-taught and accepted. This is NOT an interim state waiting on #340.
+    #
+    # WHY. The node moves the arm in its constructor, and it runs with respawn=True.
+    # Startup homing therefore means UNATTENDED arm motion, repeated on every respawn,
+    # triggered by events that have nothing to do with the arm — a USB re-enumeration,
+    # a service restart, a cold boot with someone's hand in the workspace. The pose
+    # being correct does not make the motion safe; it only makes it correct motion at
+    # an unpredictable moment.
+    #
+    # CONSEQUENCE, and it is deliberate: after a restart the arm stays exactly where it
+    # was left. Nothing may assume the arm is at home on startup. Drive it there
+    # explicitly when someone is watching:
+    #     ros2 topic pub --once /arm/command std_msgs/String '{data: go_home}'
+    home_on_startup: false
+
+    # Raw Feetech tick values, one per servo, ALWAYS in id order [1, 2, 3, 4, 5, 6]
+    # = [limb1, limb2, limb3, limb4, limb5, gripper].
+    #
+    # Record with:  ros2 run gripperx_arm arm_pose_teach -- <pose-name>
+    # (torque off, move the arm by hand, the tool prints a block ready to paste here).
+    #
+    # home: RE-TAUGHT 2026-08-25 by hand against the digital twin's reference pose
+    # (dated re-teach record, tracked internally, not in this repository). Verified:
+    # after torque-on and a full bringup restart all six servos hold these values
+    # with ZERO drift.
+    # Correction applied against the previous recording, per joint:
+    #   limb1 +36  limb2 +41  limb3 +22  limb4 +1  limb5 +101 ticks
+    #   (+3.16  +3.60  +1.93  +0.09  +8.88 degrees)
+    # The gripper moved from open (2654) to 1527 — see the gripper note below.
+    #
+    # grip: STILL the pre-2026-08-13 recording, carried over unchanged. It belongs to
+    # the arm as it was before the current assembly. NOT re-taught, NOT trusted.
+    poses:
+      home: [2108, 1003, 3091, 1035, 2148, 1527]
+      grip: [2106, 3036, 1513, 2934, 2113, 2652]
+
+    # The re-taught home puts the gripper at 1527, i.e. 30 ticks ABOVE close — jaws
+    # nearly shut but not driving into their own stop. The PREVIOUS home recorded 1356,
+    # which was 141 ticks BELOW close: commanding it would have clamped the jaws past
+    # their closed position, and joint_limits could not catch it because it is the full
+    # 12-bit span. That defect is gone with this recording.
+    gripper:
+      open: 2656
+      close: 1497
+
+    # TODO(#340): real travel limits, once the Front_Lid is printed and the arm is fully
+    # assembled. The range below is the full 12-bit servo span, so the clamp in
+    # _move() currently permits everything — it is a placeholder with a home, not a
+    # safety measure. Two things are still missing for #340:
+    #   1. the measured per-servo end stops here, and
+    #   2. arm joints in the URDF (gripperx_v1.core.xacro has no limb*/gripper joints),
+    #      so the digital twin has no limits either.
+    joint_limits:
+      min: [0, 0, 0, 0, 0, 0]
+      max: [4095, 4095, 4095, 4095, 4095, 4095]

@@ -1,0 +1,280 @@
+# Octopus external-goal link - DIGITAL TWIN (ROS_DOMAIN_ID=220, SR-8).
+#
+# Defaults here are the ROLLOUT STAGE 1 values: telemetry only, no goal ingress,
+# no action client, disarmed, dry run. Stage 2 is reached by launching with
+# `goal_ingress:=true` - nothing in this file may produce an armed state, and
+# nothing in it may be edited to produce one (SR-15 rule 4).
+#
+# Everything marked TO-VERIFY is deliberately unmeasured. The gateway REFUSES to
+# validate or resolve rather than falling back to an invented number; that
+# refusal is the designed behaviour, not a defect.
+
+/gripperx/external/octopus_link_node:
+  ros__parameters:
+    use_sim_time: true
+
+    # SR-8. Compared against ROS_DOMAIN_ID before anything is created; a
+    # mismatch is FATAL and exits. 220 = twin. NEVER set this to 20 here.
+    expected_domain_id: 220
+
+    # The mock rosbridge (test/fake_octopus.py) by default. The real Octopus
+    # host replaces this at rollout stage 4.
+    url: "ws://127.0.0.1:9090"
+
+    # Stage 1: /octopus/trash_goal and /octopus/trash_gps are not subscribed at
+    # all, so no external goal can enter the process. Overridden by the launch
+    # argument for stage 2.
+    goal_ingress_enabled: false
+
+    # Both their producers publish at 1 Hz unconditionally, so silence on a
+    # connected socket means their stack stopped, not their traffic.
+    # TO-VERIFY as a tuning value; 5 s = five missed publications.
+    link_lost_sec: 5.0
+
+    # Drain rate of the inbound slots. Above their 1 Hz publication rate so a
+    # datum burst is picked up promptly; latest-wins in the slots is what makes
+    # the burst converge instead of queueing.
+    drain_rate_hz: 5.0
+    status_rate_hz: 1.0
+
+    # Ours (8192) sits below the library's (65536) on purpose: an oversized
+    # frame is dropped and counted while the connection stays up, instead of
+    # costing a reconnect.
+    max_msg_bytes: 8192
+    ws_max_size: 65536
+    ping_interval_sec: 5.0
+    ping_timeout_sec: 5.0
+    backoff_initial_sec: 1.0
+    backoff_max_sec: 30.0
+
+    # /octopus/devices/gripperx/status - PROPOSED, their side must still accept
+    # it (proposal item 1). Publishing it from day one is what would turn their
+    # `goal_selection: nearest` from "nearest to the datum" into "nearest to the
+    # robot".
+    publish_telemetry: true
+    # Local copy of the same JSON on ~/telemetry_json, for `ros2 topic echo`
+    # without a connected counterpart.
+    telemetry_debug_json: true
+    source_name: "octopus"
+
+/gripperx/external/goal_gateway_node:
+  ros__parameters:
+    # TRUE BECAUSE THE TWIN HAS GAZEBO, AND ONLY THEN (SAFETY.md F-24).
+    # Every timer-driven safety mechanism in the gateway - the arming expiry,
+    # the link watchdog, the cancel-confirm report, the in-flight re-validation
+    # and the in-flight correlation gate - is measured on this clock. With sim
+    # time and NO /clock publisher not one of them fires, so this value is a
+    # statement that a /clock exists. Running the twin stack against mocks
+    # instead of Gazebo (as the acceptance suite does) is `use_sim_time:=false`
+    # on the command line. Either way the gateway now says which clock it is on
+    # at startup, refuses to arm while that clock is not advancing, and disarms
+    # if it stops - so getting this wrong is loud instead of silent.
+    # It is startup-only: a `ros2 param set` on it is REFUSED.
+    use_sim_time: true
+
+    expected_domain_id: 220
+    goal_ingress_enabled: false
+
+    # SR-15 rule 4: this only ever PERMITS a later explicit SetArming call. It
+    # can never BE the arming. Even with it true the node comes up disarmed.
+    #
+    # SET TRUE 2026-08-21, TWIN ONLY, on the user's request to be able to arm and
+    # test against the twin. It is STARTUP-ONLY (a `ros2 param set` is refused),
+    # which is why it is changed here and not at run time. What it does NOT do:
+    # it does not arm, it does not dispatch, and it does not relax `dry_run` -
+    # the node still comes up DISARMED and an explicit, time-bounded SetArming
+    # call is still the only way into an armed window.
+    # `octopus_link_real.yaml` is UNTOUCHED and stays false.
+    allow_arm: true
+    # Second, independent block on dispatch.
+    dry_run: true
+    # SR-16 condition 5. SET TRUE 2026-08-19 BY USER DECISION (amended C-9 in
+    # SAFETY.md): the arming act - local, explicit, time-bounded - is the
+    # authorising step for /pick_plastic, so a separate SR-1-approved first
+    # exercise in the TWIN was overruled as redundant. Both conditions still
+    # have to hold at run time: armed AND auto_pick, and the node additionally
+    # reports `auto_pick_available` false whenever no /pick_plastic server is
+    # discovered. The twin has no arm in the URDF or the sim (DT-8, deferred by
+    # OP-11), so against the plain twin this exercises the DECISION LOGIC and
+    # nothing moves; a mock pick server is what makes the success path testable
+    # (test/mock_motion_servers.py).
+    # SET FALSE 2026-08-21 for the FIRST run against the REAL Octopus link
+    # (user decision). Their targets are LIVE DETECTIONS, and a successful pick
+    # publishes trash_goal_done, which marks real litter collected in their
+    # system IRREVERSIBLY. With auto_pick false the gateway drives, reports
+    # REACHED, and acknowledges nothing - their mission then stalls, which is
+    # the honest and reversible outcome for a first run.
+    # Set back to true only against fake_octopus, or deliberately.
+    auto_pick: false
+    # There is deliberately NO parameter here that could make an arrival
+    # acknowledge. trash_goal_done follows a successful PickPlastic result and
+    # nothing else (SAFETY.md C-7, normative by user decision 2026-08-19; FR-12
+    # item 7's weaker "acknowledge on reach" branch is aligned to it). With
+    # auto_pick false the gateway drives, reports REACHED, and does not
+    # acknowledge - the source's mission then stalls, which is the honest
+    # outcome until they add a failure channel.
+
+
+    # SR-15 rule 5, user decision 2026-08-18: default 120 s, hard maximum 600 s.
+    # The 600 s ceiling is enforced in code and cannot be raised from here. A
+    # request above it is REJECTED, not clamped.
+    arming.max_duration_sec: 600.0
+    arming.max_consecutive_aborts: 3
+
+    # GEOFENCE - numbers TO-VERIFY, design decided (user 2026-08-18): a separate
+    # rectangle covering the demo area, deliberately NOT the Octopus detection
+    # footprint and not a margin around it. RUNTIME-ADJUSTABLE by requirement:
+    #   ros2 param set /gripperx/external/goal_gateway_node geofence.min_x_m -2.0
+    # takes effect on the NEXT validation, without a node restart, and is NOT an
+    # arming event. While unset the gateway refuses to validate.
+    #
+    # SET 2026-08-21 BY USER DECISION, TWIN ONLY: 1.25 m in every direction
+    # under the drone, i.e. a 2.50 x 2.50 m square centred on map (0,0). This is
+    # a DECISION about the twin's play area, not a measurement of any demo site -
+    # the real robot's geofence stays TO-VERIFY in octopus_link_real.yaml and is
+    # NOT discharged by this. FR-12 SS10.1 item 6 is unchanged.
+    #
+    # WHAT IT BOUNDS: the CHOSEN ROBOT POSE, not the object (validation.py
+    # check_pose, step 9). A target may lie outside this square and still be
+    # served when its standoff pose falls inside, and a target inside may be
+    # refused when every one of the 12 approach candidates lands outside. That
+    # asymmetry is the point of a standoff and is not a defect.
+    #
+    # It also bounds the GOAL only, never the PATH: Nav2 may plan and drive
+    # outside this square on the way. The geofence is not a containment fence.
+    geofence.min_x_m: -1.25
+    geofence.max_x_m: 1.25
+    geofence.min_y_m: -1.25
+    geofence.max_y_m: 1.25
+
+    # GRASP OFFSET - bench measurement on the real robot, blocks stage 5. The
+    # point in base_footprint where the fixed, unaimable pick sequence actually
+    # closes. There is no kinematic model to derive it from (no arm link in the
+    # URDF), so there is deliberately no placeholder: a plausible number here
+    # would produce goals that look valid, drive the robot, and miss.
+    #
+    # offset_x/y: SET 2026-08-18 by the user as a deliberate provisional value
+    # ("erstmal genau 360 mm"), purely longitudinal. This is a SPECIFICATION,
+    # not a measurement - the bench procedure above is still owed and still
+    # blocks stage 5. Do not present it as measured anywhere.
+    grasp.offset_x_m: 0.360
+    grasp.offset_y_m: 0.000
+    # Still genuinely unmeasured, and since the user decision of 2026-08-19 it
+    # gates ONLY the post-arrival reached check - never resolution. An
+    # unmeasured tolerance no longer blocks every goal from resolving; it makes
+    # the reached verdict UNKNOWN, which is logged loudly and never defaulted to
+    # a number. It does not enter the standoff-pose computation at all.
+    grasp.tolerance_m: "TO-VERIFY"
+    grasp.approach_candidates: 12
+    # NOT IMPLEMENTED. A ComputePathToPose round trip inside the approach ring's
+    # synchronous acceptance predicate would be a blocking wait inside a
+    # callback, which C-2 forbids. Setting it true logs an ERROR and changes
+    # nothing; making it work needs the ring restructured around a future.
+    grasp.verify_path: false
+
+    # Tuning values, set against the twin, none safety-defining.
+    max_goal_cost: 200
+    max_stamp_age_sec: 5.0
+    max_tf_age_sec: 1.0
+    max_teleop_mode_age_sec: 2.0
+    link_lost_sec: 5.0
+    goal_match_tolerance_m: 0.25
+
+    # SAFETY.md F-28. How old their target list may be and still be correlated
+    # against. Same kind of value as link_lost_sec and set the same way: their
+    # `trash_gps` publishes unconditionally at 1 Hz, so five seconds is five
+    # missed publications, i.e. a dead stream rather than a hiccup. Their
+    # detector dying while their datum publisher lives leaves the LINK healthy -
+    # the link watchdog measures the last frame of any topic - and leaves the
+    # correlation input frozen, which makes all three F-13 gates confidently
+    # wrong. Measured monotonically, so it keeps meaning something in sim time.
+    max_target_list_age_sec: 5.0
+    # SAFETY.md F-24. How long the ROS clock may fail to advance before the
+    # gateway refuses to arm and disarms. Watched against a monotonic reference
+    # that `use_sim_time` cannot switch and no publisher can stop.
+    clock_stall_sec: 2.0
+    # SAFETY.md F-31. How long an unproven ROS clock is reported at WARN before
+    # it becomes an ERROR. It is NOT a second stall tolerance: arming is refused
+    # for an unproven clock throughout, inside this grace and after it, and the
+    # gate is identical in both. What it grades is the loudness.
+    #
+    # WHY: `/clock` is discovered, not delivered on request. The gateway
+    # subscribes when it comes up and cannot see a first message before DDS has
+    # matched a publisher, and that latency overlaps clock_stall_sec (2.0 s), so
+    # an ordinary twin start used to raise the SAME ERROR a dead Gazebo raises -
+    # about half the time on the auditor's machine. An ERROR that fires on
+    # ordinary starts is an ERROR operators learn to scroll past, and that is
+    # the silent-health failure F-24 exists against, wearing different clothes.
+    #
+    # MEASURED, 2026-08-19, on the laptop that runs the twin (gateway first log
+    # line -> "ROS clock observed advancing"), 25 samples in three conditions:
+    #   idle machine, 12 samples          0.22 - 1.39 s
+    #   loaded machine (10 busy cores)    0.25 - 2.46 s   (3 spurious ERRORs)
+    #   auditor's, live Gazebo on dom 220 1.32 / 3.20 / 3.48 s (2 spurious)
+    # The 10.0 s VALUE IS A JUDGEMENT, not a measurement: it is ~2.9x the
+    # largest observation (3.48 s). Only the range above is measured. Re-measure
+    # on the machine that will run it before treating it as settled.
+    clock_startup_grace_sec: 10.0
+
+    # The two CLOCK DISCONTINUITY thresholds. SR-15 rule 14 makes both of them
+    # startup-only, each its OWN parameter, and neither derived from anything
+    # else - a `ros2 param set` on either is refused, not applied.
+    #
+    # BOTH VALUES ARE `TO-VERIFY`. Nothing measured either of them, and they
+    # carry the same gap `clock_stall_sec` carries: every `/clock` behind every
+    # number in this package has been a test fixture and never a running Gazebo,
+    # so what a LOADED Gazebo does to them is unanswered.
+    #
+    # SAFETY.md F-30/F-36. How far the ROS clock may go BACKWARDS before that is
+    # a discontinuity rather than "no advance". It alone decides whether
+    # CLOCK_JUMPED_BACK - the ninth auto-disarm trigger, split out by user
+    # decision 2026-08-19 - ever fires. 0.2 is exactly what it was DERIVED as
+    # from `safety_rate_hz: 5.0` before 2026-08-20, so the threshold is
+    # unchanged; what changed is that editing the safety tick rate no longer
+    # moves it (F-36).
+    clock_backward_eps_sec: 0.2
+    # SAFETY.md F-40, user decision 2026-08-20. How much MORE than a continuous
+    # clock at the observed rate the ROS clock may advance before that is
+    # reported as a forward discontinuity. REPORT ONLY: WARN plus a
+    # /diagnostics value, no disarm and no cancel. Measured as an excess over
+    # the observed rate rather than as an absolute step, so a twin deliberately
+    # run fast does not report on every tick.
+    clock_forward_jump_sec: 1.0
+
+    # TO-VERIFY. Must sit WELL above the counterpart's trigger, which is 1e-9
+    # deg (~0.1 mm): at their threshold, sensor noise or a one-pixel marker
+    # nudge would cancel the active goal continuously. It scales with the demo
+    # area, so it follows the geofence measurement. While unset, ANY datum
+    # change is treated as significant - conservative, and it invents nothing.
+    datum_jump_warn_m: "TO-VERIFY"
+
+    # Provisional, NOT user-confirmed (requirements agent's recommendation).
+    max_attempts_per_target: 2
+
+    telemetry_rate_hz: 1.0
+    preview_rate_hz: 5.0
+    # The gate-closing tick (arming expiry, link watchdog, cancel timeout). Its
+    # own rate so that lowering the preview rate can never slow down the rate at
+    # which the gate notices it should be shut (SAFETY.md F-2/F-3).
+    safety_rate_hz: 5.0
+    # Server availability, the in-flight re-validation and the dispatch decision.
+    dispatch_rate_hz: 2.0
+
+    # The two action interfaces. Named here so the SR-9 baseline diff and the
+    # config agree about what is talked to. Goals enter Nav2 through the ACTION
+    # interface only - never /goal_pose, never a chain topic (FR-12 item 3).
+    navigate_action: "/navigate_to_pose"
+    pick_action: "/pick_plastic"
+    # How long a cancel may go unconfirmed before it is reported. Reporting is
+    # the ENTIRE escalation (SR-15 rule 9): no zero-write, no mode publication,
+    # and no parameter anywhere in this package that could enable one.
+    # TO-VERIFY as a tuning value.
+    cancel_confirm_timeout_sec: 3.0
+
+    map_frame: "map"
+    base_frame: "base_footprint"
+    costmap_topic: "/global_costmap/costmap"
+    odom_topic: "/odometry/filtered"
+    # SUBSCRIBED ONLY. Nothing in this package publishes /teleop/set_mode or any
+    # motion-chain topic, under any condition (SR-15 rules 6 and 9).
+    teleop_mode_topic: "/teleop/active_mode"

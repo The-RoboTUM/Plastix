@@ -1,0 +1,31 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>gripperx_behaviors</name>
+  <version>0.0.0</version>
+  <description>
+    Nav2 behavior plugins that exist because the GripperX chassis can do
+    something the upstream set cannot express. Currently exactly one: crab_walk,
+    a bounded pure-lateral recovery for the 4WIS/4WID drive.
+  </description>
+  <maintainer email="theoblaesse@gmail.com">Theo Blaesse</maintainer>
+  <license>Apache-2.0</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <depend>geometry_msgs</depend>
+  <depend>nav2_behaviors</depend>
+  <depend>nav2_core</depend>
+  <depend>nav2_costmap_2d</depend>
+  <depend>nav2_msgs</depend>
+  <depend>nav2_util</depend>
+  <depend>pluginlib</depend>
+  <depend>rclcpp</depend>
+  <depend>rclcpp_lifecycle</depend>
+  <depend>tf2</depend>
+  <depend>tf2_ros</depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

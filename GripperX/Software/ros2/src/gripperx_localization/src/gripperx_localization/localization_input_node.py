@@ -6,6 +6,7 @@ import rclpy
 from geometry_msgs.msg import Quaternion, TransformStamped
 from nav_msgs.msg import Odometry
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from sensor_msgs.msg import Imu, JointState
 from tf2_ros import TransformBroadcaster
 
@@ -47,21 +48,53 @@ class LocalizationInputNode(Node):
             "steer_joint_names",
             ["f_left_steer", "b_leftsteer", "b_rightsteer", "f_right_steer"],
         )
+        # Defaults mirror config/localization.yaml, which is the source of truth
+        # and carries the full rationale (CAD origin, and why these are wheel
+        # CONTACT POINTS rather than king-pin positions). They are kept in step so
+        # that running this node without a params file does not silently fall back
+        # to a different robot; the previous defaults were the obsolete-CAD values.
         self.declare_parameter(
             "wheel_positions",
-            [
-                0.2014,
-                0.16556,
-                -0.20473,
-                0.16556,
-                -0.2046,
-                -0.16556,
-                0.20127,
-                -0.16556,
-            ],
+            Parameter.Type.DOUBLE_ARRAY,
         )
-        self.declare_parameter("effective_wheel_radius", 0.052)
-        self.declare_parameter("drive_joint_multipliers", [1.0, 1.0, -1.0, -1.0])
+        self.declare_parameter("effective_wheel_radius", Parameter.Type.DOUBLE)
+        self.declare_parameter("drive_joint_multipliers", [1.0, 1.0, 1.0, 1.0])
+        # WHICH QUANTITY THE WHEEL RATE COMES FROM. Default changed to "position"
+        # 2026-08-21, and the reason is a failure mode, not a preference:
+        #
+        # /joint_states velocity for a wheel is index 4-7 of the firmware's
+        # /hw/joint_states, and gripperx_hardware_interface/INTERFACE.md states that
+        # index is "EITHER a real encoder measurement OR the commanded velocity handed
+        # straight back" -- MotorController::getRPM() falls back to the target when the
+        # encoder is not running -- "and nothing in the value itself distinguishes the
+        # two". The only discriminator is the provenance array (indices 12-15,
+        # /hw/wheel_feedback_valid), which THIS NODE DOES NOT READ.
+        #
+        # So on a wheel whose encoder is unplugged -- which is a state the robot was
+        # actually found in on 2026-08-21, BL and BR both -- the velocity path makes this
+        # node integrate the command as though it were motion. Odometry then reports
+        # confident, plausible numbers with no relation to the ground, and nothing
+        # upstream objects.
+        #
+        # The accumulated wheel POSITION cannot echo a command: with no encoder the
+        # firmware publishes 8 values instead of 12, read() leaves the position state
+        # untouched, and the derived rate is 0. Odometry goes flat and STAYS flat, which
+        # is wrong in the way that gets noticed. Fail loudly rather than quietly.
+        #
+        # THE COST IS REAL AND IS NOT ZERO: the firmware's velocity is a first difference
+        # over a >=100 ms sliding window taken from 200 Hz sampling, i.e. already
+        # smoothed. A position difference taken here is a first difference over one
+        # /joint_states period (~33 ms at 30 Hz) against an encoder quantisation of
+        # 2*pi/3200 = 0.00196 rad, so a single count is ~0.06 rad/s of resolution. This
+        # trades noise for honesty. If the noise proves to matter, the right fix is to
+        # subscribe to the provenance topic and gate the velocity path on it, NOT to go
+        # back to trusting an unverifiable quantity.
+        #
+        #   position          derive the rate from the accumulated wheel position (default)
+        #   velocity          use the reported velocity, unconditionally
+        #   velocity_if_valid use the reported velocity when it is present and finite,
+        #                     else fall back to position -- the behaviour before 2026-08-21
+        self.declare_parameter("wheel_rate_source", "position")
         self.declare_parameter("odom_frame", "odom")
         self.declare_parameter("base_frame", "base_footprint")
         self.declare_parameter("publish_tf", False)
@@ -75,6 +108,12 @@ class LocalizationInputNode(Node):
         self.steer_joint_names = list(self.get_parameter("steer_joint_names").value)
         self.wheel_positions = [float(value) for value in self.get_parameter("wheel_positions").value]
         self.effective_wheel_radius = float(self.get_parameter("effective_wheel_radius").value)
+        self.wheel_rate_source = str(self.get_parameter("wheel_rate_source").value)
+        if self.wheel_rate_source not in ("position", "velocity", "velocity_if_valid"):
+            raise ValueError(
+                "wheel_rate_source must be one of position | velocity | velocity_if_valid, "
+                f"got {self.wheel_rate_source!r}"
+            )
         self.drive_joint_multipliers = [
             float(value) for value in self.get_parameter("drive_joint_multipliers").value
         ]
@@ -253,13 +292,31 @@ class LocalizationInputNode(Node):
         drive_positions: Dict[str, float],
         dt: float,
     ) -> list[float]:
-        use_reported_velocity = (
+        velocity_usable = (
             len(message.velocity) >= len(message.name)
             and all(
                 math.isfinite(float(message.velocity[joint_indices[name]]))
                 for name in self.drive_joint_names
             )
         )
+
+        if self.wheel_rate_source == "velocity":
+            use_reported_velocity = True
+        elif self.wheel_rate_source == "velocity_if_valid":
+            use_reported_velocity = velocity_usable
+        else:  # "position" — see the wheel_rate_source block in __init__
+            use_reported_velocity = False
+
+        if use_reported_velocity and not velocity_usable:
+            # Asked for velocity, and it is absent or non-finite. Reporting zero would
+            # be a lie in the same family this parameter exists to avoid, so say so and
+            # take the position instead.
+            self.get_logger().error(
+                "wheel_rate_source=velocity but /joint_states carries no usable velocity "
+                "for the drive joints; falling back to the wheel position this cycle.",
+                throttle_duration_sec=5.0,
+            )
+            use_reported_velocity = False
 
         wheel_angular_rates = []
         for drive_name, multiplier in zip(self.drive_joint_names, self.drive_joint_multipliers):

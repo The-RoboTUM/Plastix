@@ -1,5 +1,25 @@
 # Steering differential from servo feedback (Task #21)
 
+> **RELOCATION NOTE — 2026-08-24. The feature is live; the code moved.**
+> This document describes the logic as living in `swerve_cmd_node` and
+> `teleop_mux_node`. Since NFR-10 the differential is implemented **inside
+> `swerve_controller`** (`gripperx_swerve_controller`), which replaced
+> `swerve_cmd_node` and `joint_command_bridge` on both platforms. The six
+> parameters carried over unchanged and are set in
+> `gripperx_control/config/ros2_controllers.yaml` (lines 178-183):
+> `steer_diff_omega_gate: 0.05`, `steer_diff_min_speed_mps: 0.03`,
+> `steer_diff_time_constant_sec: 0.3`, `steer_diff_max_omega: 1.5`,
+> `steer_diff_min_ratio: 0.5`, `steer_diff_max_ratio: 1.5` — the same values this
+> document derives, and identical to the legacy `swerve_cmd.yaml` block.
+>
+> One behavioural statement below has also lapsed: `teleop_mux_node` no longer
+> zeroes `angular.z` in keyboard mode. Since 2026-08-13 it forwards the full
+> planar twist by default (`keyboard_pass_manoeuvre_axes: true`).
+>
+> The reasoning, the gate design and the measurements are unaffected. Read it for
+> *why* the differential exists and how it is bounded; read
+> `swerve_controller.cpp` for where it now runs.
+
 ## Problem
 
 When steering, the drive wheels should turn at different speeds
@@ -9,7 +29,7 @@ actual steering angle — otherwise the drivetrain binds mechanically.
 So far (user observation): in keyboard teleop all four wheels turn
 at exactly the same speed, regardless of the steering angle.
 
-**Relation to `REQUIREMENTS.md`:** FR-4 / OP-1. OP-1 actually recommends
+**Relation to `REQUIREMENTS` (internal):** FR-4 / OP-1. OP-1 actually recommends
 first only *measuring* whether the IK-inherent differential is
 sufficient in real operation (option A), before implementing a
 dedicated, servo-position-dependent correction (option B) — to avoid
@@ -52,7 +72,8 @@ already consumes this topic for computing the target steering angles
 
 New method `_apply_steer_feedback_differential()` in
 `gripperx_control/swerve_cmd_node.py`, called right after the existing
-IK computation (`_compute_direct_ik` / `_compute_tracking_control`),
+IK computation (`_commands_from_targets` — named `_compute_direct_ik` before
+the 2026-08-13 per-wheel steering limits — / `_compute_tracking_control`),
 **only** in the normal driving branch (not for point-turn, which has
 its own, already correct differentiation):
 
@@ -131,7 +152,7 @@ colcon build --packages-select gripperx_control
 
 `colcon build --packages-select gripperx_control` automatically updates both
 install paths for `swerve_cmd_node.py` (unlike `gripperx_arm`, which the trap
-documentation in `REQUIREMENTS.md`/agent rules explicitly mentions —
+documentation in the internal `REQUIREMENTS`/agent rules explicitly mentions —
 `gripperx_control` uses the normal setuptools install, not the gripperx_arm special
 case). Still, verify after the build:
 

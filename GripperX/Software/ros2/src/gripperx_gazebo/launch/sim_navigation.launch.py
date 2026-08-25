@@ -28,13 +28,35 @@ def generate_launch_description():
     Gazebo sim + stack-B localization + Nav2 — in the correct order and with
     use_sim_time:=true consistently.
 
-    Localization (odom source, DT-7): for M1-M3 the perfect ground-truth
-    odometry (`/ground_truth/odom`) is used (OP-12, binding for M1-M3), passed
-    through as TF odom->base_footprint by `ground_truth_odom_bridge` and
-    republished on `/odometry/filtered` (the stack-B odom topic Nav2 expects).
-    The realistic EKF chain (wheel forward kinematics + laser_scan_matcher +
-    IMU) is deferred to M4/DT-9 (needs ros2_laser_scan_matcher, not installed
-    on this laptop) — hence `odom_source:=ground_truth` is the only wired mode.
+    Localization (odom source, DT-7), two mutually exclusive modes:
+
+    `odom_source:=ground_truth` (default, OP-12, binding for M1-M3): the perfect
+    ground-truth odometry (`/ground_truth/odom`) passed through as TF
+    odom->base_footprint by `ground_truth_odom_bridge` and republished on
+    `/odometry/filtered` (the stack-B odom topic Nav2 expects).
+
+    `odom_source:=ekf` (M4/DT-9, wired 2026-08-21): the realistic chain — wheel
+    forward kinematics (`localization_input_node` -> /wheel/odom),
+    laser_scan_matcher (/laser/odom) and the IMU (/imu/data -> /imu/data/filtered)
+    fused by robot_localization, which then owns the odom->base_footprint TF and
+    publishes /odometry/filtered itself. Nav2 needs no change either way.
+
+    This mode was blocked on "ros2_laser_scan_matcher, not installed on this
+    laptop" until 2026-08-21; the package is built and present in `install/`, so
+    the reason had lapsed. Two things to know before reading results from it:
+
+    - **Gazebo's IMU carries no noise model** (`gripperx_v1.gazebo.xacro`: no
+      `<noise>` on the sensor), so this exercises the wiring and the kinematics,
+      NOT robustness against IMU bias or drift.
+    - `/ground_truth/odom` keeps publishing in EKF mode — the gz OdometryPublisher
+      plugin is unconditional. It is the REFERENCE the fused estimate can be
+      measured against, which is the point of the mode: the wheel-odometry scale
+      moved +35 % (0.052 -> 0.070) and no drive test has validated it
+      (internal `NAV2_HANDOVER` §3).
+
+    Note that `imu0` is the filter's ONLY absolute yaw source — `odom0` (wheel)
+    contributes rates only and `odom1` (laser) does not take yaw. On hardware,
+    where the IMU does not exist yet, that is a decision to make, not a setting.
 
     Map -> odom: default `localization:=slam` runs slam_toolbox online (proven
     M2 chain), building the map as the robot drives — required for full-arena M3
@@ -43,11 +65,12 @@ def generate_launch_description():
     into nav2_map_server + AMCL, with the initial pose overridden to the actual
     spawn; goals are then confined to the mapped strip.
 
-    Deliberately does NOT reuse `gripperx_localization/launch/localization.launch.py`:
-    that launch unconditionally starts the EKF chain (robot_localization +
-    ros2_laser_scan_matcher), which would (a) publish a second competing
-    odom->base_footprint TF next to the ground-truth bridge and (b) fail
-    because ros2_laser_scan_matcher is missing on this laptop.
+    `odom_source:=ekf` DOES reuse `gripperx_localization/launch/localization.launch.py`
+    rather than restating the EKF chain here, but only its odometry half: it is
+    included with `enable_slam:=false`, `enable_saved_map_localization:=false`
+    and `use_rviz:=false`, because map->odom and RViz are owned by this file. The
+    competing-TF hazard that kept the two apart is handled by the conditions —
+    `ground_truth` and `ekf` can never both be active.
 
     RViz: started standalone per DIGITAL_TWIN_PLAN.md §9.4 (use_rviz default
     false); launch-started RViz is a known flakiness issue.
@@ -68,6 +91,8 @@ def generate_launch_description():
     spawn_yaw = LaunchConfiguration("spawn_yaw")
     use_rviz = LaunchConfiguration("use_rviz")
     odom_source = LaunchConfiguration("odom_source")
+    enable_laser_odometry = LaunchConfiguration("enable_laser_odometry")
+    fuse_laser_odometry = LaunchConfiguration("fuse_laser_odometry")
     localization = LaunchConfiguration("localization")
     map_yaml_file = LaunchConfiguration("map_yaml_file")
 
@@ -79,6 +104,7 @@ def generate_launch_description():
     use_ground_truth = IfCondition(
         PythonExpression(["'", odom_source, "' == 'ground_truth'"])
     )
+    use_ekf = IfCondition(PythonExpression(["'", odom_source, "' == 'ekf'"]))
     use_amcl = IfCondition(PythonExpression(["'", localization, "' == 'amcl'"]))
     use_slam = IfCondition(PythonExpression(["'", localization, "' == 'slam'"]))
 
@@ -112,6 +138,25 @@ def generate_launch_description():
         output="screen",
         condition=use_ground_truth,
         parameters=[sim_time_param, {"output_topic": "/odometry/filtered"}],
+    )
+
+    # --- Odometry alternative (DT-9): the real EKF chain, odometry half only.
+    #     map->odom (slam_toolbox / map_server+AMCL) and RViz stay with THIS
+    #     file, so the include is told to start neither. ---
+    localization_ekf = IncludeLaunchDescription(
+        PythonLaunchDescriptionSource(
+            str(gripperx_localization_share / "launch" / "localization.launch.py")
+        ),
+        condition=use_ekf,
+        launch_arguments={
+            "use_sim_time": "true",
+            "enable_laser_odometry": enable_laser_odometry,
+            "fuse_laser_odometry": fuse_laser_odometry,
+            "enable_gps": "false",
+            "enable_slam": "false",
+            "enable_saved_map_localization": "false",
+            "use_rviz": "false",
+        }.items(),
     )
 
     # --- Map -> odom option A: saved map + AMCL ---
@@ -247,11 +292,39 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "odom_source",
                 default_value="ground_truth",
-                choices=["ground_truth"],
+                choices=["ground_truth", "ekf"],
                 description=(
-                    "ground_truth (DT-7, M1-M3): /ground_truth/odom -> TF "
-                    "odom->base_footprint + /odometry/filtered. EKF mode "
-                    "(M4/DT-9) needs ros2_laser_scan_matcher (not installed)."
+                    "ground_truth (DT-7, M1-M3, default): /ground_truth/odom -> TF "
+                    "odom->base_footprint + /odometry/filtered. ekf (M4/DT-9): "
+                    "wheel + laser + IMU fused by robot_localization, which owns "
+                    "the TF instead; /ground_truth/odom stays available as the "
+                    "reference to measure against. The sim IMU has no noise model."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "enable_laser_odometry",
+                default_value="true",
+                choices=["true", "false"],
+                description=(
+                    "odom_source:=ekf only: run the laser scan matcher, i.e. publish "
+                    "/laser/odom. This no longer implies fusing it — see "
+                    "fuse_laser_odometry. Leave it true even when not fusing: the topic "
+                    "is what odom_divergence_monitor cross-checks the wheel odometry "
+                    "against, and the monitor is silent without it."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "fuse_laser_odometry",
+                default_value="false",
+                choices=["true", "false"],
+                description=(
+                    "odom_source:=ekf only: fuse /laser/odom into the EKF as odom1. "
+                    "DEFAULT false since 2026-08-21 — a silent scan-matcher lock-up "
+                    "drove the estimate 2.62 m off over one 5.4 s straight leg while "
+                    "Nav2 reported SUCCEEDED with zero recoveries; the same case "
+                    "without the fusion ended 0.10 m out. Cause: fused as an absolute "
+                    "pose with an all-zero covariance and no rejection threshold. See "
+                    "NAV2_HANDOVER.md section 9."
                 ),
             ),
             DeclareLaunchArgument(
@@ -278,6 +351,7 @@ def generate_launch_description():
             ),
             simulation,
             ground_truth_odom_bridge,
+            localization_ekf,
             map_server,
             amcl,
             lifecycle_manager_localization,

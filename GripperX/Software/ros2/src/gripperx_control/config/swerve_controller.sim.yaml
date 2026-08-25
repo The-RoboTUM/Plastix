@@ -1,0 +1,57 @@
+# Sim-only parameter VALUES for swerve_controller — §3.1.6 item 1 allows exactly
+# this and forbids a sim-only NODE in the command path. Layer this file on top of
+# ros2_controllers.yaml (spawner argument `--param-file`), never instead of it:
+# it carries the differences and nothing else, so there is one source of truth
+# for everything the two platforms share.
+#
+# THIS FILE IS THE SURVIVING HALF OF joint_command_bridge.sim.yaml.
+# In the sim URDF (gripperx_v1.core.xacro) the right-side wheel joints have
+# axis "0 0 -1" while otherwise sharing the same rpy as the left wheels, so a
+# positive velocity command spins the right sim wheels BACKWARDS. On the real
+# machine the motor wiring compensates for this (and the firmware carries
+# ROBOT_FRAME_WHEEL_SIGN plus the FL/BL negation), which is why the real value is
+# [1, 1, 1, 1]. Dropping this when joint_command_bridge goes makes the twin drive
+# sideways and veer off on a straight-ahead command — the exact symptom recorded
+# in the file this replaces.
+#
+# The steering half of joint_command_bridge.sim.yaml (`publish_steering: false`)
+# has NO successor and needs none: it existed only so that sim_steer_bridge and
+# the bridge would not both publish onto /steering_position_controller/commands.
+# That topic is deleted by this rebuild and sim_steer_bridge with it (OP-23 /
+# A2-b) — the arbitration moved into swerve_controller, where real and sim share
+# one implementation.
+
+swerve_controller:
+  ros__parameters:
+    # [1,1,1,1] in BOTH real and sim since 2026-08-21: the URDF's right-side
+    # drive joints no longer carry an authored axis mirror, so there is nothing
+    # left for this value to undo. Kept declared, at the identity, because the
+    # parameter is still the documented place a wiring-sign change would go.
+    wheel_command_multipliers: [1.0, 1.0, 1.0, 1.0]
+
+    # HWR-30a's provenance gate has no source in the twin. /hw/wheel_feedback_valid
+    # is published by GripperXInterface (FR-11 items 5/6), and GazeboSimSystem
+    # never loads that component — so in sim nothing ever publishes it, every
+    # wheel reads provenance UNKNOWN, and the stall detector would stay
+    # PERMANENTLY DISARMED while the configure log said it was on. The real
+    # robot must keep the opposite default (`false` in ros2_controllers.yaml):
+    # there a missing provenance topic means the encoders' state is genuinely
+    # unknown, and assuming LIVE would arm the detector against feedback that
+    # may be an echo of the command.
+    #
+    # In Gazebo the joint positions are true physics, so "commanded and not
+    # turning" is a real statement there — which is exactly why HWR-30a was put
+    # in the controller and not in the hardware interface.
+    #
+    # SINCE 2026-08-20 THIS VALUE GATES A SECOND CONSUMER: the per-wheel velocity
+    # regulator uses the same provenance test.
+    #
+    # CORRECTED 2026-08-21 — the sentence here used to say the regulator "stays
+    # false". That stopped being true within a day: the user enabled it by
+    # default on 2026-08-20, this file does NOT override the flag, and it layers
+    # on top of ros2_controllers.yaml. **The twin therefore inherited the closed
+    # loop silently, with nobody deciding it for the twin.** That is recorded as
+    # OP-36(a); `real == sim` is preserved, which is why it was not caught by the
+    # usual check. Consequence to be aware of before reading any twin result:
+    # this line is what LETS the regulator act there, and it is now acting.
+    assume_live_provenance: true

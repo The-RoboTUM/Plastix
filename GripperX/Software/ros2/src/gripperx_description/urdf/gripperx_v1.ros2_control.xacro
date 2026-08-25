@@ -38,11 +38,21 @@
       joint_commands_topic:=/hw/joint_commands
       joint_states_topic:=/hw/joint_states
       state_timeout_sec:=2.0
+      steer_states_topic:=/hw/steer_states
+      steer_states_timeout_sec:=0.5
+      steer_states_activation_timeout_sec:=120.0
+      steer_states_valid_topic:=/hw/steer_states_valid
+      wheel_feedback_valid_topic:=/hw/wheel_feedback_valid
       command_watchdog_enabled:=true
       command_timeout_sec:=0.5
       command_watchdog_rate_hz:=50.0
       command_divergence_eps:=0.001
-      wheel_command_topic:=/wheel_velocity_controller/commands">
+      wheel_command_topic:=/wheel_velocity_controller/commands
+      watchdog_reference:=twist_echo
+      cmd_vel_topic:=/cmd_vel
+      intent_echo_topic:=/swerve_controller/intent_echo
+      command_twist_linear_eps:=1.0e-4
+      command_twist_angular_eps:=1.0e-4">
     <ros2_control name="${name}" type="system">
       <hardware>
         <plugin>${plugin}</plugin>
@@ -50,12 +60,106 @@
           <param name="joint_commands_topic">${joint_commands_topic}</param>
           <param name="joint_states_topic">${joint_states_topic}</param>
           <param name="state_timeout_sec">${state_timeout_sec}</param>
+          <!-- Steering feedback (FR-10). The ESP32 has no steering sensor, so the
+               steering position STATE comes from steer_servo_node, not from
+               /hw/joint_states. Freshness window carried over from swerve_cmd_node's
+               steer_states_timeout_sec, not invented. Guarded by use_hw_topics like
+               everything else here, so GazeboSimSystem never sees it (§3.1.6). -->
+          <param name="steer_states_topic">${steer_states_topic}</param>
+          <param name="steer_states_timeout_sec">${steer_states_timeout_sec}</param>
+          <!-- SR-14 item 4: on_activate() refuses to activate until one valid steering
+               measurement has arrived, so that no controller can activate on the interface
+               default 0.0 and command CENTRE. Bounded so the guard cannot become a boot
+               failure (NFR-3).
+
+               VALUE: 120.0 s is USER-SET (2026-08-18) and PENDING COLD-BOOT VERIFICATION.
+               The user chose it because cold starts have taken considerably longer than the
+               warm measurement below. The cold-boot figure itself has not been measured yet;
+               until it is, 120 is a deliberate over-estimate, not a derived number.
+
+               The measured derivation it replaces is retained so the reasoning survives
+               (clean WARM bringup 2026-08-18, ~/nfr10_bench/bringup_clean.log):
+                 'activate' of gripperx_real_system began   t=1787064872.742
+                 first /hw/steer_states seen by read()      t=1787064878.627  -> 5.885 s
+               of which steer_servo_node needs 2.2 s to start and 4.33 s to scan the servo
+               bus (ids 0..20, 3 ping retries each). One respawn cycle of that node costs a
+               further 11.6 s (respawn_delay 5.0 in real_robot.launch.py + 2.2 + 4.4), which
+               the boot-time USB workaround makes a realistic case -> 17.5 s, which is where
+               the former default of 20 came from. That is a LOWER bound on what is needed;
+               it says nothing about a cold boot, which is why the user raised it.
+               Ceiling: the three spawners' controller-manager-timeout argument in
+               real_robot.launch.py MUST stay ABOVE this value, or they die while the gate is
+               still legitimately waiting and the gate never reports its own failure. Raised
+               30 -> 150 s together with this change; keep the two in step. Guarded by use_hw_topics like
+               everything else here, so GazeboSimSystem never sees it (§3.1.6) — and in sim
+               the guard is structurally absent anyway, because GazeboSimSystem reports true
+               joint positions and never loads this component. -->
+          <param name="steer_states_activation_timeout_sec">${steer_states_activation_timeout_sec}</param>
+          <param name="steer_states_valid_topic">${steer_states_valid_topic}</param>
+          <!-- Wheel-feedback provenance (FR-11 items 5/6). Deliberately a TOPIC and not
+               a state interface: GazeboSimSystem exports no such interface, so a
+               controller claiming it would fail to activate in sim and fork real from
+               sim (§3.1.6). Guarded by use_hw_topics like everything else here. -->
+          <param name="wheel_feedback_valid_topic">${wheel_feedback_valid_topic}</param>
           <!-- Command watchdog behind the ros2_control layer (Task #14). -->
           <param name="command_watchdog_enabled">${command_watchdog_enabled}</param>
           <param name="command_timeout_sec">${command_timeout_sec}</param>
           <param name="command_watchdog_rate_hz">${command_watchdog_rate_hz}</param>
           <param name="command_divergence_eps">${command_divergence_eps}</param>
           <param name="wheel_command_topic">${wheel_command_topic}</param>
+          <!-- WHICH REFERENCE INPUT THE WATCHDOG POLICES AGAINST — OP-18a, SR-11.
+
+               `twist_echo` (DEFAULT SINCE THE NFR-10 SWITCH-OVER, and the ACTIVE
+               PATH): OP-18a option W2, DECIDED 2026-08-17 by the user. /cmd_vel plus
+               swerve_controller's intent echo. Neither check needs the kinematics —
+               a twist is compared with a twist — and the echo's monotonic counter is
+               what distinguishes a wedged controller from a legitimately constant
+               command.
+
+               `wheel_commands` (SUPERSEDED, kept only as the revert target):
+               /wheel_velocity_controller/commands compared against the command
+               interface. SR-11 deviation D2 records why this is wrong in principle —
+               it is the topic it polices — but it is what caught the frozen
+               controller_manager on 2026-08-17, and it stays compiled so that
+               reverting the switch-over restores a working watchdog together with
+               the old chain. IT IS INOPERABLE ON ITS OWN NOW: the topic
+               /wheel_velocity_controller/commands ceases to exist with this rebuild
+               (§3.1.2), so selecting `wheel_commands` without also restoring
+               wheel_velocity_controller gives a watchdog that sees permanent
+               silence.
+
+               THE SWITCH-OVER WAS THIS ONE WORD, and it was made in the same step
+               that removed the old topic — which is what §3.1.2 requires. Both
+               reference inputs remain built and both sets of parameters exist. -->
+          <param name="watchdog_reference">${watchdog_reference}</param>
+          <param name="cmd_vel_topic">${cmd_vel_topic}</param>
+          <param name="intent_echo_topic">${intent_echo_topic}</param>
+          <!-- TWIST DIVERGENCE TOLERANCE — NEW QUANTITY, `TO-VERIFY` (OP-18a item 5).
+               Read only in watchdog_reference=twist_echo.
+
+               These are NOT command_divergence_eps (0.001). That one is rad/s of
+               WHEEL angular velocity; these are m/s and rad/s of the BODY twist, and
+               OP-18a item 5 forbids reusing the one for the other. Linear and angular
+               are separate because m/s and rad/s are not the same quantity.
+
+               Derived from what the tree can actually command: the finest non-zero
+               /cmd_vel component any source in this repository emits is a
+               manoeuvre-slew twist from keyboard_teleop_node — crab_speed_m_s 0.25 x
+               manoeuvre_pose_scale 0.02 = 0.005 m/s, spin_speed_rad_s 0.60 x 0.02 =
+               0.012 rad/s — and teleop_mux copies values through unmodified. 1.0e-4
+               sits 50x / 120x below that, and far above the float64 floor, so no
+               rounding can fabricate a change.
+
+               Deliberately SMALL rather than "half the finest step": too large
+               silently deletes the divergence check, while too small only sets a
+               "changed" flag that is inert unless the echo counter is ALREADY frozen.
+
+               NOT derived from the autonomous path — Nav2/DWB emits continuous
+               twists with no quantisation floor and has never been driven, so no
+               measurement exists. Same gap as OP-24/S1 stage 2's exact-zero test;
+               measure both when the autonomous path is first driven. -->
+          <param name="command_twist_linear_eps">${command_twist_linear_eps}</param>
+          <param name="command_twist_angular_eps">${command_twist_angular_eps}</param>
         </xacro:if>
       </hardware>
       <xacro:gripperx_ros2_control_joints />

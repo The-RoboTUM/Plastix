@@ -31,6 +31,10 @@ setup(
         ),
     ],
     install_requires=["setuptools"],
+    # colcon picks pytest over unittest only when the package declares it here;
+    # without this line `colcon test` runs `python3 -m unittest`, which finds
+    # nothing in test/ and exits GREEN on an empty suite.
+    tests_require=["pytest"],
     zip_safe=True,
     maintainer="aditya",
     maintainer_email="kotteaditya919@gmail.com",
@@ -40,6 +44,7 @@ setup(
         "console_scripts": [
             "localization_input_node = gripperx_localization.localization_input_node:main",
             "ground_truth_odom_bridge = gripperx_localization.ground_truth_odom_bridge:main",
+            "odom_divergence_monitor = gripperx_localization.odom_divergence_monitor:main",
         ],
     },
 )

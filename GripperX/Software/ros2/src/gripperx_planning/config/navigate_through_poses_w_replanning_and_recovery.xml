@@ -1,7 +1,11 @@
 
 <!--
   Navigate Through Poses with replanning and recovery.
-  No Spin recovery: ±45° steering servos cannot rotate in place.
+  No Spin recovery — but NOT for the reason this comment used to give. The old
+  claim "±45° steering servos cannot rotate in place" is wrong: the in-place
+  rotation pose needs ~59°, inside the servos' 100° limit. Spin is absent only
+  because it has not been released by the user; adding it means a plugin in
+  nav2.yaml behavior_plugins plus a <Spin> call in BOTH of these XMLs.
 -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
@@ -43,6 +47,118 @@
             </Sequence>
             <DriveOnHeading dist_to_travel="0.5" speed="0.25"/>
             <Wait wait_duration="3.0"/>
+            <!-- Crab recovery, added 2026-08-19. POSITION: after Wait,
+                 BEFORE BackUp — and that ordering is the argument, not a
+                 detail. The RoundRobin order is an escalation ladder by RISK,
+                 one child per entry into the recovery subtree:
+                   1. costmap clearing  - no motion at all
+                   2. DriveOnHeading    - motion, forward, fully sensor-covered
+                   3. Wait              - no motion, lets a moving obstacle leave
+                   4. CrabWalk          - motion sideways; the LD06 SEES this
+                                          direction live (its blind wedge is
+                                          +-20 deg around -x, at the rear), and
+                                          track_unknown_space blocks unknown
+                                          ground on top of that
+                   5. BackUp            - motion into ground only costmap MEMORY
+                                          covers; no live sensor at all
+                 Sideways is sensed and reverse is blind, so crab strictly
+                 dominates BackUp on collision risk and belongs in front of it.
+                 DEMONSTRATED, not just argued: at a pose the robot had just
+                 been placed at, BackUp refused with COLLISION_AHEAD because the
+                 ground behind it had never been observed, while CrabWalk ran
+                 0.21 m at the same instant. Crab is therefore also AVAILABLE in
+                 situations where BackUp is not, so putting it first costs
+                 nothing and sometimes saves the whole recovery cycle.
+                 THE COUNTER-ARGUMENT, weighed and rejected: crab is the only
+                 recovery here that corrupts the state estimate, because it
+                 injects a yaw bias the wheel odometry cannot see. Reversing is
+                 kinematically clean in that respect. But the bias was measured
+                 over 16 runs and is 0.0138 rad worst case (numbers in nav2.yaml
+                 at behavior_server) = 13.8 % of the current 0.10 rad
+                 yaw_goal_tolerance (0.40 until 2026-08-20; the measurement is
+                 unchanged, the budget it is spent from is not), and a
+                 corrupted heading is in any case a
+                 performance problem that a later observation can fix, while an
+                 unseen obstacle behind the robot is not.
+                 THE REAL COST OF PUTTING IT HERE is time, and it is stated
+                 rather than hidden: a crab takes ~7 s wall clock against ~2 s
+                 for BackUp, because the steering needs ~4.5 s to swing from 0
+                 to 90 deg before the manoeuvre proper starts. Ahead of BackUp
+                 that delay is paid on the 4th recovery entry instead of the
+                 5th.
+                 dist_to_travel 0.20 m is bound (b) of three; bound (a) is
+                 crab_walk.max_distance in nav2.yaml (server-side, binds every
+                 client and REJECTS rather than clamps - verified with 5.00 m
+                 and 0.25 m), bound (c) is time_allowance 2.8 s against the
+                 smoother's +-0.10 m/s lateral cap = 0.28 m even if this port is
+                 wrong. Measured over 16 runs the executed distance is
+                 0.197..0.222 m, i.e. up to 22 mm long: the behavior notices it
+                 has arrived only at its 10 Hz cycle and the plant then coasts
+                 ~14 mm. 0.222 m is still inside bound (c).
+                 The SIGN is the PREFERRED side (+ = left); the behavior mirrors
+                 to the other side only when the preferred one is blocked and
+                 aborts when both are. Keep speed == |velocity_smoother
+                 max_velocity y|, or the smoother clips it silently.
+                 server_name is not decoration: this is the stock DriveOnHeading
+                 BT node pointed at the gripperx_behaviors::CrabWalk server, so
+                 no custom BT plugin is needed and bt_navigator.plugin_lib_names
+                 can stay at the upstream default. -->
+            <!-- dist_to_travel 0.17, NOT 0.20: it must not exceed
+                 behavior_server crab_walk.max_distance, which onRun REJECTS
+                 rather than clamps. Both were lowered together on 2026-08-20
+                 because a 0.20 m request DROVE 0.2227 m (twin, ground truth, at
+                 rest) - max_distance bounds the REQUEST, the stopping distance
+                 lands on top of it. Full derivation at crab_walk.max_distance in
+                 nav2.yaml.
+
+                 time_allowance 2.8 s IS STILL BOUND (c), but as of 2026-08-24 it
+                 is spent only while the robot is MEASURABLY MOVING: the
+                 controller's alignment gate withholds drive while the modules
+                 swing into the crab pose, and 1.70 s of travel plus a worst-case
+                 1.50 s of that would not have fitted in 2.8 s - a CORRECT crab
+                 would have failed with TIMEOUT. The standing-still phase is
+                 bounded separately by crab_walk.alignment_grace_sec (2.0 s) in
+                 nav2.yaml, deliberately rather than by inflating this number,
+                 because inflating it would have relaxed bound (c) from 0.28 m to
+                 0.43 m. Bound (c) is now 0.10 x 2.8 + one cycle of travel
+                 = 0.29 m. -->
+            <DriveOnHeading server_name="crab_walk" dist_to_travel="0.17" speed="0.10" time_allowance="2.8"/>
+            <!-- LAST in the RoundRobin on purpose. RoundRobin runs one child per
+                 entry into the recovery subtree, so this order IS the escalation
+                 order, and BackUp is the only recovery that drives into the
+                 LD06's blind rear wedge:
+                   1. costmap clearing  - no motion at all
+                   2. DriveOnHeading    - motion, but forward, fully sensor-covered
+                   3. Wait              - no motion, lets a moving obstacle leave
+                   4. CrabWalk          - motion sideways, live sensor coverage
+                   5. BackUp            - motion into ground only costmap MEMORY
+                                          covers; runs only after 1-4 each failed
+                 This also matches upstream nav2's own recovery ordering, which
+                 puts BackUp behind Wait.
+                 TRADE-OFF, stated rather than hidden: running last means the 3 s
+                 Wait sits between the last recovery and the reverse, so the rear
+                 costmap content is 3 s more stale than it would be at position 3.
+                 That is accepted - the content is already stale by however long
+                 ago the robot drove past, and 3 s does not change that order of
+                 magnitude, while the escalation property does matter.
+                 backup_dist 0.18 m is the PRIMARY limit (nav2 1.3.12 has no
+                 server-side distance parameter). time_allowance 2.8 s is the
+                 INDEPENDENT second limit: with velocity_smoother.min_velocity x
+                 capped at -0.10 m/s, no reverse can exceed 0.10*2.8 = 0.28 m
+                 even if this port is wrong. Both stay under the 0.30 m the user
+                 set. Nominal run: 0.18 m at 0.10 m/s = ~1.85 s incl. ramp, 0.95 s
+                 of margin to the allowance. Keep backup_speed == |min_velocity x|
+                 in nav2.yaml, or the smoother clips it silently. -->
+            <!-- backup_dist 0.18, lowered from 0.20 on 2026-08-20 for the same
+                 reason as the crab port above: this port bounds the REQUEST and
+                 the stopping distance comes on top. Worst measured reverse tail
+                 0.0108 m (twin, ground truth, at rest, at the -0.10 m/s cap that
+                 velocity_smoother.min_velocity x enforces, i.e. the worst case),
+                 so 0.20 - 0.0108 = 0.1892 rounded down to 0.180; predicted driven
+                 distance 0.1908 m. The 0.20 m was our own choice inside the user's
+                 0.30 m reverse allowance - the point of the change is that the
+                 number now HOLDS. -->
+            <BackUp backup_dist="0.18" backup_speed="0.10" time_allowance="2.8"/>
           </RoundRobin>
         </ReactiveFallback>
       </Sequence>

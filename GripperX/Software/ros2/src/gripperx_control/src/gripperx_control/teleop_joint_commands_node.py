@@ -1,12 +1,22 @@
 
 import math
-from typing import List, Tuple
+from typing import List
 
 import rclpy
 from geometry_msgs.msg import Twist
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from std_msgs.msg import Float64MultiArray
 
+from gripperx_control.steering_limits import (
+    DEFAULT_INWARD_LIMIT_DEG,
+    DEFAULT_OUTWARD_LIMIT_DEG,
+    DEFAULT_OUTWARD_SIGN,
+    LimitStatus,
+    SteeringLimits,
+    limit_twist_to_steering_range,
+    normalize_angle as _normalize_angle,
+)
 from gripperx_control.swerve_kinematic_model import BodyTwist, FourWIS4WIDKinematicModel
 
 
@@ -19,23 +29,6 @@ _MODULE_TO_HW = (
 )
 
 
-def _normalize_angle(angle: float) -> float:
-    return math.atan2(math.sin(angle), math.cos(angle))
-
-
-def _optimize_wheel_command(
-    target_angle: float,
-    target_speed: float,
-    current_angle: float,
-) -> Tuple[float, float]:
-    angle = _normalize_angle(target_angle)
-    speed = target_speed
-    if abs(_normalize_angle(angle - current_angle)) > (0.5 * math.pi):
-        angle = _normalize_angle(angle + math.pi)
-        speed = -speed
-    return angle, speed
-
-
 def _steer_alignment_scale(target_angle: float, current_angle: float, min_scale: float) -> float:
     error = abs(_normalize_angle(target_angle - current_angle))
     return max(min_scale, 1.0 - (error / (0.5 * math.pi)))
@@ -45,10 +38,16 @@ class TeleopHw(Node):
     def __init__(self):
         super().__init__("teleop_hw")
 
-        self.declare_parameter("a", 0.203)
-        self.declare_parameter("b", 0.16556)
-        self.declare_parameter("wheel_radius", 0.052)
-        self.declare_parameter("steering_angle_limit", 0.7854)
+        self.declare_parameter("a", Parameter.Type.DOUBLE)
+        self.declare_parameter("b", Parameter.Type.DOUBLE)
+        self.declare_parameter("wheel_radius", Parameter.Type.DOUBLE)
+        # Per-wheel, per-direction window (stage B, 2026-08-13). This node writes
+        # /hw/joint_commands DIRECTLY, bypassing swerve_cmd_node, so it needs the
+        # same window or steer_servo_node clamps its commands silently.
+        # Joint order FL, FR, BL, BR; mirrors config/steer_servo.yaml.
+        self.declare_parameter("steering_outward_limit_deg", DEFAULT_OUTWARD_LIMIT_DEG)
+        self.declare_parameter("steering_inward_limit_deg", DEFAULT_INWARD_LIMIT_DEG)
+        self.declare_parameter("steering_outward_sign", list(DEFAULT_OUTWARD_SIGN))
         self.declare_parameter("steer_alignment_min_scale", 0.45)
         self.declare_parameter("max_wheel_angular_speed", 12.0)
         self.declare_parameter("control_rate_hz", 50.0)
@@ -58,7 +57,12 @@ class TeleopHw(Node):
         self.a = float(self.get_parameter("a").value)
         self.b = float(self.get_parameter("b").value)
         self.wheel_radius = float(self.get_parameter("wheel_radius").value)
-        self.steering_angle_limit = float(self.get_parameter("steering_angle_limit").value)
+        self.steering_limits = SteeringLimits.from_outward_inward(
+            math.radians(float(self.get_parameter("steering_outward_limit_deg").value)),
+            math.radians(float(self.get_parameter("steering_inward_limit_deg").value)),
+            [int(v) for v in self.get_parameter("steering_outward_sign").value],
+        )
+        self.model_steering_limits = self.steering_limits.in_model_order()
         self.steer_alignment_min_scale = float(self.get_parameter("steer_alignment_min_scale").value)
         self.max_wheel_angular_speed = float(self.get_parameter("max_wheel_angular_speed").value)
         self.control_rate_hz = float(self.get_parameter("control_rate_hz").value)
@@ -80,30 +84,52 @@ class TeleopHw(Node):
 
     def _compute_commands(self, vx: float, vy: float, omega: float) -> List[float]:
         out = [0.0] * 8
-        wheel_commands = self.model.inverse_kinematics(BodyTwist(vx=vx, vy=vy, omega=omega))
+        current_model_angles = [
+            self.current_steer_angles[_MODULE_TO_HW[index][0]] for index in range(4)
+        ]
+        limited = limit_twist_to_steering_range(
+            self.model,
+            BodyTwist(vx=vx, vy=vy, omega=omega),
+            current_model_angles,
+            self.model_steering_limits,
+        )
+        detail = "; ".join(v.describe() for v in limited.violations) or "no wheel solution"
 
-        for model_index, command in enumerate(wheel_commands):
-            steer_index, wheel_index = _MODULE_TO_HW[model_index]
-            angle, linear_speed = _optimize_wheel_command(
-                command.steering_angle,
-                command.linear_speed,
-                self.current_steer_angles[steer_index],
+        if limited.status == LimitStatus.REJECTED:
+            # Hold the steering, command zero drive -- see the design note in
+            # steering_limits.limit_twist_to_steering_range.
+            self.get_logger().error(
+                "Steering limit: twist REJECTED (%s); holding steering, zero drive."
+                % detail,
+                throttle_duration_sec=2.0,
             )
-            angle = max(-self.steering_angle_limit, min(self.steering_angle_limit, angle))
+            for index in range(4):
+                out[index] = self.current_steer_angles[index]
+            return out
+
+        if limited.status == LimitStatus.OMEGA_REDUCED:
+            self.get_logger().warning(
+                "Steering limit: omega %.3f -> %.3f rad/s (%s). Same manoeuvre, "
+                "wider radius." % (limited.requested_omega, limited.twist.omega, detail),
+                throttle_duration_sec=2.0,
+            )
+
+        for model_index, target in enumerate(limited.targets):
+            steer_index, wheel_index = _MODULE_TO_HW[model_index]
             scale = _steer_alignment_scale(
-                angle,
+                target.angle,
                 self.current_steer_angles[steer_index],
                 self.steer_alignment_min_scale,
             )
-            wheel_omega = (linear_speed / self.wheel_radius) * scale
+            wheel_omega = (target.speed / self.wheel_radius) * scale
             wheel_omega = max(
                 -self.max_wheel_angular_speed,
                 min(self.max_wheel_angular_speed, wheel_omega),
             )
 
-            out[steer_index] = angle
+            out[steer_index] = target.angle
             out[wheel_index] = wheel_omega
-            self.current_steer_angles[steer_index] = angle
+            self.current_steer_angles[steer_index] = target.angle
 
         return out
 

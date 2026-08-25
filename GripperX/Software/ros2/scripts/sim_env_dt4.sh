@@ -1,11 +1,14 @@
 #!/bin/bash
 # Isolated sim environment for DT-4 (M2: LiDAR sim + SLAM -> map).
 # Analogous to scripts/sim_env.sh (M0/M1), but:
-#  - ROS_DOMAIN_ID=8 instead of 7: while DT-4 was running, an M1 dev agent was
-#    running in parallel on domain 7 (SR-8 sim domain isolation) ->
-#    collision avoidance, see REQUIREMENTS.md SR-8. Once domain 7 is verified
-#    free (`ROS_DOMAIN_ID=7 ros2 node list` returns nothing), "export
-#    ROS_DOMAIN_ID=7" can be set instead.
+#  - ROS_DOMAIN_ID=221 instead of the primary twin domain 220: while DT-4 was
+#    running, an M1 dev agent occupied the primary twin domain in parallel
+#    (SR-8 sim domain isolation) -> collision avoidance, see the internal REQUIREMENTS SR-8.
+#    Once 220 is verified free (`ROS_DOMAIN_ID=220 ros2 node list` returns
+#    nothing), "export ROS_DOMAIN_ID=220" can be set instead.
+#    Renumbered 8 -> 221 on 2026-08-13 with the PlastiX convention (robot 20-29,
+#    twin +200 -> 220-229): a second parallel twin session takes the next id in
+#    the twin band rather than an unrelated low number.
 #  - additionally appends .rosdeps_local (if present) to AMENT_PREFIX_PATH/
 #    LD_LIBRARY_PATH: on this laptop, ros-jazzy-slam-toolbox and
 #    ros-jazzy-nav2-map-server plus their dependencies were missing (no
@@ -24,7 +27,7 @@ unset COLCON_PREFIX_PATH
 source /opt/ros/jazzy/setup.bash
 source "$(dirname "${BASH_SOURCE[0]}")/../install/setup.bash"
 
-export ROS_DOMAIN_ID=8
+export ROS_DOMAIN_ID=221
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 # Dead NIC / no real multicast interface on this laptop for the sim session:
 # GZ_IP=127.0.0.1 prevents gz-transport multicast exceptions.

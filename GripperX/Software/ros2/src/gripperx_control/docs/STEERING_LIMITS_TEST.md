@@ -120,9 +120,17 @@ After the test series, with the three/four determined values:
    is required (see "Important: calibration, not just a software limit"
    in `STEERING_LIMITS.md`) — this test plan only determines the
    *angle*, not the servo counts for it.
-4. Update `gripperx_control/config/swerve_cmd.yaml` (`steering_angle_limit`,
-   rad) and `keyboard_teleop_node`'s `steer_limit_rad` (laptop-side) to
-   the same new value (in rad).
+4. Mirror the new window (`steering_outward_limit_deg`,
+   `steering_inward_limit_deg`, `steering_outward_sign`) into
+   `gripperx_control/config/swerve_cmd.yaml` and
+   `config/teleop_joint_commands.yaml`, into the URDF
+   (`gripperx_description/urdf/gripperx_v1.core.xacro`, properties
+   `steer_outward_limit`/`steer_inward_limit`) and — laptop-side — into
+   `keyboard_teleop_node` (`steer_outward_limit_rad`, `steer_inward_limit_rad`,
+   `steer_outward_sign`; `steer_limit_rad` is the operator cap and is
+   additionally capped at what the window allows). Single symmetric values no
+   longer exist anywhere; see the stage-B section of `STEERING_LIMITS.md`. Then
+   re-run `python3 src/gripperx_control/test/check_steering_limits.py`.
 5. Record the result in the journal (`gripperx-journal`) and in
    `HANDOVER.md`, including the three/four measured values and whether
    front-extended was activated.
