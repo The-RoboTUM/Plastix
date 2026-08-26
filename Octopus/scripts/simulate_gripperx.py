@@ -61,9 +61,10 @@ def offset_meters(from_lat, from_lon, to_lat, to_lon):
 class Robot:
     """Just enough robot to be worth pointing a dashboard at."""
 
-    def __init__(self, speed_mps, collect):
+    def __init__(self, speed_mps, collect, dialect="dashboard"):
         self.speed_mps = speed_mps
         self.collect = collect
+        self.dialect = dialect
 
         self.datum = None          # (lat, lon) - where it was switched on
         self.lat = None
@@ -158,6 +159,9 @@ class Robot:
             east, north = offset_meters(self.datum[0], self.datum[1], self.lat, self.lon)
             pose["x"], pose["y"] = round(east, 3), round(north, 3)
 
+        if self.dialect == "gripperx":
+            return self._gripperx_dialect_payload(pose, has_fix)
+
         return {
             "source_id": "simulate_gripperx.py",
             "robot_id": "gripperx",
@@ -182,9 +186,58 @@ class Robot:
             "simulated": True,
         }
 
+    def _gripperx_dialect_payload(self, pose, has_fix):
+        """What the REAL robot puts on the wire (octopus_protocol.build_device_status).
 
-async def run(host, port, speed, collect):
-    robot = Robot(speed, collect)
+        Different from the dashboard shape above in five places - `device_id` not
+        `robot_id`, `stamp` not `timestamp`, flat `nav_state`/`active_goal_id`
+        instead of a `nav` object, `link_ok` instead of `link.connected`, and two
+        SEPARATE availability flags on the pose ("available"/"unavailable") where
+        the dashboard has one ("ok"/"no_datum").
+
+        device_status_backend_bridge_node translates it. Without this option that
+        translation would first run against the real robot, which is a bad place
+        to discover a field name.
+        """
+        return {
+            "source_id": "simulate_gripperx.py",
+            "device_id": "gripperx",
+            "stamp": time.time(),
+            "pose": {
+                "status": "available",
+                "reason": "",
+                "lat": pose["lat"],
+                "lon": pose["lon"],
+                "latlon_status": "available" if has_fix else "unavailable",
+                "latlon_reason": "" if has_fix else "NO_DATUM",
+                "x": pose["x"],
+                "y": pose["y"],
+                "yaw_deg": pose["yaw_deg"],
+                "speed_mps": 0.0,
+            },
+            "nav_state": self.nav_status,
+            "nav_state_reason": "",
+            "active_goal_id": self.goal_id if self.nav_status == "navigating" else None,
+            "armed": False,
+            "arming_seconds_remaining": None,
+            "last_disarm_trigger": "",
+            "teleop_mode": None,
+            "link_ok": True,
+            "link": {"last_message_age_sec": 0.0, "reconnects": 0},
+            "counters": {},
+            "blacklist": [],
+            "battery": {
+                "status": "unavailable",
+                "reason": "NO_SENSOR_INSTALLED",
+                "percent": None,
+            },
+            "octopus_transform": None,
+            "simulated": True,
+        }
+
+
+async def run(host, port, speed, collect, dialect):
+    robot = Robot(speed, collect, dialect)
     url = f"ws://{host}:{port}"
     print(f"connecting to {url}")
 
@@ -257,13 +310,22 @@ def main():
     parser.add_argument("--port", type=int, default=9090)
     parser.add_argument("--speed", type=float, default=0.4, help="m/s, default 0.4")
     parser.add_argument(
+        "--dialect",
+        choices=("dashboard", "gripperx"),
+        default="dashboard",
+        help="Wire shape for the status payload. 'dashboard' (default) is what "
+             "this script has always sent and what the dashboard reads directly. "
+             "'gripperx' is what the real robot sends, and exercises the "
+             "translation in device_status_backend_bridge_node.",
+    )
+    parser.add_argument(
         "--no-collect", dest="collect", action="store_false",
         help="drive to the goal but never publish trash_goal_done",
     )
     args = parser.parse_args()
 
     try:
-        asyncio.run(run(args.host, args.port, args.speed, args.collect))
+        asyncio.run(run(args.host, args.port, args.speed, args.collect, args.dialect))
     except KeyboardInterrupt:
         print("\nstopped")
     except OSError as exc:

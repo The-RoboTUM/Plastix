@@ -186,6 +186,88 @@ also ein Traceback beim Start, keine fehlende Teilfunktion.
 nimmt automatisch das apt-Paket, sobald `ros2 pkg prefix rosbridge_server` es findet; das Overlay
 kann dann weg.
 
+## Die Payload-Übersetzung
+
+GripperX und das Dashboard benennen dieselben Dinge verschieden. Beide Formen sind
+begründet und keine Seite ist umgezogen — `OCTOPUS_INTERFACE_PROPOSAL.md` führt das
+als offenen Punkt. Übersetzt wird deshalb in `device_status_backend_bridge_node`,
+der Naht zwischen Drahtformat und Dashboard; `live_data.js` sieht dadurch nur **eine**
+Form.
+
+| GripperX auf dem Draht | Dashboard liest |
+|---|---|
+| `device_id` | `robot_id` |
+| `stamp` | `timestamp` |
+| `nav_state`, `active_goal_id` (flach) | `nav.status`, `nav.active_goal_id` |
+| `link_ok` | `link.connected` |
+| `pose.status` + `pose.latlon_status` | `pose.status` |
+
+`pose.lat`/`lon`, `x`/`y`/`yaw_deg` und der Batterie-Block passten schon vorher und
+werden nicht angefasst.
+
+**Die zwei Pose-Flags werden zu einem, und die Reihenfolge ist die Aussage.**
+GripperX meldet Karten-Pose und lat/lon getrennt, weil die Pose exakt bekannt sein
+kann, während das Datum fehlt — ein daraus gerechnetes lat/lon wäre eine erfundene
+Position. Geprüft wird **Pose zuerst**: `goal_gateway_node` setzt bei ungültiger Pose
+auch `latlon_valid = False` und kopiert die Pose-Begründung hinüber, ein kaputtes TF
+macht also beides ungültig. Das als `no_datum` zu melden schickt den Betreiber auf
+die Suche nach einem Datum, das in Ordnung ist.
+
+| Zustand | `pose.status` | auf der Karte |
+|---|---|---|
+| Pose ungültig | `no_pose` | kein Marker |
+| Pose gültig, kein Datum | `no_datum` | kein Marker, „waiting for datum" |
+| beides gültig | `ok` | Marker |
+
+Zwei Eigenschaften, die nicht verloren gehen dürfen, wenn jemand das anfasst:
+
+- **Erkannt wird an der Form, nicht am Roboternamen** — `device_id` vorhanden und
+  `robot_id` nicht. Ein zweiter Roboter, der die Dashboard-Form schon spricht, geht
+  unverändert durch. Genau dafür ist `status_topics` ein Parameter.
+- **Additiv** — die Originalfelder bleiben stehen, `pose.status` wird als
+  `pose.source_status` aufgehoben. Im Backend ist damit die rohe Roboter-Payload
+  weiter lesbar.
+
+`nav.distance_remaining_m` bleibt `null`: GripperX publiziert es nicht, und eine
+erfundene Zahl wäre schlechter als eine fehlende.
+
+Testbar ohne Roboter:
+
+```bash
+python3 scripts/simulate_gripperx.py --dialect gripperx --no-collect
+```
+
+`--dialect dashboard` (Vorgabe) umgeht die Übersetzung, `gripperx` sendet die Form
+des echten Roboters. Die Übersetzung selbst hat Unit-Tests in
+`ros2_ws/src/octopus_backend_bridge/test/test_normalise_device_payload.py`.
+
+## websockets-Versionen
+
+**Die zwei Seiten des Links brauchen gegenläufige Versionen derselben Bibliothek.** Das ist
+kein Versehen und lässt sich nicht durch ein Upgrade auflösen.
+
+| Seite | Import | Braucht |
+|---|---|---|
+| Octopus: `scripts/check_rosbridge.py`, `scripts/simulate_gripperx.py` | `websockets.asyncio.client` | **>= 13** (davor gibt es das Modul nicht) |
+| GripperX: `gripperx_external/rosbridge_client.py` | `websockets.client` | **< 14** (ab 14 entfernt) |
+
+Auf einem Ubuntu-24.04-Host liefert `python3-websockets` die **10.4** — genau das, was
+GripperX braucht, und zu alt für die beiden Prüfskripte. Läuft Octopus in einer eigenen
+Umgebung (distrobox, Container, venv) mit einer neueren Version, geht beides gleichzeitig
+auf; auf diesem Laptop ist das so, Octopus hat dort 16.1.
+
+Die Prüfskripte gehören deshalb in die **Octopus**-Umgebung, nicht auf den GripperX-Host.
+Dort aufgerufen sterben sie mit
+
+```text
+ModuleNotFoundError: No module named 'websockets.asyncio'
+```
+
+Das ist kein kaputtes Setup, sondern das falsche Terminal. Umgekehrt gilt dasselbe: ein
+`pip install -U websockets` auf dem GripperX-Host repariert die Skripte und **zerlegt den
+Link**, weil `rosbridge_client.py` die alte API importiert. Der Kommentar dort sagt es
+ausdrücklich — nicht per pip installieren.
+
 ## Fehlerbilder
 
 | Symptom | Fast sicher |
@@ -195,8 +277,12 @@ kann dann weg.
 | `status`-Frames mit `"level":"error"` und Topicname | Glob deckt das Topic nicht |
 | Node stirbt beim Start mit `InvalidParameterTypeException` | Globs als Liste statt als String übergeben — siehe oben |
 | `ModuleNotFoundError: bson` / `cbor2` / `tornado` | pip-Abhängigkeiten fehlen, `scripts/build_rosbridge.sh` |
+| `ModuleNotFoundError: websockets.asyncio` | Prüfskript auf dem GripperX-Host statt in der Octopus-Umgebung gestartet — siehe oben |
+| Link stirbt beim Start mit `ImportError` auf `websockets` | Auf der GripperX-Seite fehlt `python3-websockets`, oder es ist eine Version >= 14 installiert |
 | `bson` da, aber "does not support all necessary features" | falsches `bson`-Paket. rosbridge braucht das von **pymongo**, nicht das PyPI-`bson` |
 | GripperX im Dashboard, aber ohne Marker | Roboter meldet `pose.status: no_datum` — das ist korrekt und steht so im Panel |
+| GripperX da, Status steht auf `pose available` | Die Übersetzung lief nicht — Payload kam mit `robot_id` an, also nicht als GripperX-Dialekt erkannt |
+| Marker fehlt, Panel sagt `no_pose` | Nicht das Datum, sondern TF `map→base_footprint` auf der Roboterseite |
 | GripperX-Karte amber, `link lost` | seit >6 s kein Status. Roboter oder Link weg, nicht das Dashboard |
 | GripperX fehlt im Dashboard ganz | `device_status_backend_bridge_node` läuft nicht, oder das Backend ist neu gestartet und noch nichts angekommen |
 

@@ -286,6 +286,15 @@ const ROBOT_FLEET_PROFILES = {
     tags: ["water", "boat", "floating trash", "collect"],
     aliases: ["sharx", "boat", "boat_1", "water_robot", "surface"],
     fallback: { x: 3.3, y: 1.0, state: "idle", battery: 79 },
+    // ABSOLUTE, and that is the whole point. A `fallback` is expressed in local
+    // metres, which localToLatLng() resolves against getMissionOrigin() - and
+    // that origin IS Eve. So a fallback-positioned robot slides across the map
+    // every time the operator places Eve somewhere else, which is what made
+    // SharX look like it was wandering. These are the coordinates SharX had
+    // before any Eve placement, i.e. fallback (3.3, 1.0) against
+    // DEMO_MAP_ORIGIN. Being a boat, it belongs in the water and must stay
+    // there no matter where the drone goes.
+    fixedLatLon: { lat: 48.2513701, lon: 11.6360167 },
   },
 };
 
@@ -652,7 +661,14 @@ function batteryFromDeviceStatus(device) {
 
 function fallbackLocationForProfile(profile) {
   const p = profile.fallback || { x: 0, y: 0 };
-  const [lat, lon] = localToLatLng(p.x, p.y);
+  // A profile may pin itself to absolute coordinates instead of local metres.
+  // is_demo stays true either way - this is still a configured position, not a
+  // measurement - but is_fixed says it was placed deliberately and is allowed
+  // on the map, where a drifting fallback is not.
+  const fixed = profile.fixedLatLon;
+  const [lat, lon] = fixed
+    ? [fixed.lat, fixed.lon]
+    : localToLatLng(p.x, p.y);
   return {
     id: profile.name,
     lat,
@@ -660,6 +676,7 @@ function fallbackLocationForProfile(profile) {
     ts: new Date().toISOString(),
     state: p.state,
     is_demo: true,
+    is_fixed: Boolean(fixed),
   };
 }
 
@@ -668,12 +685,26 @@ function homeStation() {
   return { id: "Home station", lat, lon, x: 0.25, y: 0.25, type: "home" };
 }
 
+// Substring matching, because the states come from several sources that do not
+// share a vocabulary. GripperX reports exactly five (goal_gateway_node:
+// idle / navigating / picking / cancelling / unavailable) and all five are
+// accounted for below - "picking" and "cancelling" were falling through to
+// "unknown", so a robot that was actively grasping rendered grey as if it had
+// stopped answering.
+//
+// "unavailable" deliberately keeps falling through to "unknown". It does NOT
+// mean the robot is unwell: it means the robot has no Nav2 at all (that is the
+// twin without sim_navigation, and the real robot before autonomy is up).
+// GripperX keeps "unavailable" and "idle" apart on purpose - idle is a nav stack
+// that is not busy - and collapsing them here would report a navigation
+// readiness that does not exist. The label the operator reads stays the robot's
+// own word, from deviceStateLabel().
 function robotStatusFromState(state, age) {
   const value = String(state || "").toLowerCase();
   if (value.includes("error") || value.includes("fail")) return "error";
   if (value.includes("offline")) return "offline";
   if (age !== null && age > 60 && !value.includes("idle")) return "stale";
-  if (value.includes("return") || value.includes("assigned") || value.includes("driving") || value.includes("navigating")) return "warning";
+  if (value.includes("return") || value.includes("assigned") || value.includes("driving") || value.includes("navigating") || value.includes("picking") || value.includes("cancelling")) return "warning";
   if (value.includes("scan") || value.includes("collect") || value.includes("online") || value.includes("idle")) return "fresh";
   return "unknown";
 }
@@ -1611,6 +1642,16 @@ function renderMissionMap() {
     const lat = safeNumber(robot.location.lat, NaN);
     const lon = safeNumber(robot.location.lon, NaN);
     if (!Number.isFinite(lat) || !Number.isFinite(lon) || robot.hasPosition === false) return;
+    // A robot that has never reported gets NO marker. `is_demo` means the
+    // position came from ROBOT_FLEET_PROFILES[key].fallback - a number typed
+    // into this file, not a measurement - and drawing it puts a robot-shaped
+    // icon on the map at a place no robot has ever been. That is the same
+    // mistake the no_datum rule already refuses further down: a live-looking
+    // marker on a made-up spot. SharX and Robby were standing on the mission
+    // map of every demo this way.
+    // Eve is exempt on purpose: her marker is the operator's own handle for
+    // placing the datum, and it has to exist before it can be dragged.
+    if (robot.location?.is_demo && !robot.location?.is_fixed && robot.key !== "eve") return;
     const icon = missionRobotIcon(robot);
     const style = deviceStyle(robot.type === "water" ? "boat" : robot.type, robot.state);
     const isEve = robot.key === "eve";

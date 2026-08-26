@@ -31,6 +31,83 @@ from rclpy.node import Node
 from std_msgs.msg import String
 
 
+# --- dialect normalisation ---------------------------------------------------
+#
+# GripperX speaks a different shape than the dashboard reads. Both are defensible
+# and neither side has moved (GripperX's OCTOPUS_INTERFACE_PROPOSAL.md carries it
+# as an open point), so the translation happens HERE - this node is the seam
+# between the wire format and the dashboard, and doing it here keeps live_data.js
+# on a single shape.
+#
+# Detected BY SHAPE, not by robot name: a payload that names itself with
+# `device_id` and has no `robot_id` is the GripperX dialect. That keeps this node
+# generic - a second robot speaking the dashboard shape passes through untouched,
+# which is the property `status_topics` being a parameter exists for.
+#
+# ADDITIVE: the original keys are left in place, so the raw robot payload stays
+# readable in the backend for debugging. Only `pose.status` is overwritten,
+# because the dashboard reads that exact key - the original is preserved as
+# `pose.source_status`.
+
+def looks_like_gripperx_dialect(payload):
+    """True for a payload that names itself `device_id` and has no `robot_id`."""
+    return "device_id" in payload and "robot_id" not in payload
+
+
+def normalise_device_payload(payload):
+    """Add the dashboard's field names alongside the GripperX ones.
+
+    Returns the same dict, mutated. A payload in any other dialect is returned
+    untouched.
+    """
+    if not looks_like_gripperx_dialect(payload):
+        return payload
+
+    payload.setdefault("robot_id", payload.get("device_id"))
+    payload.setdefault("timestamp", payload.get("stamp"))
+
+    # Flat -> nested. distance_remaining_m is null on purpose: GripperX does not
+    # publish it at all, and a fabricated number is worse than an absent one.
+    payload.setdefault("nav", {
+        "status": payload.get("nav_state"),
+        "active_goal_id": payload.get("active_goal_id"),
+        "distance_remaining_m": None,
+    })
+
+    link = payload.get("link")
+    if isinstance(link, dict):
+        link.setdefault("connected", bool(payload.get("link_ok")))
+
+    pose = payload.get("pose")
+    if isinstance(pose, dict):
+        pose.setdefault("source_status", pose.get("status"))
+        pose["status"] = _collapse_pose_status(pose)
+
+    return payload
+
+
+def _collapse_pose_status(pose):
+    """GripperX's two availability flags -> the dashboard's single `pose.status`.
+
+    GripperX reports the map pose and the lat/lon SEPARATELY, because the pose
+    can be exact while the datum is missing, and a lat/lon derived from that
+    would be a fabricated position. The dashboard has one field, so the two
+    collapse - and the ORDER matters.
+
+    The map pose is checked FIRST. goal_gateway_node sets latlon_valid = False
+    whenever pose_valid is False (and copies the pose reason across), so a broken
+    TF makes BOTH unavailable. Reporting that as "no_datum" would send the
+    operator hunting for a datum that is perfectly fine; "no_pose" names the
+    actual cause.
+    """
+    if pose.get("source_status", pose.get("status")) != "available":
+        return "no_pose"
+    if pose.get("latlon_status") != "available":
+        return "no_datum"
+    return "ok"
+
+
+
 class DeviceStatusBackendBridgeNode(Node):
     def __init__(self):
         super().__init__("device_status_backend_bridge_node")
@@ -98,6 +175,8 @@ class DeviceStatusBackendBridgeNode(Node):
         if not isinstance(payload, dict):
             self.log_error_throttled(f"Payload on {topic} is not a JSON object")
             return
+
+        normalise_device_payload(payload)
 
         # The robot names itself; the topic name is only the fallback.
         device_id = str(payload.get("robot_id") or fallback_device_id).strip().lower()
