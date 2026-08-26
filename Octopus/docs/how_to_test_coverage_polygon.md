@@ -1,5 +1,7 @@
 # How to Test Coverage Polygon Support
 
+> **Paths.** Every path in this document is relative to the repository root — `cd` there first, in *every* terminal these steps open.
+
 This test checks whether Octopus can update map coverage for a scanned area, not only for a single trash detection.
 
 ## Pipeline
@@ -17,7 +19,7 @@ coverage_polygon JSON
 ## 0. Build package
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 
 colcon build --packages-select octopus_mapping octopus_backend_bridge
@@ -28,7 +30,7 @@ source install/setup.bash
 ## 1. Terminal 1: Start backend
 
 ```bash
-cd ~/projects/PlastiX/Octopus/octopus-dashboard
+cd Octopus/octopus-dashboard
 python3 -m uvicorn api:app --reload
 ```
 
@@ -41,7 +43,7 @@ http://127.0.0.1:8000/dashboard.html
 ## 2. Terminal 2: Start map builder
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -51,7 +53,7 @@ ros2 run octopus_mapping grid_map_builder_node
 ## 3. Terminal 3: Start backend bridge
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -61,7 +63,7 @@ ros2 run octopus_backend_bridge map_patch_backend_bridge_node
 ## 4. Terminal 4: Publish coverage polygon
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 

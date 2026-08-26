@@ -1,5 +1,7 @@
 # How to Test `octopus_mapping`
 
+> **Paths.** Every path in this document is relative to the repository root — `cd` there first, in *every* terminal these steps open.
+
 This file explains how to test the first Octopus ROS2 mapping prototype with fake detections.
 
 The test checks this pipeline:
@@ -16,7 +18,7 @@ fake detection
 
 Run this once before testing:
 
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 
 colcon build --packages-select octopus_mapping
@@ -32,7 +34,7 @@ octopus_mapping grid_map_builder_node
 
 Open terminal 1 and run:
 
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -48,7 +50,7 @@ Leave this terminal running.
 
 Open terminal 2 and run:
 
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -62,7 +64,7 @@ Important: start this before publishing the fake detection, otherwise the one-ti
 
 Open terminal 3 and run:
 
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 

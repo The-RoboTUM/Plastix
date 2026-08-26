@@ -1,5 +1,7 @@
 # GripperX-Link über rosbridge
 
+> **Pfade.** Alle Pfade in diesem Dokument sind relativ zur Repo-Wurzel — dorthin wechseln, und zwar in *jedem* Terminal, das du dafür öffnest.
+
 Betriebsdokument für die WebSocket-Brücke, über die der Sammelroboter GripperX an Octopus hängt.
 Der Vertrag selbst — welche Topics, welche Felder — steht in
 [`octopus_to_robot_interface.md`](octopus_to_robot_interface.md). Hier steht, wie der Transport
@@ -36,13 +38,13 @@ Netz. rosbridge exponiert nur, was schon auf dem Graphen liegt.
 Normalfall — die Brücke hängt am Debug-Stack:
 
 ```bash
-~/projects/PlastiX/Octopus/scripts/start_octopus_debug_stack.sh
+./Octopus/scripts/start_octopus_debug_stack.sh
 ```
 
 Nur die Brücke, im Vordergrund, mit Log auf dem Terminal:
 
 ```bash
-~/projects/PlastiX/Octopus/scripts/run_rosbridge.sh
+./Octopus/scripts/run_rosbridge.sh
 ```
 
 `run_rosbridge.sh` ist die **einzige** Stelle, an der die Startargumente stehen. Debug-Stack,

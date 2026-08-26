@@ -1,5 +1,7 @@
 # Eve → Octopus Indoor Drone Detection and Occupancy Grid Demo
 
+> **Paths.** Except for the clone in 2.2 — which necessarily runs before the repository exists — every path in this document is relative to the repository root. `cd` there first, in *every* terminal these steps open.
+
 This README explains how to set up the `eve-octopus` branch on a new laptop, connect to the drone/Pixhawk/Raspberry Pi, start the detector, start the Octopus dashboard, and run the indoor static occupancy-grid demo.
 
 > **Nur starten?** Der Startablauf steht in **[docs/SETUP.md](docs/SETUP.md)**. Diese README
@@ -162,7 +164,7 @@ mkdir -p ~/projects
 cd ~/projects
 
 git clone https://gitex.itq.de/cirqmind/PlastiX.git
-cd ~/projects/PlastiX
+cd PlastiX
 
 git fetch origin
 git checkout eve-octopus
@@ -201,13 +203,13 @@ px4_msgs/msg/VehicleLocalPosition
 Check whether `px4_msgs` already exists:
 
 ```bash
-ls ~/projects/PlastiX/Octopus/ros2_ws/src/px4_msgs
+ls Octopus/ros2_ws/src/px4_msgs
 ```
 
 If it does not exist, clone it into the Octopus ROS2 workspace:
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws/src
+cd Octopus/ros2_ws/src
 
 git clone https://github.com/PX4/px4_msgs.git
 ```
@@ -221,32 +223,32 @@ Important: the `px4_msgs` version should match the PX4 firmware used on the Pixh
 The detector expects this model path:
 
 ```text
-~/projects/PlastiX/eve/Software/detect-and-localize/data/models/indoor_v8s.pt
+eve/Software/detect-and-localize/data/models/indoor_v8s.pt
 ```
 
 Create the model folder:
 
 ```bash
-mkdir -p ~/projects/PlastiX/eve/Software/detect-and-localize/data/models
+mkdir -p eve/Software/detect-and-localize/data/models
 ```
 
 Copy or download the model from the team/shared storage into:
 
 ```bash
-~/projects/PlastiX/eve/Software/detect-and-localize/data/models/indoor_v8s.pt
+eve/Software/detect-and-localize/data/models/indoor_v8s.pt
 ```
 
 Example if the model file is in your Downloads folder:
 
 ```bash
 cp ~/Downloads/indoor_v8s.pt \
-  ~/projects/PlastiX/eve/Software/detect-and-localize/data/models/indoor_v8s.pt
+  eve/Software/detect-and-localize/data/models/indoor_v8s.pt
 ```
 
 Check:
 
 ```bash
-ls -lh ~/projects/PlastiX/eve/Software/detect-and-localize/data/models/indoor_v8s.pt
+ls -lh eve/Software/detect-and-localize/data/models/indoor_v8s.pt
 ```
 
 ---
@@ -256,7 +258,7 @@ ls -lh ~/projects/PlastiX/eve/Software/detect-and-localize/data/models/indoor_v8
 Set up the detector virtual environment:
 
 ```bash
-cd ~/projects/PlastiX/eve/Software/detect-and-localize
+cd eve/Software/detect-and-localize
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -281,7 +283,7 @@ If the detector complains about missing Python packages later, install the missi
 ### 4.1 Build Eve ROS2 workspace
 
 ```bash
-cd ~/projects/PlastiX/eve/Software/ros2_ws
+cd eve/Software/ros2_ws
 
 source /opt/ros/humble/setup.bash
 
@@ -295,7 +297,7 @@ source install/setup.bash
 ### 4.2 Build Octopus ROS2 workspace
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 
 source /opt/ros/humble/setup.bash
 
@@ -307,7 +309,7 @@ source install/setup.bash
 If you only changed the camera transform package:
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 
 source /opt/ros/humble/setup.bash
 
@@ -416,7 +418,7 @@ Laptop), Health-Check, Stoppen und Troubleshooting.
 Kurzfassung, wenn alles eingerichtet ist:
 
 ```bash
-cd ~/projects/PlastiX && OCTOPUS_MAPPING_MODE=indoor_static_mission ./Octopus/scripts/start_octopus_debug_stack.sh
+OCTOPUS_MAPPING_MODE=indoor_static_mission ./Octopus/scripts/start_octopus_debug_stack.sh
 ```
 
 Das Skript startet das Dashboard-Backend und alle sieben ROS-Nodes. Danach:
@@ -615,7 +617,6 @@ Causes:
 Fix:
 
 ```bash
-cd ~/projects/PlastiX
 
 ./Octopus/scripts/stop_octopus_debug_stack.sh
 

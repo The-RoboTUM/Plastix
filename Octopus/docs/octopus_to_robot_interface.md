@@ -1,5 +1,7 @@
 # Octopus → Roboter Interface (GPS-Ziele)
 
+> **Pfade.** Alle Pfade in diesem Dokument sind relativ zur Repo-Wurzel — dorthin wechseln, und zwar in *jedem* Terminal, das du dafür öffnest.
+
 Gegenstück zu [`drone_to_octopus_interface.md`](drone_to_octopus_interface.md): dort schickt
 Eve ihre Detektionen **an** Octopus, hier gibt Octopus die gefundenen Müllpositionen **an
 einen Sammelroboter** weiter, der mit Nav2 hinfährt.
@@ -277,7 +279,7 @@ Beide Nodes starten automatisch mit `scripts/start_octopus_debug_stack.sh`.
 
 ```bash
 source /opt/ros/humble/setup.bash
-source ~/projects/PlastiX/Octopus/ros2_ws/install/setup.bash
+source Octopus/ros2_ws/install/setup.bash
 export ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0
 
 # Datum

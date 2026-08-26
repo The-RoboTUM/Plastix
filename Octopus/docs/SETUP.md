@@ -1,5 +1,7 @@
 # Octopus Indoor-Demo starten
 
+> **Pfade.** Alle Pfade in diesem Dokument sind relativ zur Repo-Wurzel — dorthin wechseln, und zwar in *jedem* Terminal, das du dafür öffnest.
+
 Primäres Start-Dokument für die Indoor-Demo: Eve-Kamera → Detektor → Projektion auf den
 Boden → Global Mission Grid → Dashboard.
 
@@ -64,17 +66,17 @@ Nur nötig, wenn `install/` fehlt **oder das Repo verschoben wurde** — `colcon
 hinterlässt beim Verschieben tote Symlinks, und dann ist kein `octopus_*`-Node startbar:
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws && rm -rf build install log && source /opt/ros/humble/setup.bash && colcon build --symlink-install
+cd Octopus/ros2_ws && rm -rf build install log && source /opt/ros/humble/setup.bash && colcon build --symlink-install
 ```
 
 ```bash
-cd ~/projects/PlastiX/eve/Software/ros2_ws && rm -rf build install log && source /opt/ros/humble/setup.bash && colcon build --symlink-install
+cd eve/Software/ros2_ws && rm -rf build install log && source /opt/ros/humble/setup.bash && colcon build --symlink-install
 ```
 
 `px4_msgs` dauert dabei je ~4 Minuten. Prüfen, ob alles da ist:
 
 ```bash
-source /opt/ros/humble/setup.bash && source ~/projects/PlastiX/Octopus/ros2_ws/install/setup.bash && ros2 pkg executables octopus_camera_transform
+source /opt/ros/humble/setup.bash && source Octopus/ros2_ws/install/setup.bash && ros2 pkg executables octopus_camera_transform
 ```
 
 Erwartet: vier Einträge, darunter `flight_camera_transform_node`.
@@ -126,7 +128,7 @@ nicht ändern.
 ## Terminal 3 — Laptop: Detektor
 
 ```bash
-cd ~/projects/PlastiX/eve/Software/detect-and-localize && source .venv/bin/activate && source /opt/ros/humble/setup.bash && source ~/projects/PlastiX/eve/Software/ros2_ws/install/setup.bash && export ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 && python ~/projects/PlastiX/eve/Software/ros2_ws/src/detection_pkg/detection_pkg/detector_node.py --ros-args -p detect_localize_path:=$HOME/projects/PlastiX/eve/Software/detect-and-localize -p model:=data/models/indoor_v8s.pt -p input_topic:=/camera/image_raw/compressed -p output_frame:=camera -p show_ui:=false -p thresh:=0.60 -p confirm_frames:=3 -p max_lost:=5 -p yolo_frameskip:=0 -p dist_thresh:=0.10 -p move_thresh:=0.10 -p confirmed_republish_period_sec:=1.0
+cd eve/Software/detect-and-localize && source .venv/bin/activate && source /opt/ros/humble/setup.bash && source ../ros2_ws/install/setup.bash && export ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 && python ../ros2_ws/src/detection_pkg/detection_pkg/detector_node.py --ros-args -p detect_localize_path:="$PWD" -p model:=data/models/indoor_v8s.pt -p input_topic:=/camera/image_raw/compressed -p output_frame:=camera -p show_ui:=false -p thresh:=0.60 -p confirm_frames:=3 -p max_lost:=5 -p yolo_frameskip:=0 -p dist_thresh:=0.10 -p move_thresh:=0.10 -p confirmed_republish_period_sec:=1.0
 ```
 
 **Terminal offen lassen.** Danach publiziert `/detector_node/confirmed` mit ca. 1 Hz.
@@ -149,7 +151,7 @@ Detektion, `confirmed` und Mapping bleiben unberührt.
 Startet das Dashboard-Backend **und** alle sieben ROS-Nodes:
 
 ```bash
-cd ~/projects/PlastiX && OCTOPUS_MAPPING_MODE=indoor_static_mission ./Octopus/scripts/start_octopus_debug_stack.sh
+OCTOPUS_MAPPING_MODE=indoor_static_mission ./Octopus/scripts/start_octopus_debug_stack.sh
 ```
 
 Das Skript beendet vorher alte Prozesse, kann also gefahrlos wiederholt werden. Es löst die
@@ -173,7 +175,7 @@ Im Dashboard einstellen:
 ## Health-Check
 
 ```bash
-source /opt/ros/humble/setup.bash && source ~/projects/PlastiX/Octopus/ros2_ws/install/setup.bash && export ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 && python3 ~/projects/PlastiX/Octopus/scripts/octopus_pipeline_health.py
+source /opt/ros/humble/setup.bash && source Octopus/ros2_ws/install/setup.bash && export ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 && python3 Octopus/scripts/octopus_pipeline_health.py
 ```
 
 Gut ist, wenn `/camera/image_raw/compressed`, `/fmu/out/vehicle_odometry`,
@@ -185,7 +187,7 @@ Publisher **und** einen Subscriber haben und beide Backend-Endpunkte `reachable`
 Den entscheidenden Zustand einzeln abfragen:
 
 ```bash
-source /opt/ros/humble/setup.bash && source ~/projects/PlastiX/Octopus/ros2_ws/install/setup.bash && export ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 && ros2 topic echo --once /octopus/flight_camera_transform/status --field data | head -n 1 | python3 -m json.tool | grep -E '"state"|"transform_ready"|"last_input_detection_count"|"last_transformed_detection_count"|"last_projection_error"'
+source /opt/ros/humble/setup.bash && source Octopus/ros2_ws/install/setup.bash && export ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 && ros2 topic echo --once /octopus/flight_camera_transform/status --field data | head -n 1 | python3 -m json.tool | grep -E '"state"|"transform_ready"|"last_input_detection_count"|"last_transformed_detection_count"|"last_projection_error"'
 ```
 
 Erwartet:
@@ -257,7 +259,7 @@ Kamerabild des Dashboards erscheinen dagegen alle Klassen des Modells — bei
 ## Alles stoppen
 
 ```bash
-cd ~/projects/PlastiX && ./Octopus/scripts/stop_octopus_debug_stack.sh
+./Octopus/scripts/stop_octopus_debug_stack.sh
 ```
 
 Terminals 1–3 mit Ctrl+C beenden. In den beiden Pi-Terminals danach `exit`, um die

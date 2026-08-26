@@ -1,5 +1,7 @@
 # How to Test Dashboard Bridge
 
+> **Paths.** Every path in this document is relative to the repository root — `cd` there first, in *every* terminal these steps open.
+
 This test checks the full ROS2-to-dashboard pipeline.
 
 Pipeline:
@@ -19,7 +21,7 @@ fake detection
 Run once before testing:
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 
 colcon build --packages-select octopus_mapping octopus_backend_bridge
@@ -42,7 +44,7 @@ octopus_backend_bridge map_patch_backend_bridge_node
 ## 1. Terminal 1: Start dashboard backend
 
 ```bash
-cd ~/projects/PlastiX/Octopus/octopus-dashboard
+cd Octopus/octopus-dashboard
 
 python3 -m uvicorn api:app --reload
 ```
@@ -64,7 +66,7 @@ Latest Map Patch
 ## 2. Terminal 2: Start Octopus map builder
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -84,7 +86,7 @@ Leave this terminal running.
 ## 3. Terminal 3: Start ROS2 backend bridge
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -105,7 +107,7 @@ Leave this terminal running.
 ## 4. Terminal 4: Publish fake detection
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -193,7 +195,6 @@ Ctrl + C
 Then check Git:
 
 ```bash
-cd ~/projects/PlastiX
 git status
 ```
 

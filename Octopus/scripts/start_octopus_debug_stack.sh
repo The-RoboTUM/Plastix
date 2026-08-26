@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 set -e
 
-BASE="$HOME/projects/PlastiX"
-ROS_WS="$BASE/Octopus/ros2_ws"
-DASH="$BASE/Octopus/octopus-dashboard"
+# Same pattern as run_rosbridge.sh / build_rosbridge.sh: BASE is the Octopus
+# directory, derived from where THIS script lives. No $HOME, no assumption about
+# where the repo is checked out - so a git worktree works without edits.
+BASE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROS_WS="$BASE/ros2_ws"
+DASH="$BASE/octopus-dashboard"
 LOG_DIR="/tmp/octopus_logs"
 
 OCTOPUS_MAPPING_MODE="${OCTOPUS_MAPPING_MODE:-flight_global_mission}"
@@ -124,7 +127,7 @@ echo $! > "$LOG_DIR/device_status_backend_bridge.pid"
 # ws://<host>:9090. The arguments live in run_rosbridge.sh so this script, the
 # systemd unit and a manual run cannot drift apart.
 echo "Starting rosbridge for the GripperX link..."
-setsid "$BASE/Octopus/scripts/run_rosbridge.sh" > "$LOG_DIR/rosbridge.log" 2>&1 &
+setsid "$BASE/scripts/run_rosbridge.sh" > "$LOG_DIR/rosbridge.log" 2>&1 &
 echo $! > "$LOG_DIR/rosbridge.pid"
 
 echo "Starting camera transform status backend bridge node..."
@@ -143,7 +146,7 @@ echo "GripperX link (rosbridge):"
 echo "ws://$(hostname -I 2>/dev/null | awk '{print $1}'):9090"
 echo ""
 echo "Check the link:"
-echo "python3 $BASE/Octopus/scripts/check_rosbridge.py"
+echo "python3 $BASE/scripts/check_rosbridge.py"
 echo ""
 echo "Run health check:"
-echo "python3 $BASE/Octopus/scripts/octopus_pipeline_health.py"
+echo "python3 $BASE/scripts/octopus_pipeline_health.py"

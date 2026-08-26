@@ -1,5 +1,7 @@
 # How to Test Detector PoseArray Bridge
 
+> **Paths.** Every path in this document is relative to the repository root — `cd` there first, in *every* terminal these steps open.
+
 This test checks the detector-to-Octopus bridge.
 
 ## Pipeline
@@ -19,7 +21,7 @@ fake detector PoseArray
 ## 0. Build packages
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 
 colcon build --packages-select \
@@ -41,7 +43,7 @@ octopus_detector_bridge detector_posearray_bridge_node
 ## 1. Terminal 1: Start backend
 
 ```bash
-cd ~/projects/PlastiX/Octopus/octopus-dashboard
+cd Octopus/octopus-dashboard
 python3 -m uvicorn api:app --reload
 ```
 
@@ -54,7 +56,7 @@ http://127.0.0.1:8000/dashboard.html
 ## 2. Terminal 2: Start map builder
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -64,7 +66,7 @@ ros2 run octopus_mapping grid_map_builder_node
 ## 3. Terminal 3: Start backend bridge
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -74,7 +76,7 @@ ros2 run octopus_backend_bridge map_patch_backend_bridge_node
 ## 4. Terminal 4: Start detector PoseArray bridge
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -93,7 +95,7 @@ Input coordinate mode: map
 ## 5. Terminal 5: Publish fake detector output
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 
@@ -138,7 +140,7 @@ confidence: 1.0
 Start the detector bridge in normalized image mode:
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 source /opt/ros/humble/setup.bash
 source install/setup.bash
 

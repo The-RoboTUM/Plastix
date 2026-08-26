@@ -1,5 +1,7 @@
 # How to Test Camera Marker Transform
 
+> **Paths.** Every path in this document is relative to the repository root — `cd` there first, in *every* terminal these steps open.
+
 This test checks whether Octopus can transform normalized camera detections into map/grid coordinates using AprilTags.
 
 ## Pipeline
@@ -107,7 +109,7 @@ camera intrinsics
 On the laptop:
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 
 source /opt/ros/humble/setup.bash
 
@@ -182,7 +184,7 @@ device_index:=1
 On the laptop:
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 
 source /opt/ros/humble/setup.bash
 source install/setup.bash
@@ -224,7 +226,7 @@ Select:
 On the laptop:
 
 ```bash
-cd ~/projects/PlastiX/Octopus/octopus-dashboard
+cd Octopus/octopus-dashboard
 
 python3 -m uvicorn api:app --reload
 ```
@@ -240,7 +242,7 @@ http://127.0.0.1:8000/dashboard.html
 On the laptop:
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 
 source /opt/ros/humble/setup.bash
 source install/setup.bash
@@ -265,7 +267,7 @@ Expected topics:
 On the laptop:
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 
 source /opt/ros/humble/setup.bash
 source install/setup.bash
@@ -283,7 +285,7 @@ This bridge posts map patches from ROS2 to the FastAPI backend.
 On the laptop:
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 
 source /opt/ros/humble/setup.bash
 source install/setup.bash
@@ -325,7 +327,7 @@ The node may temporarily lose markers if the tags are too small or too far away.
 On the laptop:
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 
 source /opt/ros/humble/setup.bash
 source install/setup.bash
@@ -343,7 +345,7 @@ Leave this running.
 On the laptop, publish a fake detector point at the image center:
 
 ```bash
-cd ~/projects/PlastiX/Octopus/ros2_ws
+cd Octopus/ros2_ws
 
 source /opt/ros/humble/setup.bash
 source install/setup.bash
