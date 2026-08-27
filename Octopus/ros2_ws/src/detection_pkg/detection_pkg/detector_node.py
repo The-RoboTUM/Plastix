@@ -33,8 +33,11 @@ class DetectorNode(Node):
     def __init__(self):
         super().__init__('detector_node')
 
-        # Path to the detect-and-localize repo that holds the shared pipeline.
-        default_repo = os.path.expanduser('~/PlastiX/eve/Software/detect-and-localize')
+        # Path to the detect-and-localize folder that holds the shared pipeline.
+        # It lives in the same repo (Octopus/detect-and-localize); this default only
+        # covers the documented clone location, so SETUP.md passes the parameter
+        # explicitly and any other clone path must do the same.
+        default_repo = os.path.expanduser('~/PlastiX/Octopus/detect-and-localize')
         self.declare_parameter('detect_localize_path', default_repo)
         self.declare_parameter('model', 'data/models/thousand_11s.pt')
         self.declare_parameter('thresh', 0.6)

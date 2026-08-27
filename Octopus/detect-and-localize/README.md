@@ -1,3 +1,9 @@
+> **Herkunft.** Fork der Eve-Fassung (`eve/Software/detect-and-localize` auf Branch
+> `eve_ros_development`), Stand 2026-08-27. Diese Kopie ist Octopus-spezifisch geändert:
+> `src/yolo_detector.py` brennt keine Boxen mehr ins Bild, weil das Dashboard seine eigene
+> zeichnet und `detector_node` das Label setzt. Änderungen also **nicht** blind von der
+> Eve-Seite übernehmen. Das `data/`-Verzeichnis kommt weiterhin aus Nextcloud (siehe Setup).
+
 ## What this is
 
 Detects and localizes trash from an image, video file, or live camera feed. YOLO models are used for detection.
@@ -31,7 +37,7 @@ README.md
 ### 2. Change to the project directory
 
 ```bash
-cd /home/robik/PlastiX/eve/Software/detect-and-localize
+cd <repo>/Octopus/detect-and-localize
 ```
 
 ### 3. Create a virtual environment (optional but recommended)

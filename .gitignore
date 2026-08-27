@@ -70,15 +70,15 @@ tmp/
 # Package-specific ignores
 # local.yml
 # params/local.yaml
-# Eve detector local runtime/data files
-eve/Software/detect-and-localize/.venv/
-eve/Software/detect-and-localize/data/
-eve/Software/detect-and-localize/**/*.pyc
-eve/Software/detect-and-localize/**/__pycache__/
+# Detector local runtime/data files. data/ holds the YOLO models and footage and
+# is too large for git - see Octopus/detect-and-localize/README.md for its source.
+Octopus/detect-and-localize/.venv/
+Octopus/detect-and-localize/data/
+Octopus/detect-and-localize/**/*.pyc
+Octopus/detect-and-localize/**/__pycache__/
 
 # Local PX4 ROS2 message dependency
 Octopus/ros2_ws/src/px4_msgs/
-eve/Software/ros2_ws/src/px4_msgs/
 
 # Local rosbridge dependency for the GripperX link. Third-party checkout with
 # its own .git, so committing it would leave a submodule gitlink nobody can

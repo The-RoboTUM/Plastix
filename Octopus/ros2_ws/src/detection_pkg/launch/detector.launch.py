@@ -1,3 +1,5 @@
+import os
+
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument
 from launch.substitutions import LaunchConfiguration
@@ -8,8 +10,9 @@ from launch_ros.parameter_descriptions import ParameterValue
 def generate_launch_description():
     repo = DeclareLaunchArgument(
         'detect_localize_path',
-        default_value='/home/victor-tipkemper/projects/robotics/PlastiX/eve/Software/detect-and-localize',
-        description='Path to the detect-and-localize repo (holds the shared pipeline + models).',
+        default_value=os.path.expanduser('~/PlastiX/Octopus/detect-and-localize'),
+        description='Path to Octopus/detect-and-localize (holds the shared pipeline + models). '
+                    'Override it when the repo is not cloned at ~/PlastiX.',
     )
     tags = DeclareLaunchArgument(
         'tags',

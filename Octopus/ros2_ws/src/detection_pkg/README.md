@@ -2,7 +2,7 @@
 
 ROS 2 node that detects trash in camera frames, localizes it in 2D, and publishes confirmed positions.
 
-It wraps the `detect-and-localize` pipeline (YOLO detection → AprilTag or normalized-image localization → stationary-track confirmation). The core logic lives in `detect-and-localize/src/pipeline.py` and is shared with the standalone `main.py` CLI, so there is one source of truth for detection behavior.
+It wraps the `detect-and-localize` pipeline (YOLO detection → AprilTag or normalized-image localization → stationary-track confirmation). The core logic lives in `Octopus/detect-and-localize/src/pipeline.py` and is shared with the standalone `main.py` CLI, so there is one source of truth for detection behavior.
 
 ## How it works
 
@@ -32,23 +32,25 @@ Both outputs are `geometry_msgs/PoseArray` with `z = 0`.
 The node needs both the Python venv (for `ultralytics`) and ROS sourced. Source ROS first so it bridges `rclpy` into the venv:
 
 ```bash
-source /opt/ros/jazzy/setup.bash
-source <repo>/detect-and-localize/plastix_venv/bin/activate
-source <repo>/ros2_ws/install/setup.bash
+source /opt/ros/humble/setup.bash
+source <repo>/Octopus/detect-and-localize/.venv/bin/activate
+source <repo>/Octopus/ros2_ws/install/setup.bash
 
 # Normalized image coordinates (no tags):
-python <repo>/ros2_ws/src/detection_pkg/detection_pkg/detector_node.py
+python <repo>/Octopus/ros2_ws/src/detection_pkg/detection_pkg/detector_node.py
 
 # World coordinates (with AprilTag CSV):
-python <repo>/ros2_ws/src/detection_pkg/detection_pkg/detector_node.py \
+python <repo>/Octopus/ros2_ws/src/detection_pkg/detection_pkg/detector_node.py \
   --ros-args -p tags:=data/tags/<file>.csv
 
 # Enable the live UI windows:
-python <repo>/ros2_ws/src/detection_pkg/detection_pkg/detector_node.py \
+python <repo>/Octopus/ros2_ws/src/detection_pkg/detection_pkg/detector_node.py \
   --ros-args -p show_ui:=true
 ```
 
-Feed it frames with a real camera or a video replay:
+Feed it frames with a real camera or a video replay. `camera_pkg` runs **on the Pi**
+and is not part of the Octopus folder - its source lives in `eve/` on the
+`eve_ros_development` branch:
 
 ```bash
 ros2 run camera_pkg camera_node
@@ -69,7 +71,7 @@ ros2 topic echo /detector_node/confirmed --qos-durability transient_local
 
 | Parameter | Default | Description |
 |-----------|---------|-------------|
-| `detect_localize_path` | `~/PlastiX/eve/Software/detect-and-localize` | Path to the `detect-and-localize` repo. The node imports `pipeline.py`, `visualization.py`, and `fps_meter.py` from there at runtime. |
+| `detect_localize_path` | `~/PlastiX/Octopus/detect-and-localize` | Path to `Octopus/detect-and-localize`. The node imports `pipeline.py`, `visualization.py`, and `fps_meter.py` from there at runtime. |
 | `input_topic` | `camera/image_raw/compressed` | ROS topic to subscribe to for camera frames. |
 | `output_frame` | `map` | `frame_id` stamped on published `PoseArray` messages. |
 | `show_ui` | `false` | Open live OpenCV windows ("Frame" and "World Map") for visual debugging. |
