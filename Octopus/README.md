@@ -4,10 +4,11 @@
 
 This README explains how to set up the `eve-octopus` branch on a new laptop, connect to the drone/Pixhawk/Raspberry Pi, start the detector, start the Octopus dashboard, and run the indoor static occupancy-grid demo.
 
-> **Nur starten?** Der Startablauf steht in **[docs/SETUP.md](docs/SETUP.md)**. Diese README
-> deckt Konzepte, Erstinstallation, Presentation Flow und weiteres Troubleshooting ab.
-> Dashboard-Test ohne Drohne: [octopus-dashboard/SETUP_NO_DRONE.md](octopus-dashboard/SETUP_NO_DRONE.md).
-> Übersicht über alle weiteren Dokumente: [docs/README.md](docs/README.md).
+> **Just want to start it?** The startup sequence is in **[docs/SETUP.md](docs/SETUP.md)**.
+> This README covers concepts, first-time installation, the presentation flow and further
+> troubleshooting.
+> Dashboard test without the drone: [docs/SETUP.md, „Variante ohne Drohne“](docs/SETUP.md#variante-ohne-drohne).
+> Index of all other documents: [docs/README.md](docs/README.md).
 
 The current indoor demo pipeline is:
 
@@ -159,6 +160,19 @@ echo "source /opt/ros/humble/setup.bash" >> ~/.bashrc
 
 ### 2.2 Clone the repository and switch branch
 
+> **Which folder belongs to which machine.** The demo spans two computers, and each
+> uses a different branch and a different top-level folder. They do not overlap:
+>
+> | Machine | Branch | Folder | Job |
+> |---|---|---|---|
+> | Raspberry Pi (`eve-pi`) | `eve_ros_development` | `eve/` | publishes **only** the camera and PX4 topics |
+> | Octopus laptop | `eve-octopus` | `Octopus/` | detector, mapping, dashboard — everything else |
+>
+> This README covers the **laptop**. Everything the laptop needs lives in `Octopus/`;
+> nothing in it requires the `eve/` folder. Where a command below runs on the Pi, it
+> says so. The Pi is set up from its own branch and is not described here beyond the
+> topics it has to deliver.
+
 ```bash
 mkdir -p ~/projects
 cd ~/projects
@@ -220,35 +234,41 @@ Important: the `px4_msgs` version should match the PX4 firmware used on the Pixh
 
 ### 3.2 Detector model
 
-The detector expects this model path:
+The current best model is `best_model_10_08_26.pt`. The detector takes the path as a
+parameter, so a newer model only changes the file name:
 
 ```text
-eve/Software/detect-and-localize/data/models/indoor_v8s.pt
+Octopus/detect-and-localize/data/models/best_model_10_08_26.pt
 ```
 
 Create the model folder:
 
 ```bash
-mkdir -p eve/Software/detect-and-localize/data/models
+mkdir -p Octopus/detect-and-localize/data/models
 ```
 
-Copy or download the model from the team/shared storage into:
+Download the model from Nextcloud — the whole `data/` folder (models, footage, tag
+configs) is too large for git:
+
+<https://nextcloud.itq.de/f/24073>
+
+Put it here:
 
 ```bash
-eve/Software/detect-and-localize/data/models/indoor_v8s.pt
+Octopus/detect-and-localize/data/models/best_model_10_08_26.pt
 ```
 
 Example if the model file is in your Downloads folder:
 
 ```bash
-cp ~/Downloads/indoor_v8s.pt \
-  eve/Software/detect-and-localize/data/models/indoor_v8s.pt
+cp ~/Downloads/best_model_10_08_26.pt \
+  Octopus/detect-and-localize/data/models/best_model_10_08_26.pt
 ```
 
 Check:
 
 ```bash
-ls -lh eve/Software/detect-and-localize/data/models/indoor_v8s.pt
+ls -lh Octopus/detect-and-localize/data/models/best_model_10_08_26.pt
 ```
 
 ---
@@ -258,7 +278,7 @@ ls -lh eve/Software/detect-and-localize/data/models/indoor_v8s.pt
 Set up the detector virtual environment:
 
 ```bash
-cd eve/Software/detect-and-localize
+cd Octopus/detect-and-localize
 
 python3 -m venv .venv
 source .venv/bin/activate
@@ -278,23 +298,10 @@ If the detector complains about missing Python packages later, install the missi
 
 ---
 
-## 4. Build ROS2 workspaces
+## 4. Build the Octopus ROS2 workspace
 
-### 4.1 Build Eve ROS2 workspace
-
-```bash
-cd eve/Software/ros2_ws
-
-source /opt/ros/humble/setup.bash
-
-colcon build --symlink-install
-
-source install/setup.bash
-```
-
----
-
-### 4.2 Build Octopus ROS2 workspace
+One workspace holds everything the laptop runs: the four `octopus_*` packages and
+`detection_pkg`, the detector node.
 
 ```bash
 cd Octopus/ros2_ws
@@ -409,19 +416,19 @@ y = 0.67 m
 
 ---
 
-# 7. Start the complete indoor demo
+## 7. Start the complete indoor demo
 
-Der vollständige Startablauf steht in [docs/SETUP.md](docs/SETUP.md) — Sicherheitsschritte,
-die vier Terminals (PX4-Brücke und Kamera auf der Pi, Detektor und Octopus-Stack auf dem
-Laptop), Health-Check, Stoppen und Troubleshooting.
+The full startup sequence is in [docs/SETUP.md](docs/SETUP.md) — safety steps, the four
+terminals (PX4 bridge and camera on the Pi, detector and Octopus stack on the laptop),
+health check, shutdown and troubleshooting.
 
-Kurzfassung, wenn alles eingerichtet ist:
+Short version, once everything is set up:
 
 ```bash
 OCTOPUS_MAPPING_MODE=indoor_static_mission ./Octopus/scripts/start_octopus_debug_stack.sh
 ```
 
-Das Skript startet das Dashboard-Backend und alle sieben ROS-Nodes. Danach:
+The script starts the dashboard backend, all eleven ROS nodes and rosbridge. Then open:
 
 ```text
 http://127.0.0.1:8000/dashboard.html

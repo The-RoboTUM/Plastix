@@ -129,7 +129,7 @@ On the laptop, SSH into the Pi:
 ssh eve@172.19.216.36
 ```
 
-On the Pi:
+On the Pi (Branch `eve_ros_development`, Ordner `eve/` — nicht Teil des Octopus-Setups):
 
 ```bash
 cd ~/PlastiX/eve/Software/ros2_ws

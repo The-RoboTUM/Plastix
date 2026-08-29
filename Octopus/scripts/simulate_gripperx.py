@@ -2,7 +2,7 @@
 
 """Stand in for the GripperX robot on the far side of the rosbridge link.
 
-This is the counterpart of ``octopus-dashboard/SETUP_NO_DRONE.md``: it lets the
+This is the counterpart of ``docs/SETUP.md`` ("Variante ohne Drohne"): it lets the
 whole Octopus <-> GripperX loop be exercised with no robot and no ROS on the
 client side, over exactly the transport the real robot will use.
 

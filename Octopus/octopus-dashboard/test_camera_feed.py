@@ -15,10 +15,10 @@ Examples
   python test_camera_feed.py --source test.jpg --demo
 
   # feed + REAL YOLO detection on a video clip:
-  python test_camera_feed.py --source clip.mp4 --model data/models/indoor_v8s.pt
+  python test_camera_feed.py --source clip.mp4 --model data/models/best_model_10_08_26.pt
 
   # feed + REAL YOLO from a webcam:
-  python test_camera_feed.py --source 0 --model data/models/indoor_v8s.pt
+  python test_camera_feed.py --source 0 --model data/models/best_model_10_08_26.pt
 
 The backend keeps only the newest frame/detections in memory, so this script just
 needs to keep POSTing. Open http://127.0.0.1:8000/dashboard.html to see it live.

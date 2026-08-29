@@ -2,6 +2,11 @@
 
 This explains how to start the camera node on the Raspberry Pi and view the camera feed on the laptop over WiFi.
 
+> **Pi-Seite.** Alles unter `~/PlastiX/eve/...` läuft auf der Pi, nicht auf dem Laptop.
+> Die Pi steht auf Branch `eve_ros_development` mit dem Ordner `eve/`; `camera_pkg` gibt es
+> im Octopus-Ordner nicht. Für Octopus zählt nur, dass am Ende
+> `/camera/image_raw/compressed` publiziert wird.
+
 ## Terminal 1: SSH into the Pi and start camera node
 
 On the laptop:
@@ -94,7 +99,7 @@ Use this later for OpenCV, ArUco, or object detection nodes if needed.
 
 ## Notes
 
-The existing camera node is located in the Eve branch at:
+The camera node lives on the Pi branch `eve_ros_development` at:
 
 ```bash
 eve/Software/ros2_ws/src/camera_pkg/camera_pkg/camera_node.py

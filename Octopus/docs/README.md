@@ -12,7 +12,7 @@ gewachsen und nicht vereinheitlicht.
 
 | Dokument | Inhalt |
 |---|---|
-| [`SETUP.md`](SETUP.md) | **Start hier.** Indoor-Demo hochfahren, Terminal für Terminal, mit Health-Check und Fehlersuche |
+| [`SETUP.md`](SETUP.md) | **Start hier.** Indoor-Demo hochfahren, Terminal für Terminal, mit Health-Check und Fehlersuche. Enthält auch die [Variante ohne Drohne](SETUP.md#variante-ohne-drohne): Stufe 1 nur Dashboard ohne ROS, Stufe 2 optional mit GripperX |
 | [`how_to_connect_pi_camera.md`](how_to_connect_pi_camera.md) | Kamera-Node auf der Pi starten, Bild auf dem Laptop ansehen |
 
 ## Schnittstellen

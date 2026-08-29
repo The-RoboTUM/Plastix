@@ -22,7 +22,7 @@ Originally intended for **indoor use** with a controlled environment and AprilTa
 ### 1. Get the data folder
 
 The data folder (models, footage, tag configs) is too large for Git. It is stored separately at Nextcloud:
-`https://nextcloud.itq.de/apps/files/files/2210?dir=/CirQmind%20Plastix%20%28S3%29/Additional%20Content/Eve/code/detect-and-localize`
+<https://nextcloud.itq.de/f/24073>
 
 At the end of this step the directory should contain:
 ```
