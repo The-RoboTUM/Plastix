@@ -292,6 +292,8 @@ Für eine produktive Anbindung wären eigene `.msg`-Definitionen der bessere Weg
 | `goal_selection` | `nearest` | `nearest` oder `first` |
 | `merge_radius_m` | `0.25` | zwei Detektionen darunter gelten als dasselbe Objekt |
 | `min_confidence` | `0.0` | Detektionen darunter werden ignoriert |
+| `max_radius_m` | `0.0` | Umkreis um das Datum in Metern, in dem Ziele angeboten werden; `0.0` = aus. Verworfene Detektionen werden gezählt und alle 10 s geloggt, nicht still geschluckt |
+| `target_ttl_sec` | `0.0` | Sekunden, die ein Ziel ohne neue Bestätigung überlebt; `0.0` = aus, dann werden Ziele nie vergessen. Jedes Verfallen wird einmal geloggt |
 | `publish_period_sec` | `1.0` | Publish-Rate |
 
 `eve_fake_gps_bridge_node` (Paket `octopus_backend_bridge`):
@@ -342,8 +344,24 @@ neuen Punkt gesprungen sein.
 - **Kein Task-Management.** Wer zwei Sammelroboter anschließt, bekommt beiden dasselbe Ziel.
   Eine Zuweisung gibt es nicht.
 - **Ids überleben keinen Node-Neustart**, `collected`-Markierungen ebenso wenig.
-- **Ziele werden nie vergessen.** Müll gilt als statisch; ein Ziel verschwindet nur durch
-  `trash_goal_done`.
+- **Ziele werden per Default nie vergessen.** Müll gilt als statisch; ein Ziel verschwindet
+  dann nur durch `trash_goal_done`. Wer ein Objekt von Hand wegnimmt oder umlegt, lässt ein
+  Ziel an der alten Stelle stehen. Mit `target_ttl_sec > 0` verfällt ein Ziel, das so lange
+  nicht mehr bestätigt wurde — für einen Consumer heißt das: **eine `id` kann verschwinden,
+  bevor sie erledigt gemeldet wurde.** Ids werden nie wiederverwendet, ein spätes
+  `trash_goal_done` auf ein verfallenes Ziel wird also als unbekannt verworfen und trifft
+  nichts anderes. Wird dasselbe Objekt später wieder gesehen, bekommt es eine **neue** `id`.
+  Der Wert muss deutlich über der Verdeckungsdauer beim Anfahren liegen, sonst verfällt das
+  Ziel, während der Roboter darauf zufährt und es selbst verdeckt.
+- **Ein unerreichbares Ziel blockiert den Lauf.** Hier gibt es keinen Timeout, kein
+  Verfallsdatum und keinen Retry — das Ziel rückt ausschließlich in `goal_done_callback`
+  vor, und `/octopus/trash_goal` ist gelatcht. Ein Roboter, der ein Ziel bei der
+  Validierung ablehnt statt es zu melden, wartet damit auf uns, während wir auf ihn
+  warten; beide Seiten melden keinen Fehler, weil auf keiner Seite einer aufgetreten ist.
+  Gegenmittel: `max_radius_m` auf die erreichbare Fläche setzen, damit ein unerreichbares
+  Ziel gar nicht erst angeboten wird, und/oder `target_ttl_sec`, damit ein hängendes Ziel
+  von selbst rausfällt. Manuell auflösen lässt es sich durch einen Neustart von
+  `trash_gps_goal_node` (ids und `collected`-Flags gehen dabei verloren).
 - **Der Yaw-Slider** aus dem Dashboard wird als `yaw_deg` mitgeschickt, aber von niemandem
   ausgewertet. Falls der Roboter auch Eves Ausrichtung übernehmen soll, liegt der Wert bereit.
 - **Die Einsammel-Schleife ist über rosbridge geprüft**, aber mit einem Simulator

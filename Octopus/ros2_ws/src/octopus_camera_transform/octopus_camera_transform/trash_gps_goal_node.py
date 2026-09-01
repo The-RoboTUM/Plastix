@@ -65,6 +65,23 @@ class TrashGpsGoalNode(Node):
         # stable across messages so "collected" can refer to something.
         self.declare_parameter("merge_radius_m", 0.25)
         self.declare_parameter("min_confidence", 0.0)
+        # Play-area bound for the collecting robot, in metres around the datum.
+        # A target the robot cannot reach still deadlocks the run: our goal only
+        # advances on trash_goal_done and nothing here times out, so an
+        # unreachable target blocks every reachable one behind it. The camera
+        # footprint (4.46 x 3.34 m) is far larger than a small robot's reach, so
+        # the bound has to be stated rather than assumed. 0.0 disables it, which
+        # is the default so nothing changes for a consumer that never set it.
+        self.declare_parameter("max_radius_m", 0.0)
+        # Seconds a target survives without being confirmed again. Trash is
+        # static, so a target that stops being seen has almost always been moved
+        # or picked up by hand -- and without this it stays on the list forever,
+        # because a target otherwise only leaves via trash_goal_done. That is
+        # also the deadlock: a target the robot refuses at validation is never
+        # reported done, and blocks every reachable target behind it. 0.0 keeps
+        # the old "targets are never forgotten" behaviour and is the default, so
+        # a consumer that never sets it sees no change.
+        self.declare_parameter("target_ttl_sec", 0.0)
         self.declare_parameter("publish_period_sec", 1.0)
         self.declare_parameter("frame_id", "map")
         # "nearest" = closest to the datum, i.e. closest to where the robot
@@ -77,6 +94,8 @@ class TrashGpsGoalNode(Node):
         self.altitude_m = float(self.get_parameter("altitude_m").value)
         self.merge_radius_m = float(self.get_parameter("merge_radius_m").value)
         self.min_confidence = float(self.get_parameter("min_confidence").value)
+        self.max_radius_m = float(self.get_parameter("max_radius_m").value)
+        self.target_ttl_sec = float(self.get_parameter("target_ttl_sec").value)
         self.frame_id = str(self.get_parameter("frame_id").value)
         self.goal_selection = str(self.get_parameter("goal_selection").value)
 
@@ -84,6 +103,8 @@ class TrashGpsGoalNode(Node):
         self.update_datum(self.datum_lat, self.datum_lon)
 
         self.targets = []  # ordered by first detection
+        self.out_of_range_count = 0
+        self.last_out_of_range_log = 0.0
         self.next_target_id = 1
         self.last_goal_id = None
 
@@ -184,7 +205,27 @@ class TrashGpsGoalNode(Node):
             if confidence is not None and confidence < self.min_confidence:
                 continue
 
+            # Distance from the datum, which is map (0, 0) by construction, so
+            # this is literally "within max_radius_m of where the robot started".
+            if self.max_radius_m > 0.0:
+                radius = math.hypot(x, y)
+                if radius > self.max_radius_m:
+                    self.note_out_of_range(x, y, radius, now)
+                    continue
+
             self.register(x, y, confidence, detection.get("class_name"), now)
+
+    def note_out_of_range(self, x, y, radius, now):
+        """Log dropped detections at most once every 10 s, with a running total."""
+        self.out_of_range_count += 1
+        if now - self.last_out_of_range_log < 10.0:
+            return
+        self.last_out_of_range_log = now
+        self.get_logger().warn(
+            f"Detection at map ({x:.2f}, {y:.2f}) is {radius:.2f} m from the datum, "
+            f"outside max_radius_m={self.max_radius_m:.2f}. Not offered as a target. "
+            f"{self.out_of_range_count} dropped so far."
+        )
 
     def register(self, x, y, confidence, class_name, now):
         existing = self.nearest_target(x, y, self.merge_radius_m)
@@ -286,7 +327,35 @@ class TrashGpsGoalNode(Node):
         msg.position_covariance_type = NavSatFix.COVARIANCE_TYPE_APPROXIMATED
         return msg
 
+    def expire_targets(self):
+        """Drop targets the detector has stopped confirming."""
+        if self.target_ttl_sec <= 0.0:
+            return
+
+        now = time.time()
+        cutoff = now - self.target_ttl_sec
+        kept = []
+        dropped = []
+        for target in self.targets:
+            (dropped if target["last_seen"] < cutoff else kept).append(target)
+
+        if not dropped:
+            return
+
+        self.targets = kept
+        # One line per expiry, not per tick: the target is gone afterwards, so
+        # this cannot repeat. An id is never reused, so a late trash_goal_done
+        # for an expired target is rejected as unknown rather than hitting
+        # something else.
+        for target in dropped:
+            self.get_logger().info(
+                f"Target #{target['id']} at map ({target['x']:.2f}, {target['y']:.2f}) "
+                f"expired after {now - target['last_seen']:.0f} s without a confirmation "
+                f"(target_ttl_sec={self.target_ttl_sec:.0f}, collected={target['collected']})"
+            )
+
     def publish_all(self):
+        self.expire_targets()
         goal = self.select_goal()
 
         entries = []

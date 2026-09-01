@@ -117,7 +117,13 @@ setsid ros2 run octopus_backend_bridge eve_fake_gps_bridge_node \
 echo $! > "$LOG_DIR/eve_fake_gps_bridge.pid"
 
 echo "Starting trash GPS goal node..."
-setsid ros2 run octopus_camera_transform trash_gps_goal_node \
+# target_ttl_sec 2 s, nicht 1 s: der Detector bestätigt mit 1 Hz (gemessener Abstand
+# 1.01 s), ein knapperer Wert lässt sichtbare Ziele im Takt verfallen und registriert
+# sie jede Runde unter neuer id. Dieselbe 2x-Reserve, die GripperX für
+# max_target_list_age_sec gewählt hat.
+setsid ros2 run octopus_camera_transform trash_gps_goal_node --ros-args \
+  -p max_radius_m:=1.25 \
+  -p target_ttl_sec:=2.0 \
   > "$LOG_DIR/trash_gps_goal.log" 2>&1 &
 echo $! > "$LOG_DIR/trash_gps_goal.pid"
 

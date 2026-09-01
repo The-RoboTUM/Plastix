@@ -526,9 +526,17 @@ class DetectorNode(Node):
             self._to_pose_array(result['detections_world'], stamp)
         )
 
+        # Always assign, including the empty case. The tracker already smooths over
+        # frames where YOLO missed -- update() returns every confirmed track whose
+        # "missed" count is still below max_lost -- so an empty list here means the
+        # object is really gone, not merely unseen this frame. Guarding the
+        # assignment on a non-empty list instead froze the last sighting into
+        # _latest_confirmed_pose_array, and the 1 Hz republish timer then re-sent it
+        # with a fresh stamp forever: a picked-up or removed object stayed a live
+        # target, and any downstream age check (trash_gps_goal_node's
+        # target_ttl_sec) could never fire because last_seen kept refreshing.
         confirmed_positions = [t['pos'] for t in result.get('confirmed', [])]
-        if confirmed_positions:
-            self._latest_confirmed_pose_array = self._to_pose_array(confirmed_positions, stamp)
+        self._latest_confirmed_pose_array = self._to_pose_array(confirmed_positions, stamp)
 
         if result['new_confirmed']:
             if self._latest_confirmed_pose_array is not None:
