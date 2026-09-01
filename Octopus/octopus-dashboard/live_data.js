@@ -5153,6 +5153,202 @@ if (document.readyState === "loading") {
 // --- END OCTOPUS EVE CAMERA FRONTEND ---
 
 
+// --- OCTOPUS EVE PX4 BRIDGE + DETECTOR FRONTEND ---
+// Beide Bloecke folgen dem Muster der Eve-Kamera darueber: ein setXUi(), ein
+// refresh, start/stop, ein Log-Button und ein Poll-Intervall.
+
+// Ein Block, weil die drei Zustandsanzeigen sich nur in ihren Element-Ids und
+// ihrer Statuszuordnung unterscheiden. Ein zweites Mal dasselbe hinzuschreiben
+// hiesse, jede spaetere Aenderung an zwei Stellen zu machen.
+function setControlBlockUi(summaryId, label, cls, detail) {
+  const summary = document.getElementById(summaryId);
+  if (!summary) return;
+  summary.textContent = detail ? `${label}: ${detail}` : label;
+  summary.dataset.state = cls;
+}
+
+const PX4_BRIDGE_LABELS = {
+  px4_bridge_running: ["PX4 bridge running", "ok"],
+  px4_bridge_started: ["PX4 bridge started", "ok"],
+  online_px4_bridge_stopped: ["Eve online, PX4 bridge stopped", "warning"],
+  px4_bridge_stopped: ["PX4 bridge stopped", "warning"],
+  offline: ["Eve offline", "offline"],
+  px4_bridge_failed: ["PX4 bridge error", "error"],
+  px4_bridge_stop_failed: ["PX4 bridge error", "error"],
+};
+
+function setPx4BridgeUi(status, detail = "") {
+  const [label, cls] = PX4_BRIDGE_LABELS[status] || ["PX4 bridge", "unknown"];
+  setControlBlockUi("px4-bridge-summary", label, cls, detail);
+}
+
+async function refreshPx4BridgeStatus() {
+  try {
+    const data = await eveFetchJson("/api/eve/px4_bridge/status");
+    setPx4BridgeUi(data.status, data.ssh?.stdout || "");
+    return data;
+  } catch (error) {
+    setPx4BridgeUi("offline", error.message);
+    return null;
+  }
+}
+
+async function startPx4Bridge() {
+  setPx4BridgeUi("unknown", "starting PX4 bridge...");
+  try {
+    const data = await eveFetchJson("/api/eve/px4_bridge/start", { method: "POST" });
+    // Der Agent laeuft auch ohne Pixhawk am anderen Ende. Das sichtbar zu
+    // machen spart die Suche im Log, wenn spaeter keine Odometrie ankommt.
+    let detail = data.ssh?.stdout || "";
+    if (data.pixhawk === "waiting") {
+      detail = "agent up, but no Pixhawk session yet — is the Pixhawk powered?";
+    } else if (data.pixhawk === "connected") {
+      detail = "Pixhawk connected";
+    }
+    setPx4BridgeUi(data.status, detail);
+    if (typeof addTimeline === "function") {
+      addTimeline("Eve PX4 bridge start command executed.",
+        data.status === "px4_bridge_started" ? "success" : "warning");
+    }
+  } catch (error) {
+    setPx4BridgeUi("px4_bridge_failed", error.message);
+    if (typeof addTimeline === "function") addTimeline(`PX4 bridge start failed: ${error.message}`, "error");
+  }
+}
+
+async function stopPx4Bridge() {
+  setPx4BridgeUi("unknown", "stopping PX4 bridge...");
+  try {
+    const data = await eveFetchJson("/api/eve/px4_bridge/stop", { method: "POST" });
+    setPx4BridgeUi(data.status, data.ssh?.stdout || "");
+    if (typeof addTimeline === "function") {
+      addTimeline("Eve PX4 bridge stop command executed.",
+        data.status === "px4_bridge_stopped" ? "success" : "warning");
+    }
+  } catch (error) {
+    setPx4BridgeUi("px4_bridge_stop_failed", error.message);
+    if (typeof addTimeline === "function") addTimeline(`PX4 bridge stop failed: ${error.message}`, "error");
+  }
+}
+
+async function showPx4BridgeLog() {
+  const logEl = document.getElementById("px4-bridge-log");
+  if (!logEl) return;
+  logEl.style.display = "block";
+  logEl.textContent = "Loading PX4 bridge log...";
+  try {
+    const data = await eveFetchJson("/api/eve/px4_bridge/log");
+    logEl.textContent = data.log || "(empty log)";
+  } catch (error) {
+    logEl.textContent = `Failed to load log: ${error.message}`;
+  }
+}
+
+const DETECTOR_LABELS = {
+  detector_running: ["Detector running", "ok"],
+  detector_started: ["Detector started", "ok"],
+  detector_loading: ["Detector loading model", "warning"],
+  detector_stopped: ["Detector stopped", "warning"],
+  detector_failed: ["Detector error", "error"],
+  detector_stop_failed: ["Detector error", "error"],
+};
+
+function setDetectorUi(status, detail = "") {
+  const [label, cls] = DETECTOR_LABELS[status] || ["Detector", "unknown"];
+  setControlBlockUi("detector-summary", label, cls, detail);
+}
+
+async function refreshDetectorStatus() {
+  try {
+    const data = await eveFetchJson("/api/detector/status");
+    setDetectorUi(data.status, data.local?.stdout || "");
+    return data;
+  } catch (error) {
+    setDetectorUi("detector_failed", error.message);
+    return null;
+  }
+}
+
+async function startDetector() {
+  setDetectorUi("unknown", "starting detector...");
+  try {
+    const data = await eveFetchJson("/api/detector/start", { method: "POST" });
+    setDetectorUi(data.status, data.local?.stdout || "");
+    if (typeof addTimeline === "function") {
+      addTimeline("Detector start command executed.",
+        data.status === "detector_started" ? "success" : "warning");
+    }
+    // Der Start-Endpunkt kehrt zurueck, sobald der Prozess steht -- YOLO laedt
+    // dann noch. Ein Nachfassen macht aus "started" das ehrlichere
+    // "loading"/"running", ohne dass jemand auf Refresh druecken muss.
+    setTimeout(refreshDetectorStatus, 4000);
+  } catch (error) {
+    setDetectorUi("detector_failed", error.message);
+    if (typeof addTimeline === "function") addTimeline(`Detector start failed: ${error.message}`, "error");
+  }
+}
+
+async function stopDetector() {
+  setDetectorUi("unknown", "stopping detector...");
+  try {
+    const data = await eveFetchJson("/api/detector/stop", { method: "POST" });
+    setDetectorUi(data.status, data.local?.stdout || "");
+    if (typeof addTimeline === "function") {
+      addTimeline("Detector stop command executed.",
+        data.status === "detector_stopped" ? "success" : "warning");
+    }
+  } catch (error) {
+    setDetectorUi("detector_stop_failed", error.message);
+    if (typeof addTimeline === "function") addTimeline(`Detector stop failed: ${error.message}`, "error");
+  }
+}
+
+async function showDetectorLog() {
+  const logEl = document.getElementById("detector-log");
+  if (!logEl) return;
+  logEl.style.display = "block";
+  logEl.textContent = "Loading detector log...";
+  try {
+    const data = await eveFetchJson("/api/detector/log");
+    logEl.textContent = data.log || "(empty log)";
+  } catch (error) {
+    logEl.textContent = `Failed to load log: ${error.message}`;
+  }
+}
+
+function initPx4BridgeAndDetectorControls() {
+  const bind = (id, handler) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("click", handler);
+  };
+
+  bind("px4-bridge-start-btn", startPx4Bridge);
+  bind("px4-bridge-stop-btn", stopPx4Bridge);
+  bind("px4-bridge-refresh-btn", refreshPx4BridgeStatus);
+  bind("px4-bridge-log-btn", showPx4BridgeLog);
+
+  bind("detector-start-btn", startDetector);
+  bind("detector-stop-btn", stopDetector);
+  bind("detector-refresh-btn", refreshDetectorStatus);
+  bind("detector-log-btn", showDetectorLog);
+
+  refreshPx4BridgeStatus();
+  refreshDetectorStatus();
+  // Dieselben 8 s wie die Kamera. Jeder Tick der PX4-Zeile ist ein SSH-Aufruf,
+  // haeufiger lohnt sich nicht -- der Zustand aendert sich nur, wenn jemand
+  // einen Knopf drueckt.
+  setInterval(refreshPx4BridgeStatus, 8000);
+  setInterval(refreshDetectorStatus, 8000);
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initPx4BridgeAndDetectorControls);
+} else {
+  initPx4BridgeAndDetectorControls();
+}
+// --- END OCTOPUS EVE PX4 BRIDGE + DETECTOR FRONTEND ---
+
+
 // --- OCTOPUS CAMERA-TO-GRID PIPELINE FRONTEND ---
 async function pipelineFetchJson(url, options = {}) {
   const response = await fetch(url, options);

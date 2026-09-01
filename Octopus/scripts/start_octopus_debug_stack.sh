@@ -36,6 +36,7 @@ pkill -f "device_status_backend_bridge_node" || true
 pkill -f "rosbridge_websocket" || true
 pkill -f "eve_fake_gps_bridge_node" || true
 pkill -f "uvicorn api:app" || true
+pkill -f "[d]etector_node.py" || true
 
 sleep 1
 
@@ -143,6 +144,49 @@ echo "Starting camera transform status backend bridge node..."
 setsid ros2 run octopus_backend_bridge camera_transform_status_backend_bridge_node \
   > "$LOG_DIR/camera_transform_status_backend_bridge.log" 2>&1 &
 echo $! > "$LOG_DIR/camera_transform_status_backend_bridge.pid"
+
+# --- Eve-Seite auf der Pi (Terminal 1 + 2 aus docs/SETUP.md) ---
+# Bewusst NICHT toedlich: ist die Pi aus, im falschen Netz oder noch nicht
+# hochgefahren, soll das Dashboard trotzdem starten. Eve laesst sich danach
+# jederzeit ueber die Buttons im Panel "Camera & Pipeline" nachziehen.
+# Deshalb steht hier ueberall "|| true" trotz "set -e" am Skriptanfang.
+EVE_SSH_TARGET="${OCTOPUS_EVE_SSH_TARGET:-eve-pi}"
+EVE_SCRIPT_DIR="${OCTOPUS_EVE_SCRIPT_DIR:-~/PlastiX/eve/Software/scripts}"
+START_EVE="${OCTOPUS_START_EVE:-true}"
+
+eve_ssh() {
+  ssh -o BatchMode=yes -o ConnectTimeout=4 "$EVE_SSH_TARGET" "$1" 2>&1
+}
+
+if [ "$START_EVE" != "true" ]; then
+  echo ""
+  echo "Skipping Eve (OCTOPUS_START_EVE=$START_EVE). Use the dashboard buttons."
+elif ! ssh -o BatchMode=yes -o ConnectTimeout=4 "$EVE_SSH_TARGET" true 2>/dev/null; then
+  echo ""
+  echo "WARNING: Eve ($EVE_SSH_TARGET) not reachable - continuing without her."
+  echo "         The dashboard is up. Start the PX4 bridge and the camera later"
+  echo "         from the 'Camera & Pipeline' panel once Eve is on the network."
+else
+  echo ""
+  echo "Starting Eve PX4 bridge on $EVE_SSH_TARGET..."
+  eve_ssh "$EVE_SCRIPT_DIR/octopus_start_px4_bridge.sh" | tail -2 || true
+
+  echo "Starting Eve camera on $EVE_SSH_TARGET..."
+  eve_ssh "$EVE_SCRIPT_DIR/octopus_start_camera.sh" | tail -2 || true
+fi
+
+# --- Detektor auf diesem Rechner (Terminal 3 aus docs/SETUP.md) ---
+# Ebenfalls nicht toedlich: ohne venv oder ohne Modell laeuft die Demo bis auf
+# die Detektion weiter, und die Meldung des Skripts sagt, was fehlt.
+if [ "${OCTOPUS_START_DETECTOR:-true}" = "true" ]; then
+  echo ""
+  echo "Starting detector..."
+  "$BASE/scripts/octopus_start_detector.sh" | tail -3 || \
+    echo "WARNING: detector did not start - see the message above, or the Detector panel."
+else
+  echo ""
+  echo "Skipping detector (OCTOPUS_START_DETECTOR=${OCTOPUS_START_DETECTOR})."
+fi
 
 echo ""
 echo "Started Octopus debug stack."

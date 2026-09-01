@@ -322,6 +322,96 @@ def octopus_eve_camera_log():
     }
 # --- END OCTOPUS EVE CAMERA ROUTES ---
 
+# --- OCTOPUS EVE PX4 BRIDGE ROUTES ---
+# Der MicroXRCEAgent auf der Pi, Terminal 1 aus docs/SETUP.md. Braucht kein
+# sudo: /dev/ttyAMA0 gehoert root:dialout und der Benutzer eve ist darin -- nur
+# deshalb laesst er sich ueberhaupt von hier aus starten, denn der SSH-Aufruf
+# ist nicht interaktiv und wuerde an einer Passwortabfrage haengen bleiben.
+EVE_PX4_BRIDGE_LOG = "/tmp/octopus_px4_bridge.log"
+
+
+@app.get("/api/eve/px4_bridge/status")
+def octopus_eve_px4_bridge_status():
+    result = _octopus_run_eve_command(
+        _octopus_eve_script("octopus_px4_bridge_status.sh"), timeout=8
+    )
+
+    status = "offline"
+    if result["ok"]:
+        if "px4_bridge_running" in result["stdout"]:
+            status = "px4_bridge_running"
+        elif "px4_bridge_not_running" in result["stdout"]:
+            status = "online_px4_bridge_stopped"
+        else:
+            status = "online_unknown"
+
+    return {
+        "status": status,
+        "ssh": result,
+    }
+
+
+@app.post("/api/eve/px4_bridge/start")
+def octopus_eve_px4_bridge_start():
+    result = _octopus_run_eve_command(
+        _octopus_eve_script("octopus_start_px4_bridge.sh"), timeout=20
+    )
+
+    status = (
+        "px4_bridge_started"
+        if result["ok"] and "px4_bridge_started" in result["stdout"]
+        else "px4_bridge_failed"
+    )
+
+    # Der Agent laeuft auch ohne Pixhawk am anderen Ende -- er wartet dann nur.
+    # Fuer die Demo ist das der interessantere Zustand, deshalb getrennt
+    # gemeldet statt in "started" verschwiegen.
+    pixhawk = None
+    if "pixhawk=connected" in result["stdout"]:
+        pixhawk = "connected"
+    elif "pixhawk=waiting" in result["stdout"]:
+        pixhawk = "waiting"
+
+    return {
+        "status": status,
+        "pixhawk": pixhawk,
+        "ssh": result,
+    }
+
+
+@app.post("/api/eve/px4_bridge/stop")
+def octopus_eve_px4_bridge_stop():
+    result = _octopus_run_eve_command(
+        _octopus_eve_script("octopus_stop_px4_bridge.sh"), timeout=15
+    )
+
+    status = (
+        "px4_bridge_stopped"
+        if result["ok"] and (
+            "px4_bridge_stopped" in result["stdout"]
+            or "px4_bridge_not_running" in result["stdout"]
+        )
+        else "px4_bridge_stop_failed"
+    )
+
+    return {
+        "status": status,
+        "ssh": result,
+    }
+
+
+@app.get("/api/eve/px4_bridge/log")
+def octopus_eve_px4_bridge_log():
+    result = _octopus_run_eve_command(f"tail -80 {EVE_PX4_BRIDGE_LOG}", timeout=8)
+
+    return {
+        "status": "ok" if result["ok"] else "failed",
+        "log": result["stdout"],
+        "ssh": result,
+    }
+# --- END OCTOPUS EVE PX4 BRIDGE ROUTES ---
+
+
 
 # --- OCTOPUS EVE FAKE GPS START COORDINATE ---
 # Eve's placement on the mission map lives in the browser (localStorage), but the
@@ -753,6 +843,97 @@ def octopus_pipeline_logs():
         "local": result,
     }
 # --- END OCTOPUS CAMERA GRID PIPELINE ROUTES ---
+
+# --- OCTOPUS DETECTOR ROUTES ---
+# Der YOLO-Detektor auf diesem Rechner, Terminal 3 aus docs/SETUP.md. Laeuft
+# lokal, nicht auf der Pi, und braucht das venv unter detect-and-localize --
+# deshalb die Skripte statt eines direkten Aufrufs von hier.
+DETECTOR_LOG = "/tmp/octopus_detector.log"
+
+
+@app.get("/api/detector/status")
+def octopus_detector_status():
+    result = _octopus_run_local_pipeline_command(
+        "./scripts/octopus_detector_status.sh",
+        timeout=8,
+    )
+
+    stdout = result.get("stdout", "")
+
+    if "detector_running" in stdout:
+        # YOLO braucht nach dem Start ein paar Sekunden. Ohne diese
+        # Unterscheidung sieht ein voellig normaler Start wie ein haengender
+        # Detektor aus.
+        status = "detector_loading" if "model=loading" in stdout else "detector_running"
+    elif "detector_not_running" in stdout:
+        status = "detector_stopped"
+    else:
+        status = "detector_unknown"
+
+    return {
+        "status": status,
+        "local": result,
+    }
+
+
+@app.post("/api/detector/start")
+def octopus_detector_start():
+    # 25 s, weil das Skript drei Sekunden wartet, bevor es den Prozess prueft --
+    # es wartet bewusst NICHT darauf, dass YOLO fertig geladen hat. Den
+    # Ladezustand holt sich das Dashboard danach ueber /api/detector/status.
+    result = _octopus_run_local_pipeline_command(
+        "./scripts/octopus_start_detector.sh",
+        timeout=25,
+    )
+
+    status = (
+        "detector_started"
+        if result["ok"] and "detector_started" in result["stdout"]
+        else "detector_failed"
+    )
+
+    return {
+        "status": status,
+        "local": result,
+    }
+
+
+@app.post("/api/detector/stop")
+def octopus_detector_stop():
+    result = _octopus_run_local_pipeline_command(
+        "./scripts/octopus_stop_detector.sh",
+        timeout=20,
+    )
+
+    status = (
+        "detector_stopped"
+        if result["ok"] and (
+            "detector_stopped" in result["stdout"]
+            or "detector_not_running" in result["stdout"]
+        )
+        else "detector_stop_failed"
+    )
+
+    return {
+        "status": status,
+        "local": result,
+    }
+
+
+@app.get("/api/detector/log")
+def octopus_detector_log():
+    result = _octopus_run_local_pipeline_command(
+        f"tail -80 {DETECTOR_LOG}",
+        timeout=8,
+    )
+
+    return {
+        "status": "ok" if result["ok"] else "failed",
+        "log": result["stdout"],
+        "local": result,
+    }
+# --- END OCTOPUS DETECTOR ROUTES ---
+
 
 
 CAMERA_TRANSFORM_STATUS = {

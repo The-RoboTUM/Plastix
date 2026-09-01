@@ -2159,6 +2159,36 @@ body.octopus-view-debug .camera-debug-panel .item-card {
 
             <div class="pipeline-control-block">
               <div class="pipeline-control-title">
+                <strong>Eve PX4 Bridge</strong>
+                <span>MicroXRCEAgent on the Pi — carries the drone attitude that the projection needs</span>
+              </div>
+              <div class="pipeline-controls">
+                <button id="px4-bridge-start-btn" type="button">Start PX4 Bridge</button>
+                <button id="px4-bridge-stop-btn" type="button">Stop PX4 Bridge</button>
+                <button id="px4-bridge-refresh-btn" type="button">Refresh Status</button>
+                <button id="px4-bridge-log-btn" type="button">Show Log</button>
+              </div>
+              <div id="px4-bridge-summary" class="muted">PX4 bridge status: unknown</div>
+              <pre id="px4-bridge-log" class="pipeline-log-box"></pre>
+            </div>
+
+            <div class="pipeline-control-block">
+              <div class="pipeline-control-title">
+                <strong>Detector (this machine)</strong>
+                <span>YOLO on the laptop — loading the model takes a few seconds after start</span>
+              </div>
+              <div class="pipeline-controls">
+                <button id="detector-start-btn" type="button">Start Detector</button>
+                <button id="detector-stop-btn" type="button">Stop Detector</button>
+                <button id="detector-refresh-btn" type="button">Refresh Status</button>
+                <button id="detector-log-btn" type="button">Show Log</button>
+              </div>
+              <div id="detector-summary" class="muted">Detector status: unknown</div>
+              <pre id="detector-log" class="pipeline-log-box"></pre>
+            </div>
+
+            <div class="pipeline-control-block">
+              <div class="pipeline-control-title">
                 <strong>Camera-to-Grid Pipeline</strong>
                 <span>starts local ROS2 mapping, backend bridge, and camera-marker transform nodes</span>
               </div>

@@ -471,9 +471,9 @@ also aus einem Quell-Build und **nicht** aus apt. Falls er fehlt:
 sudo apt install -y build-essential cmake git && git clone -b v2.4.2 https://github.com/eProsima/Micro-XRCE-DDS-Agent.git ~/Micro-XRCE-DDS-Agent && cd ~/Micro-XRCE-DDS-Agent && mkdir build && cd build && cmake .. && make -j2 && sudo make install && sudo ldconfig /usr/local/lib/
 ```
 
-Der Agent-Befehl in Terminal 1 braucht `sudo` und die Pi fragt dabei nach dem Passwort —
-deshalb läuft er in einem interaktiven SSH-Terminal und lässt sich nicht wie die Kamera
-per Dashboard-Button starten.
+Der Agent braucht **kein** `sudo`: `/dev/ttyAMA0` gehört `root:dialout`, und der Benutzer
+`eve` ist in dieser Gruppe. Deshalb lässt sich die PX4-Brücke genauso per Dashboard-Button
+starten wie die Kamera.
 
 ### 5. USB-Kamera
 
@@ -587,6 +587,81 @@ fertigem venv nicht. Was lokal liegt, zeigt `ls Octopus/detect-and-localize/data
 
 ---
 
+## Der eine Befehl
+
+```bash
+OCTOPUS_MAPPING_MODE=indoor_static_mission ./Octopus/scripts/start_octopus_debug_stack.sh
+```
+
+Das ist alles. Der Befehl startet in dieser Reihenfolge:
+
+1. **Laptop:** Dashboard-Backend, elf ROS-Nodes, rosbridge
+2. **Pi (per SSH):** PX4-Brücke und Kamera
+3. **Laptop:** den YOLO-Detektor
+
+Danach steht die Demo unter `http://127.0.0.1:8000/dashboard.html`. Die vier Terminals
+weiter unten braucht man dafür **nicht** — sie stehen da, weil man sie einzeln zum Debuggen
+oder mit abweichenden Parametern starten können will.
+
+**Ist die Pi nicht erreichbar, läuft der Befehl trotzdem durch** und meldet es:
+
+```text
+WARNING: Eve (eve-pi) not reachable - continuing without her.
+         The dashboard is up. Start the PX4 bridge and the camera later
+         from the 'Camera & Pipeline' panel once Eve is on the network.
+```
+
+Das Dashboard ist dann oben, und sobald die Drohne im Netz ist, holt man sie über die
+Buttons dazu. Dasselbe gilt für den Detektor: fehlt das venv oder das Modell, sagt das
+Skript das und macht weiter.
+
+### Vom Dashboard aus steuern
+
+Im Panel *Camera & Pipeline* gibt es je einen Block mit Start/Stop/Status/Log für:
+
+| Block | Was | Wo |
+|---|---|---|
+| **Eve Camera** | `camera_node` | Pi |
+| **Eve PX4 Bridge** | `MicroXRCEAgent` | Pi |
+| **Detector (this machine)** | YOLO | Laptop |
+
+Damit lässt sich jedes der drei Teile einzeln neu starten, ohne den Stack anzufassen —
+praktisch nach einer geänderten Detektionsschwelle oder wenn die serielle Verbindung
+abgerissen ist.
+
+Zwei Dinge, die die Anzeige bewusst unterscheidet:
+
+- **`Detector loading model`** ist kein Fehler. YOLO braucht nach dem Start ein paar
+  Sekunden; erst danach steht `Detector running`.
+- **`agent up, but no Pixhawk session yet`** heißt: der Agent läuft, aber der Pixhawk
+  meldet sich nicht. Fast immer ist er dann stromlos oder die serielle Verbindung ist
+  abgezogen — nicht ein Problem der Brücke selbst.
+
+### Was der Befehl noch kennt
+
+| Variable | Default | Wirkung |
+|---|---|---|
+| `OCTOPUS_START_EVE` | `true` | `false` = Pi gar nicht anfassen, nur Laptop-Seite |
+| `OCTOPUS_START_DETECTOR` | `true` | `false` = Detektor weglassen |
+| `OCTOPUS_EVE_SSH_TARGET` | `eve-pi` | anderer SSH-Alias |
+| `OCTOPUS_EVE_SCRIPT_DIR` | `~/PlastiX/eve/Software/scripts` | anderer Repo-Pfad auf der Pi |
+
+Beim Stoppen bleibt die Pi absichtlich unangetastet — meistens startet man nur den Laptop
+neu, und eine mitten in der Demo abgeschaltete Kamera wäre die unangenehmere Überraschung:
+
+```bash
+./Octopus/scripts/stop_octopus_debug_stack.sh              # nur Laptop
+OCTOPUS_STOP_EVE=true ./Octopus/scripts/stop_octopus_debug_stack.sh   # Pi mit
+```
+
+---
+
+## Die vier Terminals einzeln
+
+Ab hier die manuelle Variante: dieselben vier Prozesse, einzeln gestartet, jeder in einem
+eigenen Terminal mit sichtbarer Ausgabe. Für den normalen Demo-Aufbau nicht nötig — für
+Fehlersuche und abweichende Parameter schon.
+
 ## Terminal 1 — Pi: PX4-Brücke
 
 Läuft auf der Pi. Der Code dazu liegt auf Branch `eve_ros_development` im Ordner `eve/`
@@ -598,10 +673,16 @@ ssh eve-pi
 ```
 
 ```bash
-sudo pkill -f "[M]icroXRCEAgent"; export ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0; sudo --preserve-env=ROS_DOMAIN_ID,ROS_LOCALHOST_ONLY MicroXRCEAgent serial --dev /dev/serial0 -b 921600 -v 6
+pkill -f "[M]icroXRCEAgent"; export ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0; MicroXRCEAgent serial --dev /dev/serial0 -b 921600 -v 6
 ```
 
 **Terminal offen lassen.** Danach publiziert `/fmu/out/vehicle_odometry` mit ca. 70–100 Hz.
+
+**Kein `sudo`** — frühere Fassungen dieses Dokuments hatten es, nötig ist es nicht:
+`/dev/ttyAMA0` gehört `root:dialout` und der Benutzer `eve` ist in `dialout`. Das ist keine
+Kosmetik, sondern die Voraussetzung dafür, dass der Start-Button im Dashboard überhaupt
+funktionieren kann: der SSH-Aufruf von dort ist nicht interaktiv und würde an einer
+Passwortabfrage bis zum Timeout hängen.
 
 ## Terminal 2 — Pi: Kamera
 
@@ -663,7 +744,9 @@ Detektion, `confirmed` und Mapping bleiben unberührt.
 
 ## Terminal 4 — Laptop: Octopus-Stack
 
-Startet das Dashboard-Backend, alle elf ROS-Nodes **und** rosbridge:
+Derselbe Befehl wie oben — er ist die Grundlage, Terminal 1 bis 3 sind seine Handarbeit-
+Variante. Startet Dashboard-Backend, alle elf ROS-Nodes, rosbridge und (sofern nicht
+abgeschaltet) Pi-Seite und Detektor:
 
 ```bash
 OCTOPUS_MAPPING_MODE=indoor_static_mission ./Octopus/scripts/start_octopus_debug_stack.sh
