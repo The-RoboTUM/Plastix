@@ -938,8 +938,8 @@
        ganzen Spalte. Start und Stop laufen ueber die Chips in der Eve-Karte. */
     .systems-details {
       border-top: 1px solid var(--border-subtle);
-      margin: 0 12px;
-      padding: 6px 0 8px;
+      margin-top: 10px;
+      padding: 6px 0 2px;
       flex: 0 0 auto;
     }
     .systems-details > summary {
@@ -958,9 +958,15 @@
     .systems-details > summary::before { content: "▸"; font-size: 10px; }
     .systems-details[open] > summary::before { content: "▾"; }
     .systems-details > summary:hover { color: var(--text-main); }
+    .fleet-scroll {
+      display: flex;
+      flex-direction: column;
+      gap: 0;
+    }
+    /* Der Scrollbereich ist die .fleet-scroll darueber, nicht dieser Block --
+       sonst haette man zwei ineinander liegende Scrollbalken. */
     .systems-details[open] .camera-pipeline-body {
-      max-height: 320px;
-      overflow: auto;
+      overflow: visible;
       margin-top: 8px;
     }
     .camera-pipeline-body {
@@ -1593,17 +1599,17 @@
       font-weight: 800;
     }
 
-    /* Make pipeline controls visible inside System / Debug */
-    .panel:has(#pipeline-start-btn) {
-      min-height: 260px !important;
-      overflow: visible !important;
-    }
+    /* Diese Regel erzwang frueher overflow:visible und min-height:260px auf dem
+       eigenstaendigen Steuerpanel, damit es in der Debug-Ansicht nicht
+       abgeschnitten wurde. Seit die Steuerung im Flotten-Panel sitzt, traf der
+       Selektor genau dieses -- und der ausgeklappte Inhalt hing 140 px unten
+       aus der Box heraus. Das Panel behaelt jetzt sein overflow:hidden, und der
+       Inhalt scrollt innerhalb (siehe .systems-details weiter oben). */
 
     .pipeline-control-block {
       display: block !important;
       position: relative;
-      z-index: 20;
-      margin-top: 18px !important;
+      margin-top: 14px !important;
     }
 
     #pipeline-start-btn,
@@ -2404,7 +2410,13 @@ body.octopus-view-debug .camera-debug-panel .item-card {
 
         <section class="panel fleet-panel" style="flex: 1;">
           <div class="panel-header"><div class="panel-title"><strong>Fleet &amp; Systems</strong><span>who is connected, and what is running</span></div></div>
-          <div class="panel-body" id="fleet-content">Loading fleet...</div>
+          <!-- Liste und eingeklappte Steuerung liegen in EINEM Scrollbereich.
+               Vorher war die Steuerung ein eigenes Flex-Kind mit prozentualer
+               Hoehe -- <details> wirkt in Firefox aber nicht als Flex-Container
+               fuer seinen Inhalt, der Block wurde dadurch abgeschnitten statt
+               scrollbar. So scrollt beim Aufklappen einfach das Panel. -->
+          <div class="panel-body fleet-scroll">
+            <div id="fleet-content">Loading fleet...</div>
           <!-- Start und Stop laufen ueber die Chips in der Eve-Karte. Was hier
                drin bleibt, sind die Logs und die Camera-to-Grid-Pipeline: im
                Betrieb selten gebraucht, aber es muss erreichbar sein. Die
@@ -2467,7 +2479,8 @@ body.octopus-view-debug .camera-debug-panel .item-card {
               <pre id="pipeline-log" class="pipeline-log-box"></pre>
             </div>
             </div>
-          </details>
+            </details>
+          </div>
         </section>
 
         <section class="panel task-panel" style="flex: 1;">

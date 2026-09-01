@@ -5502,6 +5502,22 @@ async function showDetectorLog() {
   }
 }
 
+// Aufgeklappt beginnt der Block am unteren Rand des Panels -- ohne das hier
+// sieht man einen Streifen Buttons und muesste selbst scrollen.
+function initSystemsDetails() {
+  const details = document.querySelector(".systems-details");
+  if (!details) return;
+  details.addEventListener("toggle", () => {
+    if (!details.open) return;
+    const scroller = details.closest(".fleet-scroll");
+    if (!scroller) return;
+    // Nach dem Reflow, sonst ist die neue Hoehe noch nicht bekannt.
+    requestAnimationFrame(() => {
+      scroller.scrollTop = details.offsetTop - scroller.offsetTop;
+    });
+  });
+}
+
 function initPx4BridgeAndDetectorControls() {
   const bind = (id, handler) => {
     const el = document.getElementById(id);
@@ -5518,6 +5534,7 @@ function initPx4BridgeAndDetectorControls() {
   bind("detector-refresh-btn", refreshDetectorStatus);
   bind("detector-log-btn", showDetectorLog);
 
+  initSystemsDetails();
   refreshPx4BridgeStatus();
   refreshDetectorStatus();
   // Dieselben 8 s wie die Kamera. Jeder Tick der PX4-Zeile ist ein SSH-Aufruf,
