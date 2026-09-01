@@ -340,6 +340,21 @@
       opacity: 0;
     }
 
+    /* Zoomed far in, the OSM basemap stops being context and turns into noise:
+       company names, street furniture and POI icons at a scale where the mission
+       is only a few metres across. Take the edge off it there so the overlay reads
+       clearly - held back from full greyscale on purpose, the map should still look
+       like a map. Only the tile pane is filtered: the overlay and marker panes hold
+       the footprint, the grid and the detections, and those keep their full colour.
+       Toggled by zoom in syncBasemapMuting(). */
+    .basemap-muted .leaflet-tile-pane {
+      filter: saturate(0.6) brightness(0.9) contrast(0.92);
+    }
+
+    .leaflet-tile-pane {
+      transition: filter 220ms ease;
+    }
+
     .leaflet-tooltip {
       background: rgba(5, 8, 13, 0.92);
       color: #f8fafc;
@@ -1074,35 +1089,78 @@
     }
 
 
+    /* Narrow by design: the rows are only the things currently drawn, and the
+       labels are single words, so the box stays a thin strip instead of a panel.
+       max-width caps it if a longer label is ever added. */
     .octopus-map-legend {
       background: rgba(5, 8, 13, 0.86);
       color: #f8fafc;
       border: 1px solid rgba(100,160,200,0.52);
-      border-radius: 10px;
-      padding: 9px 10px;
+      border-radius: 9px;
+      padding: 4px 5px;
       box-shadow: 0 10px 28px rgba(0,0,0,0.35);
-      font-size: 11px;
-      line-height: 1.45;
+      font-size: 10px;
+      line-height: 1.35;
       backdrop-filter: blur(8px);
+      max-width: 132px;
     }
 
-    .octopus-map-legend .legend-title {
+    /* The whole title row is the collapse control. */
+    .octopus-map-legend .legend-toggle {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      width: 100%;
+      padding: 1px 2px 3px;
+      border: 0;
+      background: transparent;
+      color: #ffffff;
+      font: inherit;
       font-weight: 900;
       letter-spacing: 0.08em;
       text-transform: uppercase;
-      margin-bottom: 5px;
-      color: #ffffff;
+      cursor: pointer;
     }
+
+    .octopus-map-legend .legend-chevron {
+      color: #9ca3af;
+      font-weight: 700;
+    }
+
+    .octopus-map-legend.is-collapsed .legend-body { display: none; }
+    .octopus-map-legend.is-collapsed .legend-toggle { padding-bottom: 1px; }
+
+    .octopus-map-legend .legend-row {
+      white-space: nowrap;
+      padding: 0 2px;
+    }
+
+    .octopus-map-legend .legend-empty { color: #9ca3af; }
 
     .legend-swatch,
     .legend-dot {
       display: inline-block;
-      width: 10px;
-      height: 10px;
-      margin-right: 6px;
+      width: 8px;
+      height: 8px;
+      margin-right: 5px;
       vertical-align: -1px;
       border: 1px solid rgba(255,255,255,0.75);
     }
+
+    /* Two rows describe strokes, not areas: the camera footprint outline and the
+       live detection markers projected from the feed. */
+    .legend-line {
+      display: inline-block;
+      width: 8px;
+      height: 8px;
+      margin-right: 5px;
+      vertical-align: -1px;
+      border: 0;
+      border-top: 2px dashed #d4ff00;
+    }
+
+    .legend-dot.detection { background: #fb923c; }
 
     .legend-dot { border-radius: 999px; }
     .legend-swatch.coverage { background: rgba(100,160,200,0.78); }
@@ -1703,7 +1761,7 @@ body.octopus-view-debug .camera-debug-panel .item-card {
        both list panels are gone, so the main grid is a single row and the two
        visuals get the whole space. */
     body[data-view="show"] .dashboard {
-      grid-template-rows: 132px minmax(0, 1fr) 150px;
+      grid-template-rows: 104px minmax(0, 1fr) 132px;
     }
     body[data-view="show"] .main-grid {
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
@@ -1731,7 +1789,7 @@ body.octopus-view-debug .camera-debug-panel .item-card {
        on top of this: syncModeControls() sets [hidden] on Cells/Step/Cell names,
        and .grid-toolbar label[hidden] wins over nothing here. */
     body[data-view="show"] .camera-feed-toolbar > *:not(#camera-grid-mode-control):not(#camera-gps-step-control):not(#camera-highlight-control):not(#camera-cell-names-control),
-    body[data-view="show"] .map-control-group > *:not(#set-eve-button):not(#clear-eve-button):not(#eve-yaw-control) {
+    body[data-view="show"] .map-control-group > *:not(#mission-map-mode):not(#camera-footprint-height-control):not(#set-eve-button):not(#clear-eve-button):not(#eve-yaw-control) {
       display: none !important;
     }
 
@@ -1747,35 +1805,49 @@ body.octopus-view-debug .camera-debug-panel .item-card {
     body[data-view="show"] #eve-camera-status-pill,
     body[data-view="show"] #last-refresh-pill,
     body[data-view="show"] .kpi-technical { display: none !important; }
+    /* Coverage is scan bookkeeping against a configured mission area, not a
+       result an audience can read - off stage with the technical KPIs. */
+    body[data-view="show"] #kpi-card-coverage { display: none !important; }
+
+    /* Camera feed meta line: the detection count now duplicates the "Trash in
+       frame" KPI, and the crop chip is an operator warning about a cropped
+       feed - both are small print on stage. The freshness pills and the frame id
+       stay: they are the "is this actually live" signal. Overview and Debug keep
+       all of it, the crop warning especially. */
+    body[data-view="show"] .camera-feed-count,
+    body[data-view="show"] .camera-crop-chip { display: none !important; }
     body[data-view="show"] .kpi-row {
-      grid-template-columns: repeat(4, minmax(0, 1fr));
+      grid-template-columns: repeat(3, minmax(0, 1fr));
     }
 
-    /* Type scale. Values use clamp() so the numbers grow on a big fair screen
-       without overflowing .kpi on a laptop. */
-    body[data-view="show"] .kpi { padding: 16px 18px; }
+    /* Type scale. This whole block is the stage scale and the one place to tune
+       it: every size is a step up from the dashboard's own (a KPI value is 24px
+       in overview), enough that the numbers read from a few metres away without
+       the panels turning into big empty rectangles in a normal browser window.
+       Values use clamp() so they still grow on a wide fair screen. */
+    body[data-view="show"] .kpi { padding: 12px 14px; }
     body[data-view="show"] .kpi .label {
-      font-size: 13px;
-      letter-spacing: 0.12em;
+      font-size: 12px;
+      letter-spacing: 0.1em;
     }
-    body[data-view="show"] .kpi .value { font-size: clamp(30px, 2.8vw, 48px); }
-    body[data-view="show"] .kpi .sub { font-size: 14px; margin-top: 8px; }
+    body[data-view="show"] .kpi .value { font-size: clamp(26px, 1.9vw, 38px); }
+    body[data-view="show"] .kpi .sub { font-size: 13px; margin-top: 6px; }
 
-    body[data-view="show"] .panel-header { min-height: 56px; }
+    body[data-view="show"] .panel-header { min-height: 48px; }
     body[data-view="show"] .panel-title strong {
-      font-size: 17px;
-      letter-spacing: 0.08em;
+      font-size: 15px;
+      letter-spacing: 0.07em;
     }
-    body[data-view="show"] .panel-title span { font-size: 14px; }
-    body[data-view="show"] .timeline-list { font-size: 15px; }
+    body[data-view="show"] .panel-title span { font-size: 13px; }
+    body[data-view="show"] .timeline-list { font-size: 13px; }
     /* The 58px time column is sized for 12px text — widen it with the type. */
-    body[data-view="show"] .timeline-event { grid-template-columns: 74px 1fr; }
-    body[data-view="show"] .pill { font-size: 14px; }
-    body[data-view="show"] .mini-chip { font-size: 13px; }
-    body[data-view="show"] .gps-chip { font-size: 13px; }
-    body[data-view="show"] .camera-gps-readout { max-height: 84px; }
-    body[data-view="show"] .brand-title strong { font-size: 19px; }
-    body[data-view="show"] .brand-title span { font-size: 13px; }
+    body[data-view="show"] .timeline-event { grid-template-columns: 66px 1fr; }
+    body[data-view="show"] .pill { font-size: 13px; }
+    body[data-view="show"] .mini-chip { font-size: 12px; }
+    body[data-view="show"] .gps-chip { font-size: 12px; }
+    body[data-view="show"] .camera-gps-readout { max-height: 72px; }
+    body[data-view="show"] .brand-title strong { font-size: 17px; }
+    body[data-view="show"] .brand-title span { font-size: 12px; }
 /* --- END MISSION OVERVIEW CAMERA FEED PANEL --- */
 
 </style>
@@ -1833,8 +1905,8 @@ body.octopus-view-debug .camera-debug-panel .item-card {
 
   <main class="dashboard">
     <section class="kpi-row" id="kpi-row">
-      <div class="kpi"><div class="label">Coverage</div><div class="value" id="kpi-coverage">--</div><div class="sub" id="kpi-coverage-sub">Waiting for map</div></div>
-      <div class="kpi"><div class="label">Detections / Tasks</div><div class="value" id="kpi-detections">--</div><div class="sub" id="kpi-detections-sub">Waiting</div></div>
+      <div class="kpi" id="kpi-card-coverage"><div class="label">Coverage</div><div class="value" id="kpi-coverage">--</div><div class="sub" id="kpi-coverage-sub">Waiting for map</div></div>
+      <div class="kpi"><div class="label">Trash in frame</div><div class="value" id="kpi-detections">--</div><div class="sub" id="kpi-detections-sub">Waiting</div></div>
       <div class="kpi"><div class="label">Confirmed trash</div><div class="value" id="kpi-confirmed">--</div><div class="sub">Collected / completed</div></div>
       <div class="kpi"><div class="label">Fleet online</div><div class="value" id="kpi-fleet">--</div><div class="sub" id="kpi-fleet-sub">Drone + robots</div></div>
       <div class="kpi kpi-technical"><div class="label">Map patch</div><div class="value" id="kpi-map-patch">--</div><div class="sub" id="kpi-map-patch-sub">No patch yet</div></div>
@@ -1847,7 +1919,6 @@ body.octopus-view-debug .camera-debug-panel .item-card {
           <div class="panel-title"><strong>Mission Map</strong><span>world/operator view</span></div>
           <div class="grid-toolbar map-control-group">
             <select id="mission-map-mode" aria-label="Mission map mode">
-              <option value="standard">Standard map</option>
               <option value="grid_overlay">Map + grid overlay</option>
               <option value="grid_only">Grid only</option>
             </select>
@@ -1909,7 +1980,7 @@ body.octopus-view-debug .camera-debug-panel .item-card {
                 <label class="display-option"><input type="checkbox" data-grid-display="obstacles" checked /> obstacles/buildings</label>
                 <label class="display-option"><input type="checkbox" data-grid-display="trash" checked /> trash/tasks</label>
                 <label class="display-option"><input type="checkbox" data-grid-display="fleet" checked /> robots + drone</label>
-                <label class="display-option"><input type="checkbox" data-grid-display="home" checked /> home station</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="home" /> home station</label>
                 <label class="display-option"><input type="checkbox" data-grid-display="coverage" checked /> coverage overlay</label>
                 <label class="display-option"><input type="checkbox" data-grid-display="confidence" checked /> confidence shading</label>
                 <label class="display-option"><input type="checkbox" data-grid-display="unknown" checked /> unknown cells</label>

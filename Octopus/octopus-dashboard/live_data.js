@@ -6,11 +6,34 @@ const GRID_DISPLAY_DEFAULTS = {
   obstacles: true,
   trash: true,
   fleet: true,
-  home: true,
+  home: false,
   coverage: true,
   confidence: true,
   unknown: true,
 };
+
+// The home station is a placeholder: homeStation() returns a hard-coded local
+// (0.25, 0.25) m, i.e. 25 cm from the Eve datum, so it always sat on top of the
+// drone. Nothing reads it - the readiness row for it still says "planning tool
+// later" - so it defaults to off now. Its toggle was already there but the
+// mission map ignored it, and a dashboard that ran before this change has
+// home: true in localStorage and would keep drawing it; drop that one stored
+// value once. Every other toggle stays as the operator left it, and ticking
+// "home station" again sticks from then on.
+function initialGridDisplay() {
+  let stored = {};
+  try {
+    stored = JSON.parse(localStorage.getItem("octopusGridDisplay") || "{}") || {};
+  } catch (error) {
+    stored = {};
+  }
+  if (localStorage.getItem("octopusGridDisplayHomeDefaultOff") !== "1") {
+    delete stored.home;
+    localStorage.setItem("octopusGridDisplayHomeDefaultOff", "1");
+    localStorage.setItem("octopusGridDisplay", JSON.stringify(stored));
+  }
+  return { ...GRID_DISPLAY_DEFAULTS, ...stored };
+}
 
 const GRID_COLORS = {
   detectedGround: { r: 46, g: 232, b: 111 },
@@ -77,6 +100,7 @@ const OCTOPUS = {
     localCameraGrid: null,
     devices: {},
     devicesServerTime: null,
+    eveStatus: null,
   },
   selected: null,
   selectedCellKey: null,
@@ -89,12 +113,17 @@ const OCTOPUS = {
     gridLayer: null,
     areaLayer: null,
     legendControl: null,
+    legendEl: null,
+    legendCellKeys: null,
+    legendMarkerKeys: null,
+    legendSignature: null,
     hasFit: false,
     polygonMode: false,
     polygonPoints: [],
     polygonPreviewLayer: null,
     placeEveMode: false,
   },
+  legendCollapsed: localStorage.getItem("octopusLegendCollapsed") === "1",
   manualEve: JSON.parse(localStorage.getItem("octopusManualEve") || "null"),
   eveYawDeg: parseFloat(localStorage.getItem("octopusEveYawDeg") || "0") || 0,
   projectDetections: (localStorage.getItem("octopusProjectDetections") ?? "1") === "1",
@@ -104,7 +133,7 @@ const OCTOPUS = {
   mappingMode: localStorage.getItem("octopusMappingMode") || "local_camera_debug",
   cameraFootprint: JSON.parse(localStorage.getItem("octopusCameraFootprint") || '{"height_m":2.5,"resolution":0.10}'),
   osmPriors: JSON.parse(localStorage.getItem("octopusOsmPriors") || "null"),
-  gridDisplay: { ...GRID_DISPLAY_DEFAULTS, ...(JSON.parse(localStorage.getItem("octopusGridDisplay") || "{}")) },
+  gridDisplay: initialGridDisplay(),
   gridView: { scale: 1, offsetX: 0, offsetY: 0, isPanning: false, lastX: 0, lastY: 0, moved: false },
   cameraFeed: {
     // "off" | "local" | "gps" — see CAMERA_GRID_MODES.
@@ -795,6 +824,42 @@ function getFleetSnapshot() {
   });
 }
 
+// Eve has no GripperX-style device link, so "is the drone connected" comes from
+// the SSH reachability check the Eve camera panel already polls every 8 s: the Pi
+// answering octopus_camera_status.sh at all means the drone is up. Deliberately
+// NOT the camera_debug feed — test_camera_feed.py posts to that from the laptop,
+// so a feed would report a drone that is not even powered on.
+const EVE_ONLINE_STATUSES = new Set([
+  "camera_running",
+  "camera_started",
+  "online_camera_stopped",
+  "online_unknown",
+]);
+const EVE_STATUS_STALE_SEC = 30;
+
+function eveLinkOnline() {
+  const record = OCTOPUS.latest.eveStatus;
+  if (!record || !EVE_ONLINE_STATUSES.has(record.status)) return false;
+  const age = ageSeconds(record.at);
+  return age === null || age <= EVE_STATUS_STALE_SEC;
+}
+
+// Who is actually on the air right now. Only a live link counts: robot.live is
+// "the robot itself is publishing over the GripperX bridge", and Eve goes by her
+// SSH check. A database row in locations/battery is mission bookkeeping that
+// outlives the connection, so it must not make an unplugged robot look online.
+function fleetLinkSummary() {
+  const fleet = getFleetSnapshot();
+  const online = fleet
+    .filter((robot) => (robot.key === "eve" ? eveLinkOnline() : robot.live))
+    .map((robot) => robot.name);
+  return {
+    online,
+    total: fleet.length,
+    note: OCTOPUS.latest.eveStatus ? "No live links" : "Waiting for link check",
+  };
+}
+
 function findCurrentTaskForRobot(profile) {
   const robotName = profile.name.toLowerCase();
   return (OCTOPUS.latest.tasks || []).find((task) => {
@@ -860,8 +925,15 @@ function initMissionMap() {
     preferCanvas: true,
   }).setView([DEMO_MAP_ORIGIN.lat, DEMO_MAP_ORIGIN.lon], 19);
 
+  // Leaflet takes the map's zoom ceiling from its layers, so with tiles on this
+  // maxZoom IS the mission map's limit - "Grid only" zooms deeper purely because
+  // removing the layer leaves no ceiling at all. A 0.10 m grid cell is about
+  // 2 px at zoom 21, which is not enough to look at a single cell, so allow the
+  // tiles to keep upscaling past their native level: beyond 19 OSM has nothing
+  // sharper anyway, and the grid, markers and footprint stay crisp because they
+  // are vectors.
   const baseLayer = L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 21,
+    maxZoom: 25,
     maxNativeZoom: 19,
     attribution: "&copy; OpenStreetMap contributors",
   }).addTo(map);
@@ -880,21 +952,13 @@ function initMissionMap() {
   const legend = L.control({ position: "bottomright" });
   legend.onAdd = function () {
     const div = L.DomUtil.create("div", "octopus-map-legend");
-    div.innerHTML = `
-      <div class="legend-title">Octopus map</div>
-      <div><span class="legend-swatch ground"></span> scanned ground</div>
-      <div><span class="legend-swatch water"></span> water / shoreline</div>
-      <div><span class="legend-swatch trash"></span> trash or task target</div>
-      <div><span class="legend-swatch obstacle"></span> real obstacle</div>
-      <div><span class="legend-swatch building"></span> building / obstacle prior</div>
-      <div><span class="legend-swatch coverage"></span> soft overlay = OSM prior</div>
-      <div><span class="legend-dot drone"></span> drone</div>
-      <div><span class="legend-dot robot"></span> robot</div>
-      <div><span class="legend-dot home"></span> home/base</div>
-      <div><span class="legend-dot task"></span> task</div>
-      <div class="legend-note" id="mission-area-legend-note">Search area: default 5 m × 3 m</div>
-    `;
     L.DomEvent.disableClickPropagation(div);
+    // Delegated, so it survives renderMissionLegend() replacing the innerHTML.
+    div.addEventListener("click", (event) => {
+      if (event.target.closest(".legend-toggle")) toggleMissionLegend();
+    });
+    OCTOPUS.missionMap.legendEl = div;
+    renderMissionLegend();
     return div;
   };
   legend.addTo(map);
@@ -904,6 +968,7 @@ function initMissionMap() {
   map.on("mousemove", (event) => handleMissionMapMouseMove(event));
   // Both camera grids thin out their labels by zoom level, so redraw after zooming.
   map.on("zoomend", () => {
+    syncBasemapMuting();
     if (cameraGridMode() !== "off") renderMissionMap();
   });
   setTimeout(() => map.invalidateSize(), 150);
@@ -1155,22 +1220,95 @@ function clearMissionArea() {
   renderAll();
 }
 
+// The legend states what is on the map right now, so every row is keyed and only
+// appears once a renderer reports having drawn that thing this pass. Two sets, one
+// per layer, because each layer is also redrawn on its own: the grid overlay from
+// the layer/display controls, the markers from the camera poll. Each renderer
+// resets its own set exactly where it clears its own layer.
+const MISSION_LEGEND_ROWS = [
+  { key: "ground", mark: "swatch ground", label: "ground" },
+  { key: "water", mark: "swatch water", label: "water" },
+  { key: "trash", mark: "swatch trash", label: "trash cell" },
+  { key: "obstacle", mark: "swatch obstacle", label: "obstacle" },
+  { key: "building", mark: "swatch building", label: "building" },
+  { key: "coverage", mark: "swatch coverage", label: "OSM prior" },
+  { key: "footprint", mark: "line footprint", label: "camera view" },
+  { key: "detection", mark: "dot detection", label: "trash seen" },
+  { key: "drone", mark: "dot drone", label: "Eve" },
+  { key: "robot", mark: "dot robot", label: "robot" },
+  { key: "home", mark: "dot home", label: "home" },
+  { key: "task", mark: "dot task", label: "task" },
+];
+
+// overviewClass() -> legend row. Water and buildings share a row whether they were
+// scanned or come from an OSM prior; the remaining priors are the soft overlay.
+const MISSION_LEGEND_CELL_KEYS = {
+  detected_ground: "ground",
+  detected_water: "water",
+  prior_water: "water",
+  detected_trash: "trash",
+  detected_obstacle: "obstacle",
+  prior_building: "building",
+  prior_ground: "coverage",
+  prior_unknown: "coverage",
+};
+
+function noteMissionLegend(kind, key) {
+  if (!key) return;
+  const set = kind === "cell"
+    ? OCTOPUS.missionMap.legendCellKeys
+    : OCTOPUS.missionMap.legendMarkerKeys;
+  if (set) set.add(key);
+}
+
+function renderMissionLegend() {
+  const state = OCTOPUS.missionMap;
+  const div = state.legendEl;
+  if (!div) return;
+
+  const present = new Set([
+    ...(state.legendCellKeys || []),
+    ...(state.legendMarkerKeys || []),
+  ]);
+  const rows = MISSION_LEGEND_ROWS.filter((row) => present.has(row.key));
+  const collapsed = Boolean(OCTOPUS.legendCollapsed);
+
+  // The markers are rebuilt on every camera poll, so skip the DOM work unless the
+  // set of rows or the collapsed state actually changed.
+  const signature = `${collapsed ? "c" : "o"}:${rows.map((r) => r.key).join(",")}`;
+  if (state.legendSignature === signature) return;
+  state.legendSignature = signature;
+
+  div.classList.toggle("is-collapsed", collapsed);
+  const body = rows.length
+    ? rows.map((row) => {
+        const [type, cls] = row.mark.split(" ");
+        return `<div class="legend-row"><span class="legend-${type} ${cls}"></span>${escapeHtml(row.label)}</div>`;
+      }).join("")
+    : `<div class="legend-row legend-empty">nothing drawn yet</div>`;
+
+  div.innerHTML =
+    `<button type="button" class="legend-toggle" aria-expanded="${collapsed ? "false" : "true"}">` +
+    `<span>Map</span><span class="legend-chevron" aria-hidden="true">${collapsed ? "\u25B8" : "\u25BE"}</span>` +
+    `</button><div class="legend-body">${body}</div>`;
+}
+
+function toggleMissionLegend() {
+  OCTOPUS.legendCollapsed = !OCTOPUS.legendCollapsed;
+  localStorage.setItem("octopusLegendCollapsed", OCTOPUS.legendCollapsed ? "1" : "0");
+  OCTOPUS.missionMap.legendSignature = null;
+  renderMissionLegend();
+}
+
 function renderMissionAreaOverlay() {
   const state = OCTOPUS.missionMap;
   if (!state.map || !state.areaLayer) return;
   state.areaLayer.clearLayers();
-  const meta = getActiveGridMeta(OCTOPUS.latest.globalMap);
-  const sw = localToLatLng(0, 0);
-  const ne = localToLatLng(meta.width_m, meta.height_m);
-  L.rectangle([sw, ne], {
-    color: "#ffffff",
-    weight: 2,
-    opacity: 0.92,
-    fillOpacity: 0.02,
-    dashArray: "5 5",
-    interactive: false,
-  }).addTo(state.areaLayer);
 
+  // The grid extent used to be outlined as a white dashed rectangle from the
+  // datum to (width_m, height_m). It still bounds which cells get drawn, but as
+  // an outline it was a big empty box hanging off Eve, so only the operator's
+  // own mission-area polygon is drawn now.
   const polygon = OCTOPUS.missionArea?.polygon;
   if (Array.isArray(polygon) && polygon.length >= 3) {
     const latLngs = polygon.map((p) => [p.lat, p.lon]);
@@ -1182,11 +1320,6 @@ function renderMissionAreaOverlay() {
       fillOpacity: 0.12,
       interactive: false,
     }).addTo(state.areaLayer);
-  }
-
-  const note = document.getElementById("mission-area-legend-note");
-  if (note) {
-    note.textContent = `Search area: ${meta.width_m.toFixed(1)} m × ${meta.height_m.toFixed(1)} m · ${meta.resolution.toFixed(2)} m/cell · ${meta.cols}×${meta.rows}`;
   }
 }
 
@@ -1573,14 +1706,18 @@ function renderMissionGridOverlay() {
   const state = OCTOPUS.missionMap;
   if (!state.map || !state.gridLayer) return;
 
-  const mode = $("mission-map-mode")?.value || "standard";
+  const mode = $("mission-map-mode")?.value || "grid_overlay";
   const layerName = $("grid-layer-select")?.value || "overview";
   const mapData = getMergedGridData(OCTOPUS.latest.globalMap || {});
 
   state.gridLayer.clearLayers();
+  state.legendCellKeys = new Set();
   renderMissionAreaOverlay();
 
-  if (mode === "standard" || !mapData) return;
+  if (!mapData) {
+    renderMissionLegend();
+    return;
+  }
 
   const meta = getActiveGridMeta(mapData);
   const cells = mapData.cells || {};
@@ -1612,8 +1749,25 @@ function renderMissionGridOverlay() {
       renderInspector();
       drawGridMap(OCTOPUS.latest.globalMap);
     });
+    noteMissionLegend("cell", MISSION_LEGEND_CELL_KEYS[overviewClass(cell)]);
     rect.addTo(state.gridLayer);
   });
+
+  renderMissionLegend();
+}
+
+// From this zoom on, the basemap is muted. 22 is deep in: the ~4.45 m camera
+// footprint is 22 px at zoom 19 and ~179 px at 22, so this is the point where the
+// screen is about the mission itself rather than the neighbourhood. Everything
+// looser than that keeps the map in full colour, including the range you place Eve
+// against and the range OSM still has real detail for (maxNativeZoom is 19).
+const BASEMAP_MUTE_FROM_ZOOM = 22;
+
+function syncBasemapMuting() {
+  const state = OCTOPUS.missionMap;
+  if (!state.map) return;
+  const muted = state.map.getZoom() >= BASEMAP_MUTE_FROM_ZOOM;
+  state.map.getContainer().classList.toggle("basemap-muted", muted);
 }
 
 function renderMissionMap() {
@@ -1622,7 +1776,7 @@ function renderMissionMap() {
   const state = OCTOPUS.missionMap;
   if (!state.map) return;
 
-  const mode = $("mission-map-mode")?.value || "standard";
+  const mode = $("mission-map-mode")?.value || "grid_overlay";
   if (mode === "grid_only") {
     if (state.map.hasLayer(state.baseLayer)) state.map.removeLayer(state.baseLayer);
     state.map.getContainer().classList.add("grid-only-map");
@@ -1631,7 +1785,10 @@ function renderMissionMap() {
     state.map.getContainer().classList.remove("grid-only-map");
   }
 
+  syncBasemapMuting();
+
   state.markerLayer.clearLayers();
+  state.legendMarkerKeys = new Set();
   renderMissionGridOverlay();
 
   const bounds = [];
@@ -1677,24 +1834,31 @@ function renderMissionMap() {
       });
     }
 
+    noteMissionLegend("marker", isEve ? "drone" : "robot");
     marker.addTo(state.markerLayer);
     bounds.push([lat, lon]);
   });
 
-  const home = homeStation();
-  const homeMarker = L.circleMarker([home.lat, home.lon], {
-    radius: 8,
-    color: "#ffffff",
-    weight: 2,
-    fillColor: "#a78bfa",
-    fillOpacity: 0.92,
-  }).bindTooltip("⌂ Home station", { direction: "top" });
-  homeMarker.on("click", () => {
-    OCTOPUS.selected = { type: "home", home };
-    renderInspector();
-  });
-  homeMarker.addTo(state.markerLayer);
-  bounds.push([home.lat, home.lon]);
+  // Gated on the same toggle the grid renderers use. The mission map used to
+  // draw this unconditionally, which is why unticking "home station" still left
+  // a marker sitting on the drone.
+  if (OCTOPUS.gridDisplay?.home) {
+    const home = homeStation();
+    const homeMarker = L.circleMarker([home.lat, home.lon], {
+      radius: 8,
+      color: "#ffffff",
+      weight: 2,
+      fillColor: "#a78bfa",
+      fillOpacity: 0.92,
+    }).bindTooltip("⌂ Home station", { direction: "top" });
+    homeMarker.on("click", () => {
+      OCTOPUS.selected = { type: "home", home };
+      renderInspector();
+    });
+    noteMissionLegend("marker", "home");
+    homeMarker.addTo(state.markerLayer);
+    bounds.push([home.lat, home.lon]);
+  }
 
   tasks.forEach((task) => {
     const lat = safeNumber(task.lat, NaN);
@@ -1712,6 +1876,7 @@ function renderMissionMap() {
       OCTOPUS.selected = { type: "task", task, local };
       renderInspector();
     });
+    noteMissionLegend("marker", "task");
     marker.addTo(state.markerLayer);
     bounds.push([lat, lon]);
   });
@@ -1724,6 +1889,8 @@ function renderMissionMap() {
   const meta = getActiveGridMeta(OCTOPUS.latest.globalMap);
   bounds.push(localToLatLng(0, 0));
   bounds.push(localToLatLng(meta.width_m, meta.height_m));
+
+  renderMissionLegend();
 
   if (!state.hasFit && bounds.length > 0) {
     state.map.fitBounds(bounds, { padding: [28, 28], maxZoom: 20 });
@@ -1808,6 +1975,7 @@ function renderProjectedDetections(state, bounds) {
       fillOpacity: 0.05,
       interactive: false,
     });
+    noteMissionLegend("marker", "footprint");
     poly.addTo(state.markerLayer);
     proj.corners.forEach((c) => bounds.push(c));
   }
@@ -1862,6 +2030,7 @@ function renderProjectedDetections(state, bounds) {
       OCTOPUS.selected = { type: "projected_detection", detection: det, lat, lon, local: latLngToLocal(lat, lon) };
       renderInspector();
     });
+    noteMissionLegend("marker", "detection");
     marker.addTo(state.markerLayer);
     bounds.push([lat, lon]);
   });
@@ -2659,7 +2828,6 @@ function renderTopStatus() {
 function renderKpis() {
   const stats = OCTOPUS.latest.stats || {};
   const mapData = OCTOPUS.latest.globalMap || {};
-  const tasks = OCTOPUS.latest.tasks || [];
   const battery = OCTOPUS.latest.battery || [];
   const patch = OCTOPUS.latest.patch;
   const cells = mapData.cells || {};
@@ -2670,15 +2838,15 @@ function renderKpis() {
   $("kpi-coverage").textContent = formatPercent(coverageStats.coverageRatio);
   $("kpi-coverage-sub").textContent = `${coverageStats.coveredArea.toFixed(1)} / ${coverageStats.totalArea.toFixed(1)} m² scanned`;
 
-  $("kpi-detections").textContent = tasks.length || safeNumber(stats.open_tasks, 0);
-  $("kpi-detections-sub").textContent = `${safeNumber(stats.open_tasks, 0)} open tasks`;
+  const trash = cameraTrashSummary();
+  $("kpi-detections").textContent = trash.available ? trash.count : "--";
+  $("kpi-detections-sub").textContent = trash.note;
 
   $("kpi-confirmed").textContent = safeNumber(stats.trash_collected, 0);
 
-  const fleetSnapshot = getFleetSnapshot();
-  const onlineFleet = fleetSnapshot.filter((r) => r.online).length;
-  $("kpi-fleet").textContent = `${onlineFleet}/${fleetSnapshot.length}`;
-  $("kpi-fleet-sub").textContent = "Eve · Robby · GripperX · SharX";
+  const links = fleetLinkSummary();
+  $("kpi-fleet").textContent = `${links.online.length}/${links.total}`;
+  $("kpi-fleet-sub").textContent = links.online.length ? links.online.join(" · ") : links.note;
 
   const patchCells = patch?.updated_cells?.length ?? 0;
   $("kpi-map-patch").textContent = patchCells || "--";
@@ -3144,6 +3312,39 @@ function cameraFeedDetections() {
   const list = cameraFeedDetectionsUncropped();
   if (!crop.active) return list;
   return list.map((det) => cropDetection(det, crop)).filter(Boolean);
+}
+
+// What the detector is seeing RIGHT NOW: how many pieces of trash sit in the
+// current (cropped) frame and how sure it is about them. This deliberately does
+// NOT fall back to task/stat counts from the database — those are mission
+// bookkeeping that survives long after the object left the frame, so mixing them
+// in would make the KPI look live while showing history.
+function cameraTrashSummary() {
+  const payload = OCTOPUS.latest.cameraDebug?.detections || null;
+  if (!payload) return { available: false, count: 0, note: "No camera feed" };
+
+  // The test feed / detector_node post at >= 1 Hz, so anything older than a few
+  // seconds means the source died and the last count is not "current" any more.
+  const age = ageSeconds(payload.received_at);
+  if (age !== null && age > 5) {
+    return { available: false, count: 0, note: `Detector stale · ${formatAge(age)}` };
+  }
+
+  const list = cameraFeedDetections();
+  const confirmed = list.filter((det) => det.status === "confirmed").length;
+  const confidences = list
+    .map((det) => safeNumber(det.confidence, NaN))
+    .filter((value) => Number.isFinite(value));
+  const average = confidences.length
+    ? confidences.reduce((sum, value) => sum + value, 0) / confidences.length
+    : null;
+
+  let note;
+  if (!list.length) note = "Nothing in frame";
+  else if (confirmed) note = `${confirmed} confirmed · avg ${Math.round(average * 100)}%`;
+  else note = `avg ${Math.round(average * 100)}% confidence`;
+
+  return { available: true, count: list.length, note };
 }
 
 // Compute the rectangle occupied by an object-fit:contain image inside its container.
@@ -4197,6 +4398,13 @@ async function refreshCameraDebug() {
   }
   renderCameraDebug();
   renderCameraFeed();
+  // The trash KPI and the mission map both read the camera feed - the KPI for its
+  // count, the map for the detections projected onto the ground - so both belong
+  // on the 1 Hz camera poll. Left on the 5 s mission refresh, the map lagged the
+  // feed by up to five seconds and kept drawing trash that had already left the
+  // frame, which is the opposite of showing what the drone sees right now.
+  renderKpis();
+  renderMissionMap();
 }
 
 function renderMapPatch() {
@@ -4806,8 +5014,14 @@ renderMissionPhase();
 renderTimeline();
 refreshAll();
 setInterval(refreshAll, 5000);
+// Camera poll rate. test_camera_feed.py posts at 5 fps (200 ms) and detector_node
+// is in the same range, so 400 ms picks up every second frame - fast enough that
+// the feed and the detections on the map read as live rather than stepping. This
+// drives renderCameraFeed, renderKpis and renderMissionMap, so raising it further
+// costs a full Leaflet layer rebuild per tick.
+const CAMERA_POLL_MS = 400;
 refreshCameraDebug();
-setInterval(refreshCameraDebug, 1000);
+setInterval(refreshCameraDebug, CAMERA_POLL_MS);
 
 
 // --- OCTOPUS EVE CAMERA FRONTEND ---
@@ -4861,10 +5075,14 @@ function setEveCameraUi(status, detail = "") {
 async function refreshEveCameraStatus() {
   try {
     const data = await eveFetchJson("/api/eve/status");
+    OCTOPUS.latest.eveStatus = { status: data.status, at: Date.now() / 1000 };
     setEveCameraUi(data.status, data.ssh?.stdout || "");
+    if (typeof renderKpis === "function") renderKpis();
     return data;
   } catch (error) {
+    OCTOPUS.latest.eveStatus = { status: "offline", at: Date.now() / 1000 };
     setEveCameraUi("offline", error.message);
+    if (typeof renderKpis === "function") renderKpis();
     return null;
   }
 }
@@ -5820,7 +6038,7 @@ function octopusDrawFixedCameraFootprintMarkers(ctx, mapData, geom) {
   const centerX = geom.width_m / 2.0;
   const centerY = geom.height_m / 2.0;
 
-  if (display.home !== false) {
+  if (display.home) {
     const home = octopusMetricToCanvasPoint(geom, centerX, 0.0);
     drawGridMarker(ctx, home.x, home.y, "H", {
       color: "#ffffff",
