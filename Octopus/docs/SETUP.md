@@ -307,7 +307,9 @@ korrekt, aber eben 5 m unter Eve.
 Ab hier die vollständige Demo mit Drohne, Pi und Detektor.
 
 **Voraussetzung:** Ubuntu 22.04 mit ROS 2 Humble auf dem Laptop und gebautem
-`Octopus/ros2_ws`, ROS 2 Humble auf der Pi mit gebautem `eve/Software/ros2_ws`.
+`Octopus/ros2_ws`, ROS 2 Humble auf der Pi mit gebautem `eve/Software/ros2_ws`. Was dafür
+auf der Pi einmal einzurichten ist, steht in
+[Einmalig auf der Eve-Pi](#einmalig-auf-der-eve-pi).
 
 ---
 
@@ -325,7 +327,7 @@ Die Indoor-Map-Konvention und die festen Positionsparameter stehen in
 
 ---
 
-## Einmalig: SSH-Alias für die Pi
+## Einmalig (Laptop): SSH-Alias für die Pi
 
 Ohne diesen Alias funktionieren die Befehle unten und der Button *„Connect Eve Camera"*
 im Dashboard nicht — `api.py` erwartet den Host `eve-pi`. `<PI-IP>` durch die aktuelle IP
@@ -349,7 +351,183 @@ Der `eve/`-Pfad ist hier kein Tippfehler: die Pi läuft auf Branch `eve_ros_deve
 mit dem Ordner `eve/`, der Laptop auf `eve-octopus` mit `Octopus/`. Die Pi-Seite ist nicht
 Teil des Octopus-Setups — sie muss nur Kamera- und PX4-Topics liefern.
 
-## Einmalig: Workspace neu bauen
+## Einmalig auf der Eve-Pi
+
+Auf der aktuellen Drohne ist das alles schon eingerichtet — dieser Abschnitt ist für eine
+neue Pi, eine neue SD-Karte oder wenn ein Schritt nachweislich fehlt. Der Prüfblock am Ende
+sagt in einem Rutsch, was davon steht.
+
+Stand der laufenden Pi: Ubuntu 22.04 (arm64), ROS 2 Humble, Benutzer `eve`, Hostname
+`eve-desktop`. Alle Befehle hier laufen **auf der Pi** (`ssh eve-pi`), sofern nicht anders
+vermerkt.
+
+### 1. Repo und Workspace
+
+Die Pi steht auf Branch `eve_ros_development` mit dem Ordner `eve/` — nicht auf
+`eve-octopus`. `px4_msgs` hängt dort als Submodul im Workspace, ohne `--recurse-submodules`
+baut nichts:
+
+```bash
+git clone --recurse-submodules https://gitex.itq.de/cirqmind/PlastiX.git ~/PlastiX && cd ~/PlastiX && git checkout eve_ros_development && git submodule update --init --recursive
+```
+
+```bash
+cd ~/PlastiX/eve/Software/ros2_ws && source /opt/ros/humble/setup.bash && colcon build --symlink-install
+```
+
+`px4_msgs` dauert auf der Pi deutlich länger als auf dem Laptop. Danach müssen
+`camera_pkg`, `detection_pkg` und `px4_msgs` unter `install/` liegen. Die drei
+Kamera-Skripte, die das Dashboard aufruft, kommen mit demselben Klon
+(`eve/Software/scripts/`) und brauchen keinen weiteren Schritt. Der Octopus-Ordner
+wird auf der Pi **nicht** gebraucht: sie liefert nur `/camera/image_raw/compressed` und
+`/fmu/out/vehicle_odometry`.
+
+### 2. SSH-Key vom Laptop
+
+Der SSH-Alias oben ist die Laptop-Seite; hier fehlt noch der öffentliche Schlüssel in
+`~/.ssh/authorized_keys` der Pi. **Vom Laptop aus:**
+
+```bash
+ssh-copy-id eve-pi
+```
+
+Passwortloser Key-Login ist keine Bequemlichkeit, sondern Pflicht: `api.py` ruft die Pi mit
+`ssh -o BatchMode=yes` auf, und BatchMode bricht bei jeder Passwortabfrage sofort ab. Der
+Button *„Connect Eve Camera"* im Dashboard meldet dann nur `offline`.
+
+### 3. Kamera-Skripte — nichts zu tun
+
+Hier steht bewusst kein Befehl. `api.py` startet, stoppt und pollt die Kamera über drei
+Skripte auf der Pi, und die liegen im Pi-Branch unter `eve/Software/scripts/` — mit
+Schritt 1 sind sie also schon da, ausführbar und am richtigen Ort. Das Dashboard ruft genau
+diesen Pfad auf.
+
+| Skript in `eve/Software/scripts/` | Endpunkt | Erwartete Ausgabe |
+|---|---|---|
+| `octopus_camera_status.sh` | `GET /api/eve/status` | `camera_running` / `camera_not_running` |
+| `octopus_start_camera.sh` | `POST /api/eve/start_camera` | `camera_started` |
+| `octopus_stop_camera.sh` | `POST /api/eve/stop_camera` | `camera_stopped` |
+
+Das Dashboard entscheidet allein an diesen Wörtern im stdout, nicht am Exit-Code — wer die
+Skripte anpasst, muss die Wörter stehen lassen. Das Log, das *„Camera Log"* im Dashboard
+zeigt, ist fest `/tmp/octopus_camera_node.log`.
+
+Liegt das Repo auf der Pi woanders als unter `~/PlastiX`, muss das Backend das wissen —
+gesetzt wird das auf dem **Laptop**, vor dem Start des Stacks:
+
+```bash
+export OCTOPUS_EVE_SCRIPT_DIR='~/mein/pfad/eve/Software/scripts'
+```
+
+Ebenso `OCTOPUS_EVE_SSH_TARGET`, falls der SSH-Alias nicht `eve-pi` heißt. Stimmt der Pfad
+nicht, meldet das Dashboard `camera_failed` und im *„Camera Log"* steht ein
+`No such file or directory` der Remote-Shell.
+
+Kein `sudo` in den Skripten, und das ist Absicht: der Dashboard-Aufruf ist nicht
+interaktiv, ein `sudo` mit Passwortabfrage würde ihn hängen lassen, bis der Timeout greift.
+Der `MicroXRCEAgent` aus Terminal 1 lässt sich deshalb nicht auf demselben Weg starten.
+
+Das Start-Skript sucht die Kamera selbst (bevorzugt über `/dev/v4l/by-id`, sonst das erste
+`/dev/videoX` mit MJPG) und startet den Node mit **640×480**. Diese Auflösung hängt an den
+Intrinsics `OCTOPUS_HBVCAM_640X480` in `octopus-dashboard/live_data.js` — sie hochzudrehen
+hat dieselbe Konsequenz wie in Terminal 2, die Warnung dort gilt genauso.
+
+Der Button startet die Kamera also **ohne** Terminal 2. Beide Wege parallel zu benutzen ist
+unnötig, aber ungefährlich: das Start-Skript killt einen alten `camera_node` vorher.
+
+Details zum Vertrag zwischen den Skripten und `api.py` stehen in
+`eve/Software/scripts/README.md` auf dem Pi-Branch.
+
+### 4. UART für den MicroXRCEAgent
+
+Terminal 1 spricht über `/dev/serial0` mit dem Pixhawk. Dafür muss dreierlei stimmen:
+
+```bash
+grep -E "enable_uart|disable-bt" /boot/firmware/config.txt
+```
+
+Erwartet `enable_uart=1` und `dtoverlay=disable-bt` — ohne das zweite hängt Bluetooth an
+`ttyAMA0` und die serielle Verbindung ist entweder weg oder unzuverlässig. Fehlt eine
+Zeile, anhängen und **neu starten**.
+
+```bash
+sudo systemctl disable --now serial-getty@ttyAMA0.service
+```
+
+Die serielle Konsole muss aus sein, sonst greifen Login-Prompt und Agent nach derselben
+Schnittstelle. `console=serial0` darf aus demselben Grund nicht in
+`/boot/firmware/cmdline.txt` stehen (auf der laufenden Pi steht dort nur `console=tty1`).
+
+```bash
+groups | grep -q dialout || sudo usermod -aG dialout $USER
+```
+
+Wirkt erst nach neuem Login.
+
+Der Agent selbst liegt auf der laufenden Pi unter `/usr/local/bin/MicroXRCEAgent`, kommt
+also aus einem Quell-Build und **nicht** aus apt. Falls er fehlt:
+
+```bash
+sudo apt install -y build-essential cmake git && git clone -b v2.4.2 https://github.com/eProsima/Micro-XRCE-DDS-Agent.git ~/Micro-XRCE-DDS-Agent && cd ~/Micro-XRCE-DDS-Agent && mkdir build && cd build && cmake .. && make -j2 && sudo make install && sudo ldconfig /usr/local/lib/
+```
+
+Der Agent-Befehl in Terminal 1 braucht `sudo` und die Pi fragt dabei nach dem Passwort —
+deshalb läuft er in einem interaktiven SSH-Terminal und lässt sich nicht wie die Kamera
+per Dashboard-Button starten.
+
+### 5. USB-Kamera
+
+```bash
+sudo apt install -y v4l-utils
+groups | grep -q video || sudo usermod -aG video $USER
+```
+
+`v4l2-ctl` braucht das Start-Skript für seinen Fallback-Pfad. Ob die Kamera erkannt wird:
+
+```bash
+ls /dev/v4l/by-id/
+```
+
+Erwartet einen Eintrag auf `-video-index0` (auf der Drohne
+`usb-Generic_USB_camera_...-video-index0`). Das Skript nimmt bevorzugt diesen stabilen
+Pfad, weil sich `/dev/videoX` zwischen zwei Boots verschieben kann.
+
+### 6. ROS-Umgebung in der `.bashrc`
+
+```bash
+grep -qF 'source /opt/ros/humble/setup.bash' ~/.bashrc || echo 'source /opt/ros/humble/setup.bash' >> ~/.bashrc
+grep -qF 'export ROS_LOCALHOST_ONLY=0' ~/.bashrc || echo 'export ROS_LOCALHOST_ONLY=0' >> ~/.bashrc
+```
+
+`ROS_DOMAIN_ID` bleibt ungesetzt und damit auf dem Default `0` — genau dem Wert, den der
+Laptop benutzt. Wer ihn auf der Pi setzt, muss ihn auf beiden Seiten gleich setzen, sonst
+sehen sich Pi und Laptop nicht.
+
+### Alles prüfen
+
+Vom Laptop aus, in einem Rutsch:
+
+```bash
+ssh -o BatchMode=yes eve-pi 'hostname; ls ~/PlastiX/eve/Software/scripts/octopus_*.sh | wc -l; ls ~/PlastiX/eve/Software/ros2_ws/install | head -3; ls -l /dev/serial0; ls /dev/v4l/by-id/; which MicroXRCEAgent v4l2-ctl; id -nG'
+```
+
+Gut ist: der Befehl fragt **nicht** nach einem Passwort (sonst Schritt 2), meldet `3`
+Skripte, zeigt `camera_pkg` unter `install/`, `/dev/serial0`, mindestens ein
+`*-video-index0`, beide Binaries und `dialout` sowie `video` in den Gruppen.
+
+Funktionstest der Kamera ohne Dashboard:
+
+```bash
+ssh -o BatchMode=yes eve-pi '~/PlastiX/eve/Software/scripts/octopus_start_camera.sh' && ssh -o BatchMode=yes eve-pi '~/PlastiX/eve/Software/scripts/octopus_camera_status.sh'
+```
+
+Erwartet `camera_started …` und danach `camera_running pids=…`. Kommt `camera_failed`,
+steht der Grund in `/tmp/octopus_camera_node.log` — im Dashboard unter *„Camera Log"*,
+oder direkt mit `ssh eve-pi 'tail -80 /tmp/octopus_camera_node.log'`.
+
+---
+
+## Einmalig (Laptop): Workspace neu bauen
 
 Nur nötig, wenn `install/` fehlt **oder das Repo verschoben wurde** — `colcon --symlink-install`
 hinterlässt beim Verschieben tote Symlinks, und dann ist kein `octopus_*`-Node startbar:
@@ -367,16 +545,53 @@ source /opt/ros/humble/setup.bash && source Octopus/ros2_ws/install/setup.bash &
 
 Erwartet: vier Einträge, darunter `flight_camera_transform_node`.
 
-Beim Verschieben des Repos bricht auch das Detektor-`.venv` — `VIRTUAL_ENV` in
-`Octopus/detect-and-localize/.venv/bin/activate` zeigt dann auf den alten Pfad. Entweder
-das venv neu anlegen oder die Pfade in `.venv/bin/` umschreiben.
+## Einmalig (Laptop): venv für den Detektor
+
+**Terminal 3 startet ohne diesen Schritt nicht.** Das venv ist per `.gitignore` ausgeschlossen,
+kommt also mit keinem `git clone` und mit keinem `git pull` mit — auf einem frisch geholten Repo
+ist es nie da. Der Fehler sieht so aus:
+
+```text
+bash: .venv/bin/activate: Datei oder Verzeichnis nicht gefunden
+```
+
+Anlegen (kein `sudo` nötig):
+
+```bash
+cd Octopus/detect-and-localize && python3 -m venv .venv && source .venv/bin/activate && pip install --upgrade pip && pip install -r requirements.txt
+```
+
+Das dauert: `ultralytics` zieht `torch` nach, das sind ein paar GB. `rclpy` gehört bewusst
+**nicht** in das venv — es kommt über `PYTHONPATH` aus `/opt/ros/humble/setup.bash`, deshalb
+werden in Terminal 3 beide Quellen nacheinander gesourct.
+
+Prüfen:
+
+```bash
+cd Octopus/detect-and-localize && source .venv/bin/activate && python -c "import ultralytics, cv2, pupil_apriltags; print('ok')"
+```
+
+Zwei Fälle, in denen das venv **erneut** fällig ist:
+
+- **Das Repo wurde verschoben.** `VIRTUAL_ENV` in `.venv/bin/activate` zeigt dann auf den alten
+  Pfad. Entweder neu anlegen oder die Pfade in `.venv/bin/` umschreiben.
+- **`detect-and-localize` wurde innerhalb des Repos verschoben** — der Ordner lag früher unter
+  `eve/Software/`. Ein ignoriertes venv wandert bei so einem Move nicht mit und bleibt am alten
+  Ort liegen, falls es den noch gibt.
+
+Und noch eine Voraussetzung für Terminal 3, aus demselben Grund: **das YOLO-Modell ist nicht im
+Repo** (siehe oben, `.gitignore`). Der Befehl in Terminal 3 zeigt auf
+`data/models/best_model_10_08_26.pt` — die Datei muss separat nach
+`Octopus/detect-and-localize/data/models/` kopiert werden, sonst startet der Node auch mit
+fertigem venv nicht. Was lokal liegt, zeigt `ls Octopus/detect-and-localize/data/models/`.
 
 ---
 
 ## Terminal 1 — Pi: PX4-Brücke
 
 Läuft auf der Pi. Der Code dazu liegt auf Branch `eve_ros_development` im Ordner `eve/`
-und ist nicht Teil des Octopus-Setups.
+und ist nicht Teil des Octopus-Setups. Agent und UART müssen einmal eingerichtet sein —
+[Einmalig auf der Eve-Pi, Schritt 4](#4-uart-für-den-microxrceagent).
 
 ```bash
 ssh eve-pi
@@ -403,6 +618,11 @@ pkill -f "[c]amera_node"; cd ~/PlastiX/eve/Software/ros2_ws && source /opt/ros/h
 
 **Terminal offen lassen.** Danach publiziert `/camera/image_raw/compressed` mit ca. 7–15 Hz.
 
+Statt dieses Terminals tut es auch der Button *„Connect Eve Camera"* im Dashboard — er ruft
+`eve/Software/scripts/octopus_start_camera.sh` auf der Pi auf, das die Kamera selbst sucht und den Node im
+Hintergrund startet ([Einmalig auf der Eve-Pi, Schritt 3](#3-kamera-skripte--nichts-zu-tun)).
+Beides zugleich ist nicht nötig; das Skript beendet einen laufenden `camera_node` vorher.
+
 `camera_node` kennt `device_index`, `frame_rate`, `frame_width` und `frame_height`. Die
 Auflösung ist die einzige Stelle, an der echte Bildschärfe entsteht — Default ist 640×480:
 
@@ -418,6 +638,9 @@ Dashboard rechnet nur mit Verhältnissen (`cx/fx`), die sich beim proportionalen
 nicht ändern.
 
 ## Terminal 3 — Laptop: Detektor
+
+Setzt „Einmalig (Laptop): venv für den Detektor" oben voraus, sonst scheitert der Befehl an
+`.venv/bin/activate` — und danach am fehlenden Modell.
 
 ```bash
 cd Octopus/detect-and-localize && source .venv/bin/activate && source /opt/ros/humble/setup.bash && source ../ros2_ws/install/setup.bash && export ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 && python ../ros2_ws/src/detection_pkg/detection_pkg/detector_node.py --ros-args -p detect_localize_path:="$PWD" -p model:=data/models/best_model_10_08_26.pt -p input_topic:=/camera/image_raw/compressed -p output_frame:=camera -p show_ui:=false -p thresh:=0.60 -p confirm_frames:=3 -p max_lost:=5 -p yolo_frameskip:=0 -p dist_thresh:=0.10 -p move_thresh:=0.10 -p confirmed_republish_period_sec:=1.0

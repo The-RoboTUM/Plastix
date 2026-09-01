@@ -189,7 +189,22 @@ import subprocess
 from datetime import datetime
 
 
-EVE_SSH_TARGET = "eve-pi"
+EVE_SSH_TARGET = os.environ.get("OCTOPUS_EVE_SSH_TARGET", "eve-pi")
+
+# Die Kamera-Skripte liegen im Pi-Repo (Branch eve_ros_development), neben dem
+# camera_pkg, das sie starten. Keine Leerzeichen im Pfad: er geht unquoted in
+# die Remote-Shell, damit ~ dort expandiert wird.
+EVE_SCRIPT_DIR = os.environ.get(
+    "OCTOPUS_EVE_SCRIPT_DIR", "~/PlastiX/eve/Software/scripts"
+)
+
+# Dahin schreibt octopus_start_camera.sh das Log des camera_node.
+EVE_CAMERA_LOG = "/tmp/octopus_camera_node.log"
+
+
+def _octopus_eve_script(script_name: str) -> str:
+    """Pfad eines Kamera-Skripts auf der Pi."""
+    return f"{EVE_SCRIPT_DIR}/{script_name}"
 
 
 def _octopus_run_eve_command(command: str, timeout: int = 10):
@@ -238,7 +253,9 @@ def _octopus_run_eve_command(command: str, timeout: int = 10):
 
 @app.get("/api/eve/status")
 def octopus_eve_status():
-    result = _octopus_run_eve_command("~/octopus_camera_status.sh", timeout=8)
+    result = _octopus_run_eve_command(
+        _octopus_eve_script("octopus_camera_status.sh"), timeout=8
+    )
 
     status = "offline"
     if result["ok"]:
@@ -257,7 +274,9 @@ def octopus_eve_status():
 
 @app.post("/api/eve/start_camera")
 def octopus_eve_start_camera():
-    result = _octopus_run_eve_command("~/octopus_start_camera.sh", timeout=15)
+    result = _octopus_run_eve_command(
+        _octopus_eve_script("octopus_start_camera.sh"), timeout=15
+    )
 
     status = (
         "camera_started"
@@ -273,7 +292,9 @@ def octopus_eve_start_camera():
 
 @app.post("/api/eve/stop_camera")
 def octopus_eve_stop_camera():
-    result = _octopus_run_eve_command("~/octopus_stop_camera.sh", timeout=10)
+    result = _octopus_run_eve_command(
+        _octopus_eve_script("octopus_stop_camera.sh"), timeout=10
+    )
 
     status = (
         "camera_stopped"
@@ -292,7 +313,7 @@ def octopus_eve_stop_camera():
 
 @app.get("/api/eve/camera_log")
 def octopus_eve_camera_log():
-    result = _octopus_run_eve_command("tail -80 /tmp/octopus_camera_node.log", timeout=8)
+    result = _octopus_run_eve_command(f"tail -80 {EVE_CAMERA_LOG}", timeout=8)
 
     return {
         "status": "ok" if result["ok"] else "failed",
