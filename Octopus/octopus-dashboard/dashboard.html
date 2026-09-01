@@ -699,6 +699,17 @@
     .view-select { min-width: 155px; }
     body:not([data-view="debug"]) .debug-only { display: none !important; }
 
+    /* Technische Anzeigen nur in der Debug-Ansicht. Sie sagen im Overview
+       nichts, was die Flottenkarte nicht besser sagt, kosten aber die halbe
+       Topbar und zwei der sechs KPI-Karten. */
+    /* Ueber die Ids, nicht ueber eine Klasse: setEveCameraUi(), setPipelineUi()
+       und setCameraTransformUi() setzen pill.className komplett neu und wuerden
+       eine Marker-Klasse bei jedem Statuswechsel wegwischen. */
+    body:not([data-view="debug"]) #eve-camera-status-pill,
+    body:not([data-view="debug"]) #pipeline-status-pill,
+    body:not([data-view="debug"]) #camera-transform-status-pill { display: none !important; }
+    body[data-view="overview"] .kpi-technical { display: none !important; }
+
     .robot-div-icon {
       width: 34px !important;
       height: 34px !important;
@@ -736,6 +747,152 @@
     .robot-name { font-weight: 900; font-size: 13px; }
     .robot-role { color: var(--text-muted); font-size: 11px; margin-top: 2px; }
     .capability-tags { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+    /* Camera Crop lebt jetzt eingeklappt im Kamerapanel: er gehoert zum Bild
+       und wird einmal pro Aufbau gesetzt, nicht laufend bedient. */
+    .camera-crop-details {
+      border-top: 1px solid var(--border-subtle);
+      margin-top: 8px;
+      padding-top: 6px;
+    }
+    .camera-crop-details > summary {
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      padding: 2px 0;
+    }
+    .camera-crop-details > summary::-webkit-details-marker { display: none; }
+    .camera-crop-details > summary::before {
+      content: "▸";
+      font-size: 10px;
+      transition: transform 0.15s ease;
+    }
+    .camera-crop-details[open] > summary::before { transform: rotate(90deg); }
+    .camera-crop-details > summary:hover { color: var(--text-main); }
+    .camera-crop-details .camera-crop-block { border: 0; padding: 6px 0 0; margin: 0; }
+    .camera-crop-details .pipeline-control-title { display: none; }
+
+    /* --- Verbindungsabzeichen und Eve-Teilsysteme --- */
+    /* Vier Zustaende, dieselbe Farbsprache wie die Pills oben: gruen laeuft,
+       gelb braucht Aufmerksamkeit, rot/grau kein Kontakt. */
+    .link-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      flex: 0 0 auto;
+      border-radius: 999px;
+      padding: 3px 9px;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      border: 1px solid var(--border-subtle);
+      background: rgba(15, 23, 42, 0.72);
+      color: var(--text-muted);
+      white-space: nowrap;
+    }
+    .link-badge .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      flex: 0 0 auto;
+    }
+    .link-badge.link-online  { color: #86efac; border-color: rgba(34, 197, 94, 0.42); background: rgba(22, 101, 52, 0.28); }
+    .link-badge.link-stale   { color: #fcd34d; border-color: rgba(245, 158, 11, 0.42); background: rgba(120, 53, 15, 0.28); }
+    .link-badge.link-offline { color: #fca5a5; border-color: rgba(239, 68, 68, 0.38); background: rgba(127, 29, 29, 0.24); }
+    .link-badge.link-demo,
+    .link-badge.link-unknown { color: var(--text-muted); }
+
+    /* Ein pulsierender Punkt ist die einzige Bewegung im Panel und zieht
+       deshalb genau dann Blicke, wenn wirklich etwas laeuft. */
+    .link-badge.link-online .dot { animation: link-pulse 2.4s ease-in-out infinite; }
+    @keyframes link-pulse {
+      0%, 100% { opacity: 1; }
+      50%      { opacity: 0.45; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .link-badge.link-online .dot { animation: none; }
+    }
+
+    .subsystem-chips {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 5px;
+      margin: 7px 0 2px;
+    }
+    .subsystem-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      border-radius: 999px;
+      padding: 3px 9px;
+      font-size: 10px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+      cursor: pointer;
+      border: 1px solid var(--border-subtle);
+      background: rgba(15, 23, 42, 0.72);
+      color: var(--text-muted);
+      font-family: inherit;
+    }
+    .subsystem-chip .dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: currentColor;
+      flex: 0 0 auto;
+    }
+    .subsystem-chip.is-on      { color: #86efac; border-color: rgba(34, 197, 94, 0.45); background: rgba(22, 101, 52, 0.30); }
+    .subsystem-chip.is-pending { color: #fcd34d; border-color: rgba(245, 158, 11, 0.45); background: rgba(120, 53, 15, 0.30); }
+    .subsystem-chip.is-off     { color: var(--text-soft); }
+    .subsystem-chip.is-unknown { color: var(--status-muted); border-style: dashed; }
+    .subsystem-chip:hover:not(:disabled) { border-color: var(--tum-blue-light); color: var(--text-main); }
+    .subsystem-chip:disabled { cursor: progress; opacity: 0.75; }
+    .subsystem-chip.is-pending .dot { animation: link-pulse 1.1s ease-in-out infinite; }
+
+    /* Die Flotte hat im Overview 720 px Breite, aber nur ~230 px Hoehe. Vier
+       Karten untereinander scrollen weg, nebeneinander passen sie. Eve nimmt
+       die volle Breite, weil sie die Teilsystem-Chips traegt. */
+    body[data-view="overview"] .fleet-panel .compact-list {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 7px;
+      align-content: start;
+    }
+    body[data-view="overview"] .fleet-panel .robot-card.is-primary { grid-column: 1 / -1; }
+
+    /* Im Overview haben vier Roboter 235 px Hoehe zur Verfuegung. Eve bleibt
+       ausfuehrlich (sie traegt die Teilsystem-Chips), die Sammelroboter
+       schrumpfen auf Name, Rolle, Abzeichen und eine Zeile -- sonst scrollt die
+       Liste und man sieht genau nicht, wer alles verbunden ist. */
+    body[data-view="overview"] .robot-card-compact { padding: 7px 9px; gap: 3px; }
+    body[data-view="overview"] .robot-card-compact .progress { display: none; }
+    /* Die Rolle bricht in einer 223-px-Spalte neben dem Abzeichen um und
+       verdoppelt die Kartenhoehe. Sie steht ohnehin im Inspector, sobald man
+       die Karte anklickt. */
+    body[data-view="overview"] .robot-card-compact .robot-role { display: none; }
+    body[data-view="overview"] .robot-card-compact .item-meta { font-size: 10.5px; }
+    body[data-view="overview"] .robot-card-compact .robot-icon { font-size: 15px; }
+    body[data-view="overview"] .robot-card-compact .item-meta { white-space: nowrap; }
+    /* Der Balken sagt nichts, was die Prozentzahl daneben nicht sagt, und
+       kostet in dieser Hoehe eine ganze Zeile. */
+    body[data-view="overview"] .fleet-panel .progress { display: none; }
+
+    /* Die Roboterkarte war ein <button> und ist jetzt ein <div role="button">,
+       weil die Chips selbst Buttons sind. Fokus und Zeiger muessen mit. */
+    .robot-card[role="button"] { cursor: pointer; }
+    .robot-card[role="button"]:focus-visible {
+      outline: 2px solid var(--tum-blue-light);
+      outline-offset: 2px;
+    }
+
     .capability-tag {
       border-radius: 999px;
       border: 1px solid rgba(255,255,255,0.10);
@@ -753,17 +910,59 @@
 
     body[data-view="overview"] .main-grid {
       grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-      grid-template-rows: minmax(0, 1fr) 235px;
+      /* 285 statt 235: die Flotte zeigt jetzt vier Roboter statt anderthalb
+         plus die eingeklappte Prozess-Steuerung, und das soll ohne
+         Scrollbalken passen. Die 50 px kommen von der Kartenzeile, die sie
+         nicht braucht. */
+      grid-template-rows: minmax(0, 1fr) 285px;
     }
     body[data-view="overview"] .side-column {
       grid-column: 1 / -1;
       grid-row: 2;
       display: grid;
-      grid-template-columns: 1fr 0.85fr 1fr 1fr;
+      /* Drei Panels statt vier. Die Flotte bekommt die breiteste Spalte: sie
+         traegt jetzt die Verbindungsabzeichen und Eves Teilsysteme, also die
+         Information, wegen der man im Betrieb hierher schaut. */
+      grid-template-columns: 1.25fr 1fr 1fr;
     }
+    /* Reihenfolge unabhaengig vom DOM: die Flotte gehoert nach links in die
+       breite Spalte, "Selected Object" ist erst interessant, wenn man etwas
+       angeklickt hat. */
+    body[data-view="overview"] .side-column .fleet-panel { order: 1; }
+    body[data-view="overview"] .side-column .task-panel { order: 2; }
+    body[data-view="overview"] .side-column .selected-panel { order: 3; }
     body[data-view="overview"] .middle-column { display: none !important; }
-    /* Camera & Pipeline control panel lives in the overview side-column only. */
-    body:not([data-view="overview"]) .camera-pipeline-panel { display: none !important; }
+    /* Die Prozess-Steuerung sitzt jetzt eingeklappt im Flotten-Panel, direkt
+       unter den Robotern, um die es geht. Ausgeklappt sind es weiterhin
+       dieselben Buttons -- eingeklappt kostet sie eine Zeile statt einer
+       ganzen Spalte. Start und Stop laufen ueber die Chips in der Eve-Karte. */
+    .systems-details {
+      border-top: 1px solid var(--border-subtle);
+      margin: 0 12px;
+      padding: 6px 0 8px;
+      flex: 0 0 auto;
+    }
+    .systems-details > summary {
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 10.5px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+    .systems-details > summary::-webkit-details-marker { display: none; }
+    .systems-details > summary::before { content: "▸"; font-size: 10px; }
+    .systems-details[open] > summary::before { content: "▾"; }
+    .systems-details > summary:hover { color: var(--text-main); }
+    .systems-details[open] .camera-pipeline-body {
+      max-height: 320px;
+      overflow: auto;
+      margin-top: 8px;
+    }
     .camera-pipeline-body {
       overflow: auto;
       display: flex;
@@ -2067,6 +2266,58 @@ body.octopus-view-debug .camera-debug-panel .item-card {
             <span class="mini-chip">No camera frame yet</span>
           </div>
           <div class="camera-gps-readout" id="camera-gps-readout" hidden></div>
+          <!-- Der Crop gehoert zum Bild, nicht zur Prozess-Steuerung, und wird
+               einmal pro Aufbau gesetzt. Eingeklappt kostet er eine Zeile
+               statt eines halben Panels. -->
+          <details class="camera-crop-details">
+            <summary>Camera Crop <span id="camera-crop-chip-summary" class="mini-chip">off</span></summary>
+            <div class="pipeline-control-block camera-crop-block">
+              <div class="pipeline-control-title">
+                <strong>Camera Crop</strong>
+                <span>cut the unusable frame edges away — the feed, both grids, the cell names and the projected footprint all follow the cropped region</span>
+              </div>
+              <div class="camera-crop-grid">
+                <div class="camera-crop-row">
+                  <span>Top</span>
+                  <input type="range" id="camera-crop-top" min="0" max="45" step="1" value="0"
+                         aria-label="Crop from the top edge, in percent of the frame" />
+                  <input type="number" id="camera-crop-top-num" class="small-input camera-crop-number"
+                         min="0" max="45" step="1" value="0"
+                         aria-label="Crop from the top edge, in percent of the frame" />
+                </div>
+                <div class="camera-crop-row">
+                  <span>Bottom</span>
+                  <input type="range" id="camera-crop-bottom" min="0" max="45" step="1" value="0"
+                         aria-label="Crop from the bottom edge, in percent of the frame" />
+                  <input type="number" id="camera-crop-bottom-num" class="small-input camera-crop-number"
+                         min="0" max="45" step="1" value="0"
+                         aria-label="Crop from the bottom edge, in percent of the frame" />
+                </div>
+                <div class="camera-crop-row">
+                  <span>Left</span>
+                  <input type="range" id="camera-crop-left" min="0" max="45" step="1" value="0"
+                         aria-label="Crop from the left edge, in percent of the frame" />
+                  <input type="number" id="camera-crop-left-num" class="small-input camera-crop-number"
+                         min="0" max="45" step="1" value="0"
+                         aria-label="Crop from the left edge, in percent of the frame" />
+                </div>
+                <div class="camera-crop-row">
+                  <span>Right</span>
+                  <input type="range" id="camera-crop-right" min="0" max="45" step="1" value="0"
+                         aria-label="Crop from the right edge, in percent of the frame" />
+                  <input type="number" id="camera-crop-right-num" class="small-input camera-crop-number"
+                         min="0" max="45" step="1" value="0"
+                         aria-label="Crop from the right edge, in percent of the frame" />
+                </div>
+              </div>
+              <div class="camera-crop-actions">
+                <button id="camera-crop-reset-btn" type="button">Reset Crop</button>
+                <span id="camera-crop-chip" class="mini-chip">Crop off</span>
+              </div>
+              <div id="camera-crop-summary" class="muted camera-crop-summary"></div>
+              <div class="camera-crop-note">Detections in the cut-away edges are ignored. The Camera Debug panel keeps the raw, uncropped frame.</div>
+            </div>
+          </details>
         </div>
       </section>
 
@@ -2145,9 +2396,23 @@ body.octopus-view-debug .camera-debug-panel .item-card {
       </section>
 
       <aside class="stack side-column">
-        <section class="panel camera-pipeline-panel">
-          <div class="panel-header"><div class="panel-title"><strong>Camera &amp; Pipeline</strong><span>start Eve camera + mapping</span></div></div>
-          <div class="panel-body camera-pipeline-body">
+
+        <section class="panel selected-panel" style="flex: 1.05;">
+          <div class="panel-header"><div class="panel-title"><strong>Selected Object</strong><span>click map/grid later</span></div></div>
+          <div class="panel-body" id="inspector-content">No object selected.</div>
+        </section>
+
+        <section class="panel fleet-panel" style="flex: 1;">
+          <div class="panel-header"><div class="panel-title"><strong>Fleet &amp; Systems</strong><span>who is connected, and what is running</span></div></div>
+          <div class="panel-body" id="fleet-content">Loading fleet...</div>
+          <!-- Start und Stop laufen ueber die Chips in der Eve-Karte. Was hier
+               drin bleibt, sind die Logs und die Camera-to-Grid-Pipeline: im
+               Betrieb selten gebraucht, aber es muss erreichbar sein. Die
+               Debug-Ansicht taugt dafuer nicht, dort deckt das Camera-Debug-
+               Overlay die halbe Flaeche ab. -->
+          <details class="systems-details">
+            <summary>Process control &amp; logs</summary>
+            <div class="camera-pipeline-body">
             <div class="eve-controls">
               <button id="eve-start-camera-btn" type="button">Connect Eve Camera</button>
               <button id="eve-stop-camera-btn" type="button">Stop Camera</button>
@@ -2201,64 +2466,8 @@ body.octopus-view-debug .camera-debug-panel .item-card {
               <div id="pipeline-summary" class="muted">Pipeline status: unknown</div>
               <pre id="pipeline-log" class="pipeline-log-box"></pre>
             </div>
-
-            <div class="pipeline-control-block camera-crop-block">
-              <div class="pipeline-control-title">
-                <strong>Camera Crop</strong>
-                <span>cut the unusable frame edges away — the feed, both grids, the cell names and the projected footprint all follow the cropped region</span>
-              </div>
-              <div class="camera-crop-grid">
-                <div class="camera-crop-row">
-                  <span>Top</span>
-                  <input type="range" id="camera-crop-top" min="0" max="45" step="1" value="0"
-                         aria-label="Crop from the top edge, in percent of the frame" />
-                  <input type="number" id="camera-crop-top-num" class="small-input camera-crop-number"
-                         min="0" max="45" step="1" value="0"
-                         aria-label="Crop from the top edge, in percent of the frame" />
-                </div>
-                <div class="camera-crop-row">
-                  <span>Bottom</span>
-                  <input type="range" id="camera-crop-bottom" min="0" max="45" step="1" value="0"
-                         aria-label="Crop from the bottom edge, in percent of the frame" />
-                  <input type="number" id="camera-crop-bottom-num" class="small-input camera-crop-number"
-                         min="0" max="45" step="1" value="0"
-                         aria-label="Crop from the bottom edge, in percent of the frame" />
-                </div>
-                <div class="camera-crop-row">
-                  <span>Left</span>
-                  <input type="range" id="camera-crop-left" min="0" max="45" step="1" value="0"
-                         aria-label="Crop from the left edge, in percent of the frame" />
-                  <input type="number" id="camera-crop-left-num" class="small-input camera-crop-number"
-                         min="0" max="45" step="1" value="0"
-                         aria-label="Crop from the left edge, in percent of the frame" />
-                </div>
-                <div class="camera-crop-row">
-                  <span>Right</span>
-                  <input type="range" id="camera-crop-right" min="0" max="45" step="1" value="0"
-                         aria-label="Crop from the right edge, in percent of the frame" />
-                  <input type="number" id="camera-crop-right-num" class="small-input camera-crop-number"
-                         min="0" max="45" step="1" value="0"
-                         aria-label="Crop from the right edge, in percent of the frame" />
-                </div>
-              </div>
-              <div class="camera-crop-actions">
-                <button id="camera-crop-reset-btn" type="button">Reset Crop</button>
-                <span id="camera-crop-chip" class="mini-chip">Crop off</span>
-              </div>
-              <div id="camera-crop-summary" class="muted camera-crop-summary"></div>
-              <div class="camera-crop-note">Detections in the cut-away edges are ignored. The Camera Debug panel keeps the raw, uncropped frame.</div>
             </div>
-          </div>
-        </section>
-
-        <section class="panel selected-panel" style="flex: 1.05;">
-          <div class="panel-header"><div class="panel-title"><strong>Selected Object</strong><span>click map/grid later</span></div></div>
-          <div class="panel-body" id="inspector-content">No object selected.</div>
-        </section>
-
-        <section class="panel fleet-panel" style="flex: 1;">
-          <div class="panel-header"><div class="panel-title"><strong>Fleet Status</strong><span>drone + robots</span></div></div>
-          <div class="panel-body" id="fleet-content">Loading fleet...</div>
+          </details>
         </section>
 
         <section class="panel task-panel" style="flex: 1;">

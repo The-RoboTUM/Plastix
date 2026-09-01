@@ -101,6 +101,11 @@ const OCTOPUS = {
     devices: {},
     devicesServerTime: null,
     eveStatus: null,
+    // Die drei Teilsysteme, die die Eve-Karte als Chips zeigt. Jeweils
+    // { status, at } wie eveStatus -- "at" trennt "gerade als gestoppt
+    // gemeldet" von "seit dem Laden nie erreicht".
+    px4BridgeStatus: null,
+    detectorStatus: null,
   },
   selected: null,
   selectedCellKey: null,
@@ -2859,6 +2864,39 @@ function renderKpis() {
 
 // One line of what a robot on the GripperX link is actually reporting: what it
 // is doing, whether the arm is live, and whether it can place itself at all.
+// Beantwortet die eine Frage, die im Betrieb zuerst kommt: redet der Roboter
+// mit uns? Bewusst grob -- vier Zustaende, kein Zahlenwerk. Die Details stehen
+// weiterhin darunter in der Zeile mit Batterie und Alter.
+//
+// Eve ist der Sonderfall: sie meldet sich nicht ueber den Geraetestatus wie die
+// Sammelroboter, sondern ueber ihre Teilsysteme. "Verbunden" heisst bei ihr
+// deshalb: die Pi antwortet ueberhaupt.
+function robotLinkBadge(robot) {
+  if (robot.key === "eve") {
+    const camera = OCTOPUS.latest.eveStatus?.status;
+    const px4 = OCTOPUS.latest.px4BridgeStatus?.status;
+    if (!camera && !px4) return { cls: "unknown", label: "checking", title: "Eve wurde noch nicht abgefragt" };
+    // "offline" von beiden Endpunkten heisst: die Pi ist per SSH nicht
+    // erreichbar. Ein einzelnes gestopptes Teilsystem ist dagegen kein
+    // Verbindungsproblem.
+    const reachable = (camera && camera !== "offline") || (px4 && px4 !== "offline");
+    return reachable
+      ? { cls: "online", label: "connected", title: "Die Pi antwortet" }
+      : { cls: "offline", label: "no link", title: "Die Pi antwortet nicht (SSH)" };
+  }
+
+  if (robot.demo) {
+    return { cls: "demo", label: "demo data", title: "Kein echter Link - angezeigt werden Platzhalterwerte" };
+  }
+  if (!robot.device) {
+    return { cls: "offline", label: "no link", title: "Dieser Roboter hat sich noch nie gemeldet" };
+  }
+  if (robot.linkStale) {
+    return { cls: "stale", label: "stale", title: `Letzte Meldung vor mehr als ${DEVICE_STATUS_STALE_SEC} s` };
+  }
+  return { cls: "online", label: "connected", title: "Meldet sich laufend ueber den Roboter-Link" };
+}
+
 function deviceLinkSummary(robot) {
   const device = robot.device || {};
   const nav = device.nav || {};
@@ -2880,6 +2918,112 @@ function deviceLinkSummary(robot) {
   return parts.join(" · ");
 }
 
+// --- Eve-Teilsysteme als Chips in der Flottenkarte ---
+// Die drei Prozesse, ohne die Eve nichts liefert. Sie stehen bei Eve und nicht
+// in einem eigenen Panel, weil die Frage im Betrieb "laeuft Eve?" lautet und
+// nicht "laeuft Prozess X irgendwo".
+//
+// on      = laeuft
+// pending = laeuft an oder faehrt herunter, kein Fehler
+// off     = erreichbar, aber gestoppt -- ein Klick startet es
+// unknown = nicht erreichbar oder noch nie geantwortet
+const EVE_SUBSYSTEMS = [
+  {
+    key: "camera",
+    label: "Camera",
+    title: "camera_node auf der Pi",
+    read: () => OCTOPUS.latest.eveStatus,
+    map: {
+      camera_running: "on",
+      camera_started: "on",
+      online_camera_stopped: "off",
+      camera_stopped: "off",
+      offline: "unknown",
+    },
+    start: () => startEveCamera(),
+    stop: () => stopEveCamera(),
+  },
+  {
+    key: "px4",
+    label: "PX4",
+    title: "MicroXRCEAgent auf der Pi - liefert die Fluglage",
+    read: () => OCTOPUS.latest.px4BridgeStatus,
+    map: {
+      px4_bridge_running: "on",
+      px4_bridge_started: "on",
+      online_px4_bridge_stopped: "off",
+      px4_bridge_stopped: "off",
+      offline: "unknown",
+    },
+    start: () => startPx4Bridge(),
+    stop: () => stopPx4Bridge(),
+  },
+  {
+    key: "detector",
+    label: "Detector",
+    title: "YOLO auf diesem Rechner",
+    read: () => OCTOPUS.latest.detectorStatus,
+    map: {
+      detector_running: "on",
+      detector_started: "on",
+      detector_loading: "pending",
+      detector_stopped: "off",
+      detector_failed: "unknown",
+    },
+    start: () => startDetector(),
+    stop: () => stopDetector(),
+  },
+];
+
+function eveSubsystemSummary() {
+  const states = EVE_SUBSYSTEMS.map(eveSubsystemState);
+  if (states.every((st) => st === "unknown")) return "no contact";
+  const up = states.filter((st) => st === "on").length;
+  const loading = states.filter((st) => st === "pending").length;
+  return `${up}/${states.length} systems up${loading ? ` · ${loading} loading` : ""}`;
+}
+
+function eveSubsystemState(sub) {
+  const record = sub.read();
+  if (!record || !record.status) return "unknown";
+  return sub.map[record.status] || "unknown";
+}
+
+const EVE_SUBSYSTEM_HINTS = {
+  on: "läuft — Klick stoppt",
+  off: "gestoppt — Klick startet",
+  pending: "lädt gerade",
+  unknown: "kein Kontakt",
+};
+
+function renderEveSubsystemChips() {
+  return EVE_SUBSYSTEMS.map((sub) => {
+    const state = eveSubsystemState(sub);
+    const hint = EVE_SUBSYSTEM_HINTS[state] || "";
+    // disabled im pending-Zustand: waehrend YOLO laedt, waere ein zweiter
+    // Klick ein Stop mitten im Start.
+    const disabled = state === "pending" ? " disabled" : "";
+    return `<button type="button" class="subsystem-chip is-${state}" data-subsystem="${sub.key}"${disabled}
+              title="${escapeHtml(sub.title)} — ${escapeHtml(hint)}"
+              aria-label="${escapeHtml(sub.label)}: ${escapeHtml(hint)}"><span class="dot" aria-hidden="true"></span>${escapeHtml(sub.label)}</button>`;
+  }).join("");
+}
+
+function bindEveSubsystemChips(root) {
+  root.querySelectorAll("[data-subsystem]").forEach((chip) => {
+    chip.addEventListener("click", (event) => {
+      // Der Chip sitzt in der anklickbaren Roboterkarte. Ohne das hier waehlt
+      // ein Chip-Klick nebenbei Eve im Inspector aus.
+      event.stopPropagation();
+      const sub = EVE_SUBSYSTEMS.find((s) => s.key === chip.dataset.subsystem);
+      if (!sub) return;
+      const state = eveSubsystemState(sub);
+      if (state === "pending") return;
+      if (state === "on") sub.stop(); else sub.start();
+    });
+  });
+}
+
 function renderFleet() {
   const el = $("fleet-content");
   if (!el) return;
@@ -2895,18 +3039,37 @@ function renderFleet() {
       : `${percent.toFixed(0)}%`;
     const fresh = freshnessFromAge(robot.age, 5, 45);
     const status = robot.status === "unknown" ? fresh.state : robot.status;
-    const updateLabel = robot.demo
-      ? "demo/fallback"
-      : robot.device
-        ? `${robot.linkStale ? "link stale" : "live"}${robot.deviceAge === null ? "" : ` · ${robot.deviceAge.toFixed(1)}s ago`}`
-        : escapeHtml(fresh.label);
+    // Eve meldet sich nicht ueber den Geraetestatus, sondern ueber ihre
+    // Teilsysteme. Der Zeitstempel aus der Datenbank ist bei ihr Demo-Altbestand
+    // und stand als "missing · 6078 h ago" direkt unter einem "connected" --
+    // zwei Aussagen, von denen nur eine stimmen kann.
+    const updateLabel = robot.key === "eve"
+      ? eveSubsystemSummary()
+      : robot.demo
+        ? "demo/fallback"
+        : robot.device
+          ? `${robot.linkStale ? "link stale" : "live"}${robot.deviceAge === null ? "" : ` · ${robot.deviceAge.toFixed(1)}s ago`}`
+          : escapeHtml(fresh.label);
     const currentTask = robot.currentTask ? `Task #${escapeHtml(robot.currentTask.id)}` : "none";
     const tags = robot.tags.map((tag) => {
       const cls = tag.includes("water") || tag.includes("boat") || tag.includes("floating") ? "water" : tag.includes("land") ? "land" : tag.includes("scan") || tag.includes("detect") || tag.includes("camera") ? "scan" : "";
       return `<span class="capability-tag ${cls}">${escapeHtml(tag)}</span>`;
     }).join("");
+    // Die Frage, die im Betrieb zuerst kommt: redet der Roboter mit uns?
+    // Sie stand bisher nur zwischen den Zeilen ("demo/fallback" vs. eine
+    // Altersangabe) -- jetzt steht sie als eigenes Abzeichen oben rechts.
+    const link = robotLinkBadge(robot);
+    // Im Overview teilen sich vier Roboter ~190 px Hoehe. Eve bleibt
+    // ausfuehrlich, die anderen schrumpfen auf eine Zeile -- alles andere
+    // stuende ohnehin schon im Abzeichen.
+    const compactRow = OCTOPUS.dashboardView === "overview" && robot.key !== "eve";
+    // Auch bei Eve: das Abzeichen oben rechts und die drei Chips sagen den
+    // Zustand bereits, ein zusaetzlicher Statuspill kostet nur eine Zeile.
+    const overviewRow = OCTOPUS.dashboardView === "overview";
+    // Die Karte ist ein div, kein button: in ihr sitzen die Subsystem-Chips,
+    // und ein button in einem button ist ungueltiges HTML.
     return `
-      <button class="item-card robot-card ${robot.key === "eve" ? "is-primary" : ""}" data-device-id="${escapeHtml(robot.name)}" type="button" style="text-align:left; width:100%;" aria-label="Select ${escapeHtml(robot.name)}">
+      <div class="item-card robot-card ${robot.key === "eve" ? "is-primary" : "robot-card-compact"} link-${link.cls}" data-device-id="${escapeHtml(robot.name)}" role="button" tabindex="0" aria-label="Select ${escapeHtml(robot.name)}">
         <div class="item-top">
           <div class="robot-topline">
             <span class="robot-icon" aria-hidden="true">${robot.icon}</span>
@@ -2915,28 +3078,41 @@ function renderFleet() {
               <div class="robot-role">${escapeHtml(robot.role)}</div>
             </div>
           </div>
-          ${statusPill(escapeHtml(robot.state || "unknown"), status)}
+          <span class="link-badge link-${link.cls}" title="${escapeHtml(link.title)}"><span class="dot" aria-hidden="true"></span>${escapeHtml(link.label)}</span>
         </div>
+        ${robot.key === "eve" ? `<div class="subsystem-chips">${renderEveSubsystemChips()}</div>` : ""}
         <div class="item-meta">
-          ${escapeHtml(robot.capability)}<br />
-          Battery: <span class="accent">${batteryLabel}</span> · Last update: ${updateLabel}
-          ${robot.device ? `<br />${escapeHtml(deviceLinkSummary(robot))}` : ""}
+          ${compactRow || overviewRow ? "" : statusPill(escapeHtml(robot.state || "unknown"), status)}
+          Battery: <span class="accent">${batteryLabel}</span>${compactRow ? "" : ` · ${updateLabel}`}
+          ${detailed ? `<br />${escapeHtml(robot.capability)}` : ""}
+          ${robot.device && detailed ? `<br />${escapeHtml(deviceLinkSummary(robot))}` : ""}
           ${detailed ? `<br />Position: ${robot.hasPosition ? `${safeNumber(robot.location.lat, 0).toFixed(6)}, ${safeNumber(robot.location.lon, 0).toFixed(6)}` : "no position reported"}<br />Current task: ${currentTask}<br />Assignment rule: ${escapeHtml(robot.taskRule)}` : ""}
         </div>
         <div class="progress"><span style="width:${robot.battery.unavailable ? 0 : percent}%"></span></div>
         ${detailed ? `<div class="capability-tags">${tags}</div>` : ""}
-      </button>
+      </div>
     `;
   }).join("")}</div>`;
 
   el.querySelectorAll("[data-device-id]").forEach((card) => {
-    card.addEventListener("click", () => {
+    const select = () => {
       const robot = robots.find((r) => r.name === card.dataset.deviceId);
       if (!robot) return;
       OCTOPUS.selected = { type: "fleet", id: robot.name, device_type: robot.type, robot };
       renderInspector();
+    };
+    card.addEventListener("click", select);
+    // Die Karte war ein <button> und liess sich mit der Tastatur bedienen. Als
+    // div mit role="button" muss das von Hand nachgeruestet werden.
+    card.addEventListener("keydown", (event) => {
+      if (event.key === "Enter" || event.key === " ") {
+        event.preventDefault();
+        select();
+      }
     });
   });
+
+  bindEveSubsystemChips(el);
 }
 
 function renderTasks() {
@@ -5078,11 +5254,13 @@ async function refreshEveCameraStatus() {
     OCTOPUS.latest.eveStatus = { status: data.status, at: Date.now() / 1000 };
     setEveCameraUi(data.status, data.ssh?.stdout || "");
     if (typeof renderKpis === "function") renderKpis();
+    if (typeof renderFleet === "function") renderFleet();
     return data;
   } catch (error) {
     OCTOPUS.latest.eveStatus = { status: "offline", at: Date.now() / 1000 };
     setEveCameraUi("offline", error.message);
     if (typeof renderKpis === "function") renderKpis();
+    if (typeof renderFleet === "function") renderFleet();
     return null;
   }
 }
@@ -5185,10 +5363,14 @@ function setPx4BridgeUi(status, detail = "") {
 async function refreshPx4BridgeStatus() {
   try {
     const data = await eveFetchJson("/api/eve/px4_bridge/status");
+    OCTOPUS.latest.px4BridgeStatus = { status: data.status, at: Date.now() / 1000 };
     setPx4BridgeUi(data.status, data.ssh?.stdout || "");
+    if (typeof renderFleet === "function") renderFleet();
     return data;
   } catch (error) {
+    OCTOPUS.latest.px4BridgeStatus = { status: "offline", at: Date.now() / 1000 };
     setPx4BridgeUi("offline", error.message);
+    if (typeof renderFleet === "function") renderFleet();
     return null;
   }
 }
@@ -5261,10 +5443,14 @@ function setDetectorUi(status, detail = "") {
 async function refreshDetectorStatus() {
   try {
     const data = await eveFetchJson("/api/detector/status");
+    OCTOPUS.latest.detectorStatus = { status: data.status, at: Date.now() / 1000 };
     setDetectorUi(data.status, data.local?.stdout || "");
+    if (typeof renderFleet === "function") renderFleet();
     return data;
   } catch (error) {
+    OCTOPUS.latest.detectorStatus = { status: "detector_failed", at: Date.now() / 1000 };
     setDetectorUi("detector_failed", error.message);
+    if (typeof renderFleet === "function") renderFleet();
     return null;
   }
 }
@@ -6071,6 +6257,14 @@ function renderCameraCropSummary() {
     chip.textContent = crop.active ? `Crop ${cameraCropShortLabel(crop)}` : "Crop off";
     chip.classList.toggle("active", crop.active);
     chip.title = cameraCropTooltip(crop);
+  }
+
+  // Derselbe Wert nochmal in der zugeklappten Ueberschrift: sonst muesste man
+  // den Block aufklappen, nur um zu sehen, ob ueberhaupt geschnitten wird.
+  const summaryChip = $("camera-crop-chip-summary");
+  if (summaryChip) {
+    summaryChip.textContent = crop.active ? cameraCropShortLabel(crop) : "off";
+    summaryChip.classList.toggle("active", crop.active);
   }
 
   const summary = $("camera-crop-summary");
