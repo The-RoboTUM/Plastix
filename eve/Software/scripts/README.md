@@ -1,13 +1,16 @@
 # Octopus-Kamera-Skripte (Pi-Seite)
 
 Diese Skripte laufen auf der Raspberry Pi der Drohne und werden vom
-Octopus-Dashboard per SSH aufgerufen. Sie starten, stoppen und beobachten den
-`camera_node` aus `../ros2_ws/src/camera_pkg`, ohne dass jemand ein Terminal
-offen halten muss.
+Octopus-Dashboard per SSH aufgerufen. Sie starten, stoppen und beobachten die
+beiden Prozesse, die Octopus von der Pi braucht -- den `camera_node` aus
+`../ros2_ws/src/camera_pkg` und den `MicroXRCEAgent` zum Pixhawk -- ohne dass
+jemand ein Terminal offen halten muss.
 
 Das Gegenstück ist `Octopus/octopus-dashboard/api.py` auf Branch
 **`eve-octopus`** — dieser Branch hier kennt es nicht. Wer eines der beiden
 Enden ändert, muss das andere mitändern.
+
+### Kamera
 
 | Skript | Aufruf aus `api.py` | Erwartete Ausgabe |
 |---|---|---|
@@ -16,8 +19,21 @@ Enden ändert, muss das andere mitändern.
 | `octopus_stop_camera.sh` | `POST /api/eve/stop_camera` | `camera_stopped` / `camera_not_running` |
 | — | `GET /api/eve/camera_log` | `tail -80 /tmp/octopus_camera_node.log` |
 
-`octopus_camera_env.sh` hält die gemeinsamen Pfade und wird von allen dreien
-gesourct.
+### PX4-Brücke (MicroXRCEAgent)
+
+| Skript | Aufruf aus `api.py` | Erwartete Ausgabe |
+|---|---|---|
+| `octopus_px4_bridge_status.sh` | `GET /api/eve/px4_bridge/status` | `px4_bridge_running` / `px4_bridge_not_running` |
+| `octopus_start_px4_bridge.sh` | `POST /api/eve/px4_bridge/start` | `px4_bridge_started` plus `pixhawk=connected` oder `pixhawk=waiting` |
+| `octopus_stop_px4_bridge.sh` | `POST /api/eve/px4_bridge/stop` | `px4_bridge_stopped` / `px4_bridge_not_running` |
+| — | `GET /api/eve/px4_bridge/log` | `tail -80 /tmp/octopus_px4_bridge.log` |
+
+`pixhawk=waiting` heißt: der Agent läuft, aber es hat sich keine Session
+gebildet. Der Agent selbst ist dann in Ordnung -- fast immer ist der Pixhawk
+stromlos oder das serielle Kabel ab.
+
+`octopus_camera_env.sh` und `octopus_px4_bridge_env.sh` halten die gemeinsamen
+Pfade und werden von den jeweils drei Skripten gesourct.
 
 ## Installation auf der Pi
 
@@ -39,10 +55,11 @@ Remote-Shell steht dann im *„Camera Log"*.
 - **Die Ausgabewörter sind der Vertrag.** Das Dashboard entscheidet allein
   daran, nicht am Exit-Code. `camera_started`, `camera_stopped`,
   `camera_running`, `camera_not_running` müssen so im stdout stehen bleiben.
-- **Kein `sudo`.** Der Aufruf aus dem Dashboard ist nicht interaktiv
-  (`ssh -o BatchMode=yes`); eine Passwortabfrage würde ihn bis zum Timeout
-  hängen lassen. Der `MicroXRCEAgent` braucht deshalb weiterhin ein
-  interaktives Terminal und hat hier kein Skript.
+- **Kein `sudo`, in keinem der Skripte.** Der Aufruf aus dem Dashboard ist
+  nicht interaktiv (`ssh -o BatchMode=yes`); eine Passwortabfrage würde ihn bis
+  zum Timeout hängen lassen. Der `MicroXRCEAgent` kommt ohne aus, weil
+  `/dev/ttyAMA0` `root:dialout` gehört und der Benutzer in `dialout` ist -- wer
+  das ändert, macht den Start-Button unbrauchbar.
 - **Der Logpfad `/tmp/octopus_camera_node.log` ist in `api.py` verdrahtet.**
 - **640×480 hängt an den Kamera-Intrinsics** der Octopus-Seite
   (`OCTOPUS_HBVCAM_640X480`). Auflösung nur ändern, wenn die Kamera denselben
@@ -55,7 +72,16 @@ Remote-Shell steht dann im *„Camera Log"*.
 
 ```bash
 cd ~/PlastiX/eve/Software/scripts
+
 ./octopus_start_camera.sh && ./octopus_camera_status.sh
 ros2 topic hz /camera/image_raw/compressed
 ./octopus_stop_camera.sh
+
+./octopus_start_px4_bridge.sh && ./octopus_px4_bridge_status.sh
+ros2 topic hz /fmu/out/vehicle_odometry
+./octopus_stop_px4_bridge.sh
 ```
+
+Die beiden `ros2 topic hz` laufen auch vom Laptop aus, wenn dort
+`ROS_DOMAIN_ID=0` und `ROS_LOCALHOST_ONLY=0` gesetzt sind -- das prüft
+gleichzeitig, dass die Topics übers Netz ankommen.
