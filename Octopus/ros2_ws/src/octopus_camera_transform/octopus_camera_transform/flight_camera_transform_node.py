@@ -116,8 +116,13 @@ class FlightCameraTransformNode(Node):
         self.declare_parameter("use_manual_height_above_ground", False)
         self.declare_parameter("manual_height_above_ground_m", 2.5)
         self.declare_parameter("transform_mode", "flight_global_mission")
-        self.declare_parameter("indoor_static_origin_x", 2.23)
-        self.declare_parameter("indoor_static_origin_y", 1.67)
+        # The drone IS the datum: octopus_to_robot_interface.md states that map
+        # (0, 0) is the datum and that Eve's own coordinate is always (0, 0).
+        # These used to be (2.23, 1.67) -- half of the 4.46 x 3.34 m grid -- which
+        # centred the drone in its own occupancy grid but put every reported
+        # coordinate 2.79 m away from the datum the GPS layer converts against.
+        self.declare_parameter("indoor_static_origin_x", 0.0)
+        self.declare_parameter("indoor_static_origin_y", 0.0)
         self.declare_parameter("indoor_static_align_yaw_on_start", True)
         self.declare_parameter("indoor_static_map_yaw_offset_rad", 1.57079632679)
 

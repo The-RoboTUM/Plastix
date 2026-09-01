@@ -397,21 +397,32 @@ Robot faces the same direction as the drone.
 Indoor map convention:
 
 ```text
-origin (0,0) = back-left of demo area
+origin (0,0) = drone/camera position = the GPS datum
 +x = right
 +y = drone/camera front direction at Octopus startup
+
+back-left corner of the demo area = (-2.23, -1.67)
 ```
+
+The origin is the drone, not a corner of the room. An object lying directly under
+the drone is reported at (0, 0). Coordinates are drone-referenced, not geographic:
++y is where the drone was looking at startup, which is only North by coincidence.
+See [docs/octopus_to_robot_interface.md](docs/octopus_to_robot_interface.md#die-achsen).
 
 Current indoor static parameters:
 
 ```text
 drone/camera fixed map position:
-x = 2.23 m
-y = 1.67 m
+x = 0.0 m
+y = 0.0 m
 
-example home station:
-x = 2.23 m
-y = 0.67 m
+example home station (1 m behind the drone):
+x =  0.0 m
+y = -1.0 m
+
+occupancy grid corner (grid_map_builder_node origin_x/origin_y):
+x = -2.23 m
+y = -1.67 m
 ```
 
 ---

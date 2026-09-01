@@ -63,8 +63,8 @@ setsid ros2 run octopus_camera_transform flight_camera_transform_node --ros-args
   -p use_manual_height_above_ground:=true \
   -p manual_height_above_ground_m:=2.5 \
   -p transform_mode:=${OCTOPUS_MAPPING_MODE} \
-  -p indoor_static_origin_x:=2.23 \
-  -p indoor_static_origin_y:=1.67 \
+  -p indoor_static_origin_x:=0.0 \
+  -p indoor_static_origin_y:=0.0 \
   -p indoor_static_align_yaw_on_start:=true \
   -p indoor_static_map_yaw_offset_rad:=1.57079632679 \
   -p ground_z_ned:=0.0 \
@@ -87,12 +87,15 @@ setsid ros2 run octopus_camera_transform local_camera_grid_node --ros-args \
   -p resolution_m:=0.10 \
   > "$LOG_DIR/local_camera_grid.log" 2>&1 &
 
+# origin_x/y ist die Ecke des Grids, nicht sein Mittelpunkt. Die Drohne sitzt jetzt
+# auf map (0, 0), also muss die Ecke auf minus die halbe Kantenlänge -- sonst fällt
+# jede negative Koordinate aus dem Grid. Abgedeckt wird dieselbe Fläche wie vorher.
 setsid ros2 run octopus_mapping grid_map_builder_node --ros-args \
   -p width_m:=4.46 \
   -p height_m:=3.34 \
   -p resolution:=0.10 \
-  -p origin_x:=0.0 \
-  -p origin_y:=0.0 \
+  -p origin_x:=-2.23 \
+  -p origin_y:=-1.67 \
   > "$LOG_DIR/grid_map_builder.log" 2>&1 &
 echo $! > "$LOG_DIR/grid_map_builder.pid"
 

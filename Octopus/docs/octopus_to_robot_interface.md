@@ -76,6 +76,36 @@ Solange das Dashboard noch nichts gemeldet hat, publiziert `eve_fake_gps_bridge_
 Fallback (`DEMO_MAP_ORIGIN` aus `live_data.js`, Garching) und loggt eine Warnung. Im JSON von
 `/octopus/trash_gps` zeigt `datum.from_topic`, welcher Fall gerade gilt.
 
+## Die Achsen
+
+**`map +y` ist die Blickrichtung der Drohne beim Start, nicht Nord.** Frühere Fassungen dieses
+Dokuments haben „x = Ost, y = Nord" behauptet; das war falsch und hat einen Sammelroboter mit
+blinder Greifsequenz auf die falsche Seite des Objekts geschickt.
+
+`flight_camera_transform_node` dreht die Projektion um
+
+```text
+align_angle = indoor_static_map_yaw_offset_rad - indoor_static_yaw_zero_rad
+```
+
+wobei `indoor_static_yaw_zero_rad` der PX4-Yaw **beim Start** ist, eingefroren, und
+`indoor_static_map_yaw_offset_rad` per Default `+pi/2` — also „map +y = vorne". Beide Zahlen
+stehen mit `state` und `transform_ready` einmal pro Sekunde auf
+
+```text
+/octopus/flight_camera_transform/status     std_msgs/String, JSON
+```
+
+und liegen damit unter `/octopus/*`, sind also auch über rosbridge lesbar. Ein Neustart des
+Transform-Nodes lockt einen neuen Yaw; das Topic zeigt es, es muss niemand benachrichtigt werden.
+`indoor_static_yaw_zero_rad` ist `null`, solange nichts gelockt ist — deshalb vorher `state`
+lesen, das erst dann `"ready"` sagt.
+
+Wer stattdessen geografische Achsen braucht, schaltet die Ausrichtung ab
+(`indoor_static_align_yaw_on_start:=false`, `indoor_static_map_yaw_offset_rad:=0.0`). Dann sind
+es PX4s Achsen — und damit indoor nur so gut wie der Magnetometer in einer Halle voll Metall.
+Die drohnenbezogene Variante ist die ehrlichere.
+
 ## `/octopus/trash_gps` — alle Ziele
 
 ```json
@@ -107,7 +137,7 @@ Fallback (`DEMO_MAP_ORIGIN` aus `live_data.js`, Garching) und loggt eine Warnung
 |---|---|
 | `id` | stabil über die Laufzeit des Nodes; Bezugsgröße für `trash_goal_done` |
 | `lat` / `lon` | WGS84, aus `x`/`y` relativ zum Datum berechnet |
-| `x` / `y` | Position im `map`-Frame in Metern (x = Ost, y = Nord) |
+| `x` / `y` | Position im `map`-Frame in Metern, **drohnenbezogen** — siehe [Die Achsen](#die-achsen) |
 | `datum.x` / `datum.y` | die eigene lokale Koordinate, konstant `0.0` / `0.0` |
 | `confidence` | YOLO-Konfidenz der Detektion, kann `null` sein |
 | `collected` | vom Roboter über `trash_goal_done` gemeldet |
