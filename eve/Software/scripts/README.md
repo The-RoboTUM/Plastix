@@ -31,9 +31,8 @@ dort, wo `api.py` läuft, also auf dem Laptop:
 export OCTOPUS_EVE_SCRIPT_DIR='~/mein/pfad/eve/Software/scripts'
 ```
 
-Findet das Backend dort nichts Ausführbares, fällt es auf `~/octopus_*.sh` im Home der Pi
-zurück. Das ist nur der Übergang für eine Pi, auf der die Skripte noch als lose Kopien
-liegen; neu einrichten muss man das nicht.
+Stimmt der Pfad nicht, meldet das Dashboard `camera_failed`; die Fehlermeldung der
+Remote-Shell steht dann im *„Camera Log"*.
 
 ## Was man beim Ändern wissen muss
 
