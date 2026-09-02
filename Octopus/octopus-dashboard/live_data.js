@@ -130,6 +130,9 @@ const OCTOPUS = {
   },
   legendCollapsed: localStorage.getItem("octopusLegendCollapsed") === "1",
   manualEve: JSON.parse(localStorage.getItem("octopusManualEve") || "null"),
+  // Zuletzt gesehene bzw. selbst geschriebene Crop-Revision des Backends.
+  // Verhindert, dass eine veraltete Antwort die eigene Aenderung zurueckdreht.
+  cameraCropRevision: null,
   eveYawDeg: parseFloat(localStorage.getItem("octopusEveYawDeg") || "0") || 0,
   // "drone" = Kurs kommt aus der Odometrie, "manual" = Handeingabe.
   eveYawSource: localStorage.getItem("octopusEveYawSource") === "drone" ? "drone" : "manual",
@@ -3490,7 +3493,7 @@ function cameraFeedDetectionsUncropped() {
 // The detections the dashboard works with: re-normalized into the cropped frame,
 // with everything that sits in a cut-away edge dropped.
 function cameraFeedDetections() {
-  const crop = cameraCropSettings();
+  const crop = effectiveCameraCrop();
   const list = cameraFeedDetectionsUncropped();
   if (!crop.active) return list;
   return list.map((det) => cropDetection(det, crop)).filter(Boolean);
@@ -3583,17 +3586,51 @@ function resetCameraCrop() {
   localStorage.setItem("octopusCameraCrop", JSON.stringify(next));
 }
 
+// Der Crop, mit dem der GERADE ANGEZEIGTE Frame gezeichnet werden muss.
+//
+// Das ist nicht zwangslaeufig der Wert am Regler: der Node an der Pi pollt die
+// Crop-Einstellung nur alle 2 s (crop_poll_period_sec), schneidet bis dahin
+// weiter mit dem alten Wert und schickt am Frame mit, was er angewandt hat.
+// Wer in diesem Fenster den Reglerwert benutzt, rechnet mit einem Schnitt, den
+// das Bild nicht hat -- vorher wurde ein bereits geschnittener Frame als
+// Vollbild behandelt und ein ZWEITES Mal beschnitten. Das verschob das Bild,
+// aenderte sein Seitenverhaeltnis und legte die Detektionsboxen daneben. Nur
+// mit der Pi-Kamera sichtbar, weil der Test-Feed gar nicht an der Quelle
+// schneidet und der Browser dort immer selbst zustaendig ist.
+//
+// preCropped sagt, ob das Bild den Schnitt schon mitbringt.
+function effectiveCameraCrop() {
+  const applied = OCTOPUS.latest.cameraDebug?.image?.crop;
+  if (applied) {
+    const crop = {};
+    CAMERA_CROP_SIDES.forEach((side) => {
+      crop[side] = clamp(safeNumber(applied[side], 0), 0, CAMERA_CROP_MAX_SIDE);
+    });
+    crop.kx = 1 - crop.left - crop.right;
+    crop.ky = 1 - crop.top - crop.bottom;
+    crop.active = crop.kx < 0.9999 || crop.ky < 0.9999;
+    crop.preCropped = true;
+    crop.fromFrame = true;
+    return crop;
+  }
+  // Kein Schnitt am Frame: das Bild ist ein Vollbild, der Browser schneidet.
+  const crop = cameraCropSettings();
+  crop.preCropped = false;
+  crop.fromFrame = false;
+  return crop;
+}
+
 // Rects for the camera overlay under the active crop:
 //  - `rect` is the visible (cropped) region, letterboxed inside the container —
 //    everything in normalized u/v maps into it;
 //  - `full` is where the whole frame would sit at the same scale, for the values
 //    that stay in full-frame pixel space (the detector bounding boxes).
 function croppedImageRects(container, natW, natH) {
-  const crop = cameraCropSettings();
+  const crop = effectiveCameraCrop();
   // When the ROS bridge already cut this frame (Eve sends only the crop), the
   // image IS the visible region — cropping it again in the browser would cut
   // twice. Otherwise the frame is still full and the browser does the cut.
-  const preCropped = cameraFrameIsPreCropped(crop);
+  const preCropped = crop.preCropped;
   const rect = preCropped
     ? containedImageRect(container, natW, natH)
     : containedImageRect(container, natW * crop.kx, natH * crop.ky);
@@ -3603,20 +3640,9 @@ function croppedImageRects(container, natW, natH) {
   return { rect, full, crop, preCropped };
 }
 
-// Whether the frame that arrived was already cropped at the source with exactly
-// the crop the operator asked for.
-function cameraFrameIsPreCropped(crop = cameraCropSettings()) {
-  if (!crop.active) return false;
-  const applied = OCTOPUS.latest.cameraDebug?.image?.crop;
-  if (!applied) return false;
-  return CAMERA_CROP_SIDES.every(
-    (side) => Math.abs(safeNumber(applied[side], -1) - crop[side]) <= 0.005
-  );
-}
-
 // Re-normalize one detection into the cropped frame, or null when it sits in a
 // cut-away edge.
-function cropDetection(det, crop = cameraCropSettings()) {
+function cropDetection(det, crop = effectiveCameraCrop()) {
   if (!crop.active) return det;
   const uFull = safeNumber(det.u, NaN);
   const vFull = safeNumber(det.v, NaN);
@@ -3628,7 +3654,7 @@ function cropDetection(det, crop = cameraCropSettings()) {
 
 // How many detections the crop currently hides, for the feed's status chips.
 function cameraCropHiddenCount() {
-  const crop = cameraCropSettings();
+  const crop = effectiveCameraCrop();
   if (!crop.active) return 0;
   const total = cameraFeedDetectionsUncropped().length;
   return Math.max(0, total - cameraFeedDetections().length);
@@ -3636,7 +3662,10 @@ function cameraCropHiddenCount() {
 
 // The cropped frame in sensor pixels, used both for the footprint model and for
 // the "effective resolution" readout in the Camera & Pipeline panel.
-function croppedSensorRegion(cam = OCTOPUS_HBVCAM_640X480, crop = cameraCropSettings()) {
+// Ohne zweites Argument gilt der Crop des angezeigten Frames -- so folgen
+// Footprint, Grid und Zellennamen demselben Schnitt wie das Bild. Die Anzeige
+// im Crop-Panel uebergibt bewusst cameraCropSettings(), sie zeigt den Sollwert.
+function croppedSensorRegion(cam = OCTOPUS_HBVCAM_640X480, crop = effectiveCameraCrop()) {
   const x0 = crop.left * cam.image_width;
   const y0 = crop.top * cam.image_height;
   return {
@@ -3655,7 +3684,10 @@ function croppedSensorRegion(cam = OCTOPUS_HBVCAM_640X480, crop = cameraCropSett
 // image and overlay stay pixel-aligned.
 function applyCameraCropToImage(img, container) {
   if (!img || !container) return;
-  const crop = cameraCropSettings();
+  // Derselbe Crop, mit dem croppedImageRects() unten rechnet -- sonst schiebt
+  // diese Funktion das <img> nach dem Reglerwert, waehrend die Overlay-Rects
+  // vom Frame-Crop ausgehen, und Bild und Boxen laufen auseinander.
+  const crop = effectiveCameraCrop();
   const natW = img.naturalWidth;
   const natH = img.naturalHeight;
 
@@ -4573,7 +4605,7 @@ async function refreshCameraDebug() {
   try {
     const data = await apiGet("/api/camera_debug/latest");
     OCTOPUS.latest.cameraDebug = data.status === "ok" ? data : null;
-    resyncCameraCropIfNeeded(data?.crop);
+    adoptCameraCropFromBackend(data?.crop);
   } catch (error) {
     OCTOPUS.latest.cameraDebug = null;
     console.warn("Camera debug refresh failed", error);
@@ -6460,20 +6492,53 @@ async function pushCameraCropToBackend() {
       body: JSON.stringify(payload),
     });
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    // Die Revision unseres eigenen Schreibvorgangs merken: nur ein NEUERER
+    // Stand darf uns spaeter ueberschreiben, sonst zieht die naechste Antwort
+    // eines noch laufenden GET unsere Aenderung zurueck.
+    const data = await response.json().catch(() => null);
+    const revision = Number(data?.crop?.revision);
+    if (Number.isFinite(revision)) OCTOPUS.cameraCropRevision = revision;
   } catch (error) {
     console.warn("Camera crop sync failed", error);
   }
 }
 
-// The backend keeps the crop in memory only, so after a backend restart it can
-// disagree with the panel. The panel is the authority — push ours again.
-function resyncCameraCropIfNeeded(backendCrop) {
+// Der Crop im Backend ist der, mit dem der Node an der Pi tatsaechlich
+// schneidet -- er ist damit die maßgebliche Quelle, nicht der Regler in diesem
+// Tab.
+//
+// Vorher galt der Tab als Autorität und schob seinen Wert zurueck, sobald das
+// Backend abwich. Mit ZWEI offenen Dashboard-Tabs ueberschrieben die beiden
+// sich dadurch gegenseitig, etwa einmal pro Sekunde: der Node folgte
+// abwechselnd zwei Crops, das Bild wechselte sein Seitenverhaeltnis und die
+// Detektionsboxen sprangen. Deshalb wird jetzt uebernommen statt geschrieben.
+// Geschrieben wird nur noch bei einer echten Bedienung (siehe
+// setupCameraCropControls).
+function adoptCameraCropFromBackend(backendCrop) {
   if (!backendCrop) return;
+
+  const revision = Number(backendCrop.revision);
+  const known = Number(OCTOPUS.cameraCropRevision);
+  // Nichts Neueres als der eigene letzte Schreibvorgang -- dann ist es unser
+  // eigener Wert oder eine veraltete Antwort.
+  if (Number.isFinite(revision) && Number.isFinite(known) && revision <= known) return;
+
   const crop = cameraCropSettings();
   const differs = CAMERA_CROP_SIDES.some(
     (side) => Math.abs(safeNumber(backendCrop[side], 0) - crop[side]) > 1e-6
   );
-  if (differs) pushCameraCropToBackend();
+  if (Number.isFinite(revision)) OCTOPUS.cameraCropRevision = revision;
+  if (!differs) return;
+
+  const next = {};
+  CAMERA_CROP_SIDES.forEach((side) => {
+    next[side] = clamp(safeNumber(backendCrop[side], 0), 0, CAMERA_CROP_MAX_SIDE);
+  });
+  OCTOPUS.cameraCrop = next;
+  localStorage.setItem("octopusCameraCrop", JSON.stringify(next));
+
+  if (typeof syncCameraCropInputs === "function") syncCameraCropInputs();
+  if (typeof octopusRefreshCameraCropView === "function") octopusRefreshCameraCropView(false);
 }
 
 function octopusRefreshCameraCropView(announce = false) {
