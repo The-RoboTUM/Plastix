@@ -1927,14 +1927,58 @@ body.octopus-view-debug .camera-debug-panel .item-card {
 
     /* GPS grid readout: which coordinate / grid cell each detection sits on. */
     .camera-gps-readout {
+      /* Spalte statt Zeile: Kontextzeile oben, die aufklappbaren Marker
+         darunter. Die Chips selbst umbrechen weiter in .gps-chip-row. */
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      /* Nicht schrumpfen: als Flex-Kind der randvollen .panel-body wurde der
+         Readout auf 2 px zusammengedrueckt, obwohl seine Zeilen 21 und 26 px
+         hoch sind -- die Chips waren dadurch unsichtbar. Platz nimmt sich
+         stattdessen das Kamerabild darueber, das flexibel ist. */
+      flex: 0 0 auto;
+      max-height: 96px;
+      overflow-y: auto;
+      padding-top: 2px;
+    }
+    .gps-chip-row {
       display: flex;
       flex-wrap: wrap;
       align-items: center;
       gap: 6px;
-      max-height: 62px;
-      overflow-y: auto;
-      padding-top: 2px;
     }
+
+    /* Die Detektions-Marker (Zelle, Koordinate, Konfidenz) sind vier bis
+       sechs Chips und schoben Camera Crop nach unten aus dem Blick. Gleicher
+       Mechanismus wie dort: eine Zeile zugeklappt, Anzahl in der Ueberschrift. */
+    .trash-marker-details > summary {
+      cursor: pointer;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 11px;
+      font-weight: 800;
+      letter-spacing: 0.03em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      padding: 1px 0;
+    }
+    .trash-marker-details > summary::-webkit-details-marker { display: none; }
+    .trash-marker-details > summary::before { content: "▸"; font-size: 10px; }
+    .trash-marker-details[open] > summary::before { content: "▾"; }
+    .trash-marker-details > summary:hover { color: var(--text-main); }
+    /* Explizit, nicht dem Browser ueberlassen: .gps-chip-row setzt
+       display:flex und ueberschreibt damit die UA-Regel, mit der ein
+       geschlossenes <details> seinen Inhalt verbirgt -- die Marker blieben
+       dadurch sichtbar, obwohl zugeklappt. */
+    .trash-marker-details > .gps-chip-row { display: none; }
+    .trash-marker-details[open] > .gps-chip-row { display: flex; padding-top: 4px; }
+    /* Aufgeklappt braucht der Readout mehr Hoehe, sonst stehen die Marker
+       unter der Kante des 96-px-Fensters und man muss darin scrollen. Den
+       Platz gibt das Kamerabild ab, das flexibel ist. Bei sehr vielen Markern
+       greift die Begrenzung weiterhin und der Bereich scrollt. */
+    .camera-gps-readout:has(.trash-marker-details[open]) { max-height: 150px; }
     .gps-chip {
       display: inline-flex;
       align-items: center;

@@ -4523,18 +4523,63 @@ function renderCameraGridReadout() {
   const mode = cameraGridMode();
   if (mode === "off") {
     box.hidden = true;
-    box.innerHTML = "";
+    // Das Geruest bleibt stehen: box.innerHTML zu leeren wuerde es beim
+    // naechsten Einschalten neu erzeugen und den Aufklappzustand verlieren.
+    const ctx = $("camera-readout-context");
+    const trash = $("camera-readout-trash");
+    if (ctx) ctx.innerHTML = "";
+    if (trash) trash.innerHTML = "";
     return;
   }
 
   box.hidden = false;
-  box.innerHTML = (mode === "gps" ? gpsReadoutChips() : localReadoutChips()).join("");
+  ensureCameraReadoutSkeleton(box);
+
+  const parts = mode === "gps" ? gpsReadoutChips() : localReadoutChips();
+  $("camera-readout-context").innerHTML = parts.context.join("");
+
+  const details = $("camera-readout-trash-details");
+  const count = parts.trash.length;
+  // Ohne Fund gibt es nichts aufzuklappen -- der Hinweis dazu steht im
+  // Kontextteil und ist ohne Klick sichtbar.
+  details.hidden = count === 0;
+  $("camera-readout-trash").innerHTML = parts.trash.join("");
+  $("camera-readout-trash-count").textContent = String(count);
+}
+
+// Baut die feste Struktur unter dem Kamerabild EINMAL. Der Readout wird jede
+// Sekunde neu befuellt; wuerde man dabei das ganze Element neu schreiben,
+// klappte das <details> im Sekundentakt von selbst zu.
+function ensureCameraReadoutSkeleton(box) {
+  if ($("camera-readout-context")) return;
+
+  box.innerHTML = `
+    <div class="gps-chip-row" id="camera-readout-context"></div>
+    <details class="trash-marker-details" id="camera-readout-trash-details">
+      <summary>Trash markers <span class="mini-chip" id="camera-readout-trash-count">0</span></summary>
+      <div class="gps-chip-row" id="camera-readout-trash"></div>
+    </details>`;
+
+  const details = $("camera-readout-trash-details");
+  // Der Aufklappzustand ueberlebt Neuladen und Ansichtswechsel -- wer die
+  // Marker braucht, will sie nicht jedes Mal wieder aufklappen.
+  details.open = localStorage.getItem("octopusTrashMarkersOpen") === "1";
+  details.addEventListener("toggle", () => {
+    localStorage.setItem("octopusTrashMarkersOpen", details.open ? "1" : "0");
+    // Bei vielen Markern reicht auch die groessere Hoehe nicht -- dann wenigstens
+    // dorthin scrollen, statt den Benutzer im Bereich suchen zu lassen.
+    if (details.open) {
+      requestAnimationFrame(() => {
+        box.scrollTop = details.offsetTop - box.offsetTop;
+      });
+    }
+  });
 }
 
 function gpsReadoutChips() {
   const grid = octopusGpsGridModel();
   if (!grid) {
-    return [`<span class="gps-chip hint">No Eve position yet — place Eve on the mission map to anchor the GPS grid.</span>`];
+    return { context: [`<span class="gps-chip hint">No Eve position yet — place Eve on the mission map to anchor the GPS grid.</span>`], trash: [] };
   }
 
   const chips = [];
@@ -4549,11 +4594,12 @@ function gpsReadoutChips() {
     `yaw ${Math.round(grid.pose.yawDeg)}°${grid.pose.manual ? " · dragged" : grid.pose.demo ? " · fallback" : ""}</span>`
   );
 
+  const trash = [];
   const readout = gpsDetectionReadout(grid);
   if (readout.length) {
     readout.forEach(({ det, lat, lon, cell }) => {
       const conf = safeNumber(det.confidence, NaN);
-      chips.push(
+      trash.push(
         `<span class="gps-chip trash">🗑 <b>${escapeHtml(cell ? cell.name : "--")}</b> ` +
         `${escapeHtml(grid.format(lat))}°N ${escapeHtml(grid.format(lon))}°E` +
         `${Number.isFinite(conf) ? ` · ${conf.toFixed(2)}` : ""}</span>`
@@ -4564,7 +4610,7 @@ function gpsReadoutChips() {
       `<span class="gps-chip hint">No trash in frame — drag Eve on the map to move the footprint.</span>`
     );
   }
-  return chips;
+  return { context: chips, trash };
 }
 
 // The local grid is defined in image space, so it needs no Eve position — only
@@ -4572,7 +4618,7 @@ function gpsReadoutChips() {
 function localReadoutChips() {
   const layout = localGridLayout();
   if (!layout) {
-    return [`<span class="gps-chip hint">Local grid has no columns configured.</span>`];
+    return { context: [`<span class="gps-chip hint">Local grid has no columns configured.</span>`], trash: [] };
   }
 
   const meta = octopusComputeCameraFootprintMeta();
@@ -4582,6 +4628,7 @@ function localReadoutChips() {
     `· footprint ${meta.width_m.toFixed(2)} m × ${meta.height_m.toFixed(2)} m at h=${meta.camera_height_m.toFixed(2)} m</span>`,
   ];
 
+  const trash = [];
   const cells = localCellsForDetections(layout);
   if (cells.length) {
     cells.forEach(({ name, detections }) => {
@@ -4590,7 +4637,7 @@ function localReadoutChips() {
         0
       );
       const count = detections.length > 1 ? ` ×${detections.length}` : "";
-      chips.push(
+      trash.push(
         `<span class="gps-chip trash">🗑 <b>${escapeHtml(name)}</b>${escapeHtml(count)}` +
         `${best > 0 ? ` · ${best.toFixed(2)}` : ""}</span>`
       );
@@ -4598,7 +4645,7 @@ function localReadoutChips() {
   } else {
     chips.push(`<span class="gps-chip hint">No trash in frame.</span>`);
   }
-  return chips;
+  return { context: chips, trash };
 }
 
 async function refreshCameraDebug() {
