@@ -34,6 +34,25 @@ class GridMapBuilderNode(Node):
         self.cols = int(math.ceil(self.width_m / self.resolution))
         self.rows = int(math.ceil(self.height_m / self.resolution))
 
+        # "current"    = die Karte zeigt nur, was JETZT detektiert ist. Zellen,
+        #                die in diesem Zyklus nicht wieder gemeldet werden,
+        #                werden auf 0 zurueckgesetzt und als geaenderte Zelle
+        #                mitgeschickt -- sonst erfaehrt das Backend nie, dass
+        #                dort nichts mehr liegt, und die Markierung bleibt fuer
+        #                die Lebensdauer des Prozesses stehen.
+        # "accumulate" = das alte Verhalten: eine einmal markierte Zelle bleibt
+        #                markiert (max() ueber die Laufzeit).
+        # Nur der Muell-Layer ist betroffen. coverage sammelt weiter, das ist
+        # sein Sinn -- es beantwortet "wo war die Kamera schon", nicht "wo liegt
+        # jetzt etwas".
+        self.declare_parameter("trash_cells_mode", "current")
+        self.trash_cells_mode = str(self.get_parameter("trash_cells_mode").value)
+
+        # Welche Zellen gerade als Muell markiert sind. Guenstiger als das Gitter
+        # jeden Zyklus abzusuchen, und die Menge ist genau das, was beim
+        # Zuruecksetzen gebraucht wird.
+        self.trash_cells = set()
+
         self.layers = {
             "coverage": self.make_grid(0.0),
             "trash_probability": self.make_grid(0.0),
@@ -118,6 +137,17 @@ class GridMapBuilderNode(Node):
             )
 
         detections = payload.get("detections", [])
+
+        if self.trash_cells_mode == "current":
+            # Alles Alte raeumen und in den Patch aufnehmen. Die geraeumten
+            # Zellen gehen mit trash_probability 0.0 raus; wird eine davon
+            # unten wieder gesetzt, gewinnt der neue Wert, weil cell_to_dict
+            # erst nach dem Anwenden der Detektionen gelesen wird.
+            for row, col in self.trash_cells:
+                self.layers["trash_probability"][row][col] = 0.0
+                updated_keys.add((row, col))
+            self.trash_cells.clear()
+
         for detection in detections:
             key = self.apply_detection(
                 detection=detection,
@@ -128,9 +158,13 @@ class GridMapBuilderNode(Node):
                 updated_keys.add(key)
 
         if not updated_keys:
-            self.get_logger().warn(
-                "Received message but no valid map cells were updated."
-            )
+            # Ein Bild ohne Detektion ist im Modus "current" der Normalfall und
+            # keine Warnung wert -- gewarnt wird nur, wenn tatsaechlich etwas
+            # geschickt wurde, das sich nicht auf Zellen abbilden liess.
+            if detections or coverage_polygon:
+                self.get_logger().warn(
+                    "Received message but no valid map cells were updated."
+                )
             return
 
         updated_cells = [
@@ -180,10 +214,15 @@ class GridMapBuilderNode(Node):
         self.layers["source_id"][row][col] = source_id
 
         if class_name in ["trash", "plastic", "bottle", "cup", "bag"]:
+            # max() bleibt: zwei Detektionen in derselben Zelle sollen den
+            # hoeheren Wert ergeben. Im Modus "current" wurde der Layer vorher
+            # geleert, das max wirkt also nur innerhalb dieses Zyklus statt
+            # ueber die ganze Laufzeit.
             self.layers["trash_probability"][row][col] = max(
                 self.layers["trash_probability"][row][col],
                 confidence,
             )
+            self.trash_cells.add((row, col))
 
         if class_name in ["obstacle", "tree", "rock", "wall"]:
             self.layers["obstacle_probability"][row][col] = max(
