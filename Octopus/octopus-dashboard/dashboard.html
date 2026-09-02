@@ -829,6 +829,39 @@
     .eve-yaw-slider:disabled { opacity: 0.45; cursor: not-allowed; }
     #eve-yaw-label.is-live { color: #86efac; }
 
+    /* Detektor-Einstellungen. Der Node liest Modell, Schwelle und
+       Tracker-Werte nur beim Start -- deshalb heisst der Knopf
+       "Apply & Restart" und nicht "Apply": alles andere waere eine
+       Zusage, die die Software nicht einhaelt. */
+    .detector-settings {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+      margin-top: 8px;
+    }
+    .detector-setting {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .detector-setting.full { grid-column: 1 / -1; }
+    .detector-setting > span { white-space: nowrap; }
+    .detector-setting select.small-input { min-width: 0; flex: 1 1 auto; }
+    .detector-setting input.small-input { width: 68px; flex: 0 0 auto; }
+    .detector-settings-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      margin-top: 8px;
+    }
+    #detector-settings-note { font-size: 11px; }
+    #detector-settings-note.is-dirty { color: #fcd34d; }
+    #detector-settings-note.is-error { color: #fca5a5; }
+
     /* --- Verbindungsabzeichen und Eve-Teilsysteme --- */
     /* Vier Zustaende, dieselbe Farbsprache wie die Pills oben: gruen laeuft,
        gelb braucht Aufmerksamkeit, rot/grau kein Kontakt. */
@@ -2563,6 +2596,42 @@ body.octopus-view-debug .camera-debug-panel .item-card {
                 <button id="detector-log-btn" type="button">Show Log</button>
               </div>
               <div id="detector-summary" class="muted">Detector status: unknown</div>
+
+              <div class="detector-settings">
+                <label class="detector-setting full">
+                  <span>Model</span>
+                  <select id="detector-model" class="small-input" aria-label="YOLO model file"></select>
+                </label>
+                <label class="detector-setting"
+                       title="Confidence a YOLO detection needs to count. Applies after inference.">
+                  <span>Threshold</span>
+                  <input type="number" id="detector-thresh" class="small-input"
+                         min="0.05" max="0.95" step="0.05" aria-label="Detection confidence threshold" />
+                </label>
+                <label class="detector-setting"
+                       title="How many consecutive frames above the threshold before an object counts as confirmed. 1 means a single lucky frame is enough.">
+                  <span>Confirm frames</span>
+                  <input type="number" id="detector-confirm-frames" class="small-input"
+                         min="1" max="30" step="1" aria-label="Frames needed to confirm a detection" />
+                </label>
+                <label class="detector-setting"
+                       title="How many frames a confirmed track survives without being seen again.">
+                  <span>Max lost</span>
+                  <input type="number" id="detector-max-lost" class="small-input"
+                         min="1" max="60" step="1" aria-label="Frames a track survives unseen" />
+                </label>
+                <label class="detector-setting"
+                       title="JPEG quality of the debug image only. Does not affect detection.">
+                  <span>JPEG quality</span>
+                  <input type="number" id="detector-jpeg-quality" class="small-input"
+                         min="1" max="100" step="5" aria-label="Debug image JPEG quality" />
+                </label>
+              </div>
+              <div class="detector-settings-actions">
+                <button id="detector-apply-btn" type="button">Apply &amp; Restart Detector</button>
+                <span id="detector-settings-note" class="muted"></span>
+              </div>
+
               <pre id="detector-log" class="pipeline-log-box"></pre>
             </div>
 

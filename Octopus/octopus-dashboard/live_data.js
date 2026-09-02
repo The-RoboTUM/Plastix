@@ -5695,6 +5695,153 @@ function initSystemsDetails() {
   });
 }
 
+// --- Detektor-Einstellungen ---
+// Modell, Schwelle und Tracker-Werte. Der Node liest sie nur beim Start, ein
+// Aendern im Feld tut also erst nach einem Neustart des Detektors etwas -- die
+// Notiz daneben sagt das, statt es den Benutzer selbst herausfinden zu lassen.
+const DETECTOR_FIELDS = [
+  { key: "model", id: "detector-model", cast: String },
+  { key: "thresh", id: "detector-thresh", cast: Number },
+  { key: "confirm_frames", id: "detector-confirm-frames", cast: Number },
+  { key: "max_lost", id: "detector-max-lost", cast: Number },
+  { key: "jpeg_quality", id: "detector-jpeg-quality", cast: Number },
+];
+
+// Der zuletzt vom Backend bestaetigte Stand. Womit verglichen wird, um
+// "geaendert, aber noch nicht angewandt" anzuzeigen.
+let detectorAppliedConfig = null;
+
+function detectorFormValues() {
+  const values = {};
+  DETECTOR_FIELDS.forEach(({ key, id, cast }) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    values[key] = cast === Number ? Number(el.value) : el.value;
+  });
+  return values;
+}
+
+function detectorFormDiffers() {
+  if (!detectorAppliedConfig) return false;
+  return DETECTOR_FIELDS.some(({ key, cast }) => {
+    const now = detectorFormValues()[key];
+    const applied = detectorAppliedConfig[key];
+    return cast === Number
+      ? Math.abs(Number(now) - Number(applied)) > 1e-9
+      : String(now) !== String(applied);
+  });
+}
+
+function renderDetectorSettingsNote(message = null, kind = null) {
+  const note = document.getElementById("detector-settings-note");
+  if (!note) return;
+  note.classList.remove("is-dirty", "is-error");
+  if (message) {
+    note.textContent = message;
+    if (kind) note.classList.add(kind);
+    return;
+  }
+  if (detectorFormDiffers()) {
+    note.textContent = "Changed — takes effect on restart.";
+    note.classList.add("is-dirty");
+  } else {
+    note.textContent = "";
+  }
+}
+
+function fillDetectorForm(config) {
+  const select = document.getElementById("detector-model");
+  if (select) {
+    const models = config.available_models || [];
+    // Neu aufbauen, wenn sich die Liste geaendert hat -- ein neu
+    // hineinkopiertes Modell soll ohne Reload auftauchen.
+    const current = Array.from(select.options).map((o) => o.value).join("|");
+    if (current !== models.join("|")) {
+      select.innerHTML = models
+        .map((m) => `<option value="${escapeHtml(m)}">${escapeHtml(m.replace("data/models/", ""))}</option>`)
+        .join("");
+    }
+    if (!models.length) {
+      // Kein Modell auf der Platte: der Detektor kann so nicht starten, und
+      // das gehoert hierhin und nicht ins Log.
+      select.innerHTML = `<option value="">no model files found</option>`;
+    }
+    if (document.activeElement !== select) select.value = config.model || "";
+  }
+
+  DETECTOR_FIELDS.filter(({ key }) => key !== "model").forEach(({ key, id }) => {
+    const el = document.getElementById(id);
+    if (el && document.activeElement !== el) el.value = String(config[key]);
+  });
+}
+
+async function refreshDetectorConfig() {
+  try {
+    const data = await eveFetchJson("/api/detector/config");
+    detectorAppliedConfig = data.config;
+    fillDetectorForm(data.config);
+    if (!data.config.model_exists && (data.config.available_models || []).length) {
+      renderDetectorSettingsNote("Configured model is missing from data/models.", "is-error");
+    } else {
+      renderDetectorSettingsNote();
+    }
+    return data.config;
+  } catch (error) {
+    renderDetectorSettingsNote(`Settings unavailable: ${error.message}`, "is-error");
+    return null;
+  }
+}
+
+async function applyDetectorSettings() {
+  const btn = document.getElementById("detector-apply-btn");
+  if (btn) { btn.disabled = true; btn.textContent = "Restarting..."; }
+  renderDetectorSettingsNote("Applying...", null);
+
+  try {
+    const saved = await eveFetchJson("/api/detector/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(detectorFormValues()),
+    });
+    detectorAppliedConfig = saved.config;
+    fillDetectorForm(saved.config);
+
+    const rejected = Object.keys(saved.rejected || {});
+    if (rejected.length) {
+      renderDetectorSettingsNote(`Rejected: ${rejected.join(", ")}`, "is-error");
+    }
+
+    // Erst danach neu starten -- das Startskript liest die eben gespeicherten
+    // Werte, ein Neustart davor waere mit den alten gelaufen.
+    await startDetector();
+    if (!rejected.length) renderDetectorSettingsNote("Applied.", null);
+    if (typeof addTimeline === "function") {
+      const c = saved.config;
+      addTimeline(
+        `Detector restarted with ${String(c.model).replace("data/models/", "")}, ` +
+        `thresh ${Number(c.thresh).toFixed(2)}, confirm ${c.confirm_frames}, max lost ${c.max_lost}.`,
+        "info",
+      );
+    }
+  } catch (error) {
+    renderDetectorSettingsNote(`Apply failed: ${error.message}`, "is-error");
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "Apply & Restart Detector"; }
+  }
+}
+
+function initDetectorSettings() {
+  const btn = document.getElementById("detector-apply-btn");
+  if (btn) btn.addEventListener("click", applyDetectorSettings);
+
+  DETECTOR_FIELDS.forEach(({ id }) => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("input", () => renderDetectorSettingsNote());
+  });
+
+  refreshDetectorConfig();
+}
+
 function initPx4BridgeAndDetectorControls() {
   const bind = (id, handler) => {
     const el = document.getElementById(id);
@@ -5712,6 +5859,7 @@ function initPx4BridgeAndDetectorControls() {
   bind("detector-log-btn", showDetectorLog);
 
   initSystemsDetails();
+  initDetectorSettings();
   refreshPx4BridgeStatus();
   refreshDetectorStatus();
   // Dieselben 8 s wie die Kamera. Jeder Tick der PX4-Zeile ist ein SSH-Aufruf,

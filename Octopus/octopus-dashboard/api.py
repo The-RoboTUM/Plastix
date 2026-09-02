@@ -715,7 +715,7 @@ OCTOPUS_ROOT = os.getenv(
 )
 
 
-def _octopus_run_local_pipeline_command(command: str, timeout: int = 15):
+def _octopus_run_local_pipeline_command(command: str, timeout: int = 15, env=None):
     try:
         result = _octopus_pipeline_subprocess.run(
             command,
@@ -725,6 +725,9 @@ def _octopus_run_local_pipeline_command(command: str, timeout: int = 15):
             text=True,
             timeout=timeout,
             executable="/bin/bash",
+            # Zusatz-Env, nicht Ersatz: os.environ muss erhalten bleiben, sonst
+            # fehlen PATH und HOME und das Skript findet weder bash noch venv.
+            env=None if env is None else {**os.environ, **env},
         )
 
         return {
@@ -851,6 +854,102 @@ def octopus_pipeline_logs():
 DETECTOR_LOG = "/tmp/octopus_detector.log"
 
 
+# --- DETEKTOR-EINSTELLUNGEN ---
+# Modell, Schwelle und Tracker-Parameter. Der Detektor liest sie alle EINMAL
+# beim Start und gibt sie in die Pipeline -- sie wirken also erst mit dem
+# naechsten Start des Detektors, nicht sofort. Das Dashboard sagt das auch so.
+#
+# Die Werte gehen als DETECTOR_*-Umgebungsvariablen an
+# scripts/octopus_start_detector.sh, das sie ohnehin schon liest.
+DETECTOR_MODELS_DIR = os.path.join(OCTOPUS_ROOT, "detect-and-localize", "data", "models")
+
+DETECTOR_CONFIG: Dict[str, Any] = {
+    "model": "data/models/best_model_10_08_26.pt",
+    "thresh": 0.60,
+    "confirm_frames": 3,
+    "max_lost": 5,
+    "jpeg_quality": 80,
+}
+
+# (Minimum, Maximum, Typ) je Feld. Ausserhalb wird geklemmt, nicht abgelehnt:
+# ein Regler, der stumm nichts tut, ist schlimmer als einer, der begrenzt.
+DETECTOR_LIMITS = {
+    "thresh": (0.05, 0.95, float),
+    "confirm_frames": (1, 30, int),
+    "max_lost": (1, 60, int),
+    "jpeg_quality": (1, 100, int),
+}
+
+
+def _detector_available_models():
+    """Die Modelle, die tatsaechlich auf der Platte liegen.
+
+    Nur diese sind waehlbar. Das ist nicht nur Komfort: der Wert landet als
+    Umgebungsvariable in einem Shell-Aufruf, und eine Auswahlliste aus
+    vorhandenen Dateien laesst dort nichts Fremdes durch.
+    """
+    try:
+        names = sorted(
+            name for name in os.listdir(DETECTOR_MODELS_DIR)
+            if name.endswith((".pt", ".onnx")) and
+            os.path.isfile(os.path.join(DETECTOR_MODELS_DIR, name))
+        )
+    except OSError:
+        return []
+    return [f"data/models/{name}" for name in names]
+
+
+def _detector_config_public():
+    config = dict(DETECTOR_CONFIG)
+    config["available_models"] = _detector_available_models()
+    config["model_exists"] = config["model"] in config["available_models"]
+    config["needs_restart_to_apply"] = True
+    return config
+
+
+@app.get("/api/detector/config")
+def get_detector_config():
+    return {"status": "ok", "config": _detector_config_public()}
+
+
+@app.post("/api/detector/config")
+def post_detector_config(payload: Dict[str, Any]):
+    rejected = {}
+
+    for key, (low, high, cast) in DETECTOR_LIMITS.items():
+        if key not in payload:
+            continue
+        try:
+            DETECTOR_CONFIG[key] = max(low, min(high, cast(payload[key])))
+        except (TypeError, ValueError):
+            rejected[key] = payload[key]
+
+    if "model" in payload:
+        model = str(payload["model"])
+        # Nur aus der Liste vorhandener Modelle. Ein Pfad von aussen wuerde
+        # sonst ungeprueft in den Shell-Aufruf des Startskripts wandern.
+        if model in _detector_available_models():
+            DETECTOR_CONFIG["model"] = model
+        else:
+            rejected["model"] = model
+
+    return {
+        "status": "ok" if not rejected else "partial",
+        "rejected": rejected,
+        "config": _detector_config_public(),
+    }
+
+
+def _detector_start_env():
+    return {
+        "DETECTOR_MODEL": str(DETECTOR_CONFIG["model"]),
+        "DETECTOR_THRESH": f"{float(DETECTOR_CONFIG['thresh']):.3f}",
+        "DETECTOR_CONFIRM_FRAMES": str(int(DETECTOR_CONFIG["confirm_frames"])),
+        "DETECTOR_MAX_LOST": str(int(DETECTOR_CONFIG["max_lost"])),
+        "DETECTOR_JPEG_QUALITY": str(int(DETECTOR_CONFIG["jpeg_quality"])),
+    }
+
+
 @app.get("/api/detector/status")
 def octopus_detector_status():
     result = _octopus_run_local_pipeline_command(
@@ -884,6 +983,7 @@ def octopus_detector_start():
     result = _octopus_run_local_pipeline_command(
         "./scripts/octopus_start_detector.sh",
         timeout=25,
+        env=_detector_start_env(),
     )
 
     status = (
