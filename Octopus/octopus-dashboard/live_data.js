@@ -5705,6 +5705,10 @@ const DETECTOR_FIELDS = [
   { key: "confirm_frames", id: "detector-confirm-frames", cast: Number },
   { key: "max_lost", id: "detector-max-lost", cast: Number },
   { key: "jpeg_quality", id: "detector-jpeg-quality", cast: Number },
+  // Der Cheat braucht keinen Neustart: das Backend rechnet ihn erst beim
+  // Ausliefern der Detektionen dazu. Deshalb "instant" -- er wird sofort
+  // gespeichert und zaehlt nicht als "geaendert, wartet auf Neustart".
+  { key: "confidence_bonus", id: "detector-confidence-bonus", cast: Number, instant: true },
 ];
 
 // Der zuletzt vom Backend bestaetigte Stand. Womit verglichen wird, um
@@ -5723,7 +5727,7 @@ function detectorFormValues() {
 
 function detectorFormDiffers() {
   if (!detectorAppliedConfig) return false;
-  return DETECTOR_FIELDS.some(({ key, cast }) => {
+  return DETECTOR_FIELDS.filter((f) => !f.instant).some(({ key, cast }) => {
     const now = detectorFormValues()[key];
     const applied = detectorAppliedConfig[key];
     return cast === Number
@@ -5735,7 +5739,7 @@ function detectorFormDiffers() {
 function renderDetectorSettingsNote(message = null, kind = null) {
   const note = document.getElementById("detector-settings-note");
   if (!note) return;
-  note.classList.remove("is-dirty", "is-error");
+  note.classList.remove("is-dirty", "is-error", "is-cheat");
   if (message) {
     note.textContent = message;
     if (kind) note.classList.add(kind);
@@ -5744,9 +5748,19 @@ function renderDetectorSettingsNote(message = null, kind = null) {
   if (detectorFormDiffers()) {
     note.textContent = "Changed — takes effect on restart.";
     note.classList.add("is-dirty");
-  } else {
-    note.textContent = "";
+    return;
   }
+
+  // Ein laufender Cheat muss sichtbar bleiben. Wer die Zahlen im Dashboard
+  // liest, soll nicht raten muessen, ob sie echt sind.
+  const bonus = Number(detectorAppliedConfig?.confidence_bonus || 0);
+  if (Math.abs(bonus) > 1e-9) {
+    note.textContent = `🃏 Cheat active: ${bonus > 0 ? "+" : ""}${bonus.toFixed(2)} on every confidence.`;
+    note.classList.add("is-cheat");
+    return;
+  }
+
+  note.textContent = "";
 }
 
 function fillDetectorForm(config) {
@@ -5773,6 +5787,11 @@ function fillDetectorForm(config) {
     const el = document.getElementById(id);
     if (el && document.activeElement !== el) el.value = String(config[key]);
   });
+
+  const cheatBox = document.querySelector(".detector-cheat");
+  if (cheatBox) {
+    cheatBox.classList.toggle("is-on", Math.abs(Number(config.confidence_bonus || 0)) > 1e-9);
+  }
 }
 
 async function refreshDetectorConfig() {
@@ -5830,13 +5849,42 @@ async function applyDetectorSettings() {
   }
 }
 
+async function saveDetectorInstantField(key, el) {
+  try {
+    const saved = await eveFetchJson("/api/detector/config", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ [key]: Number(el.value) }),
+    });
+    detectorAppliedConfig = saved.config;
+    fillDetectorForm(saved.config);
+    renderDetectorSettingsNote();
+    if (key === "confidence_bonus" && typeof addTimeline === "function") {
+      const bonus = Number(saved.config.confidence_bonus || 0);
+      addTimeline(
+        Math.abs(bonus) > 1e-9
+          ? `🃏 Confidence cheat set to ${bonus > 0 ? "+" : ""}${bonus.toFixed(2)} — displayed values are not the model output.`
+          : "Confidence cheat off — displayed values are the model output again.",
+        Math.abs(bonus) > 1e-9 ? "warning" : "info",
+      );
+    }
+  } catch (error) {
+    renderDetectorSettingsNote(`Could not save: ${error.message}`, "is-error");
+  }
+}
+
 function initDetectorSettings() {
   const btn = document.getElementById("detector-apply-btn");
   if (btn) btn.addEventListener("click", applyDetectorSettings);
 
-  DETECTOR_FIELDS.forEach(({ id }) => {
+  DETECTOR_FIELDS.forEach(({ id, key, instant }) => {
     const el = document.getElementById(id);
-    if (el) el.addEventListener("input", () => renderDetectorSettingsNote());
+    if (!el) return;
+    el.addEventListener("input", () => renderDetectorSettingsNote());
+    if (!instant) return;
+    // "change" statt "input": beim Tippen einer Zahl entstehen Zwischenwerte,
+    // die man nicht einzeln speichern will.
+    el.addEventListener("change", () => saveDetectorInstantField(key, el));
   });
 
   refreshDetectorConfig();

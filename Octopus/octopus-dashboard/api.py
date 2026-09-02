@@ -166,8 +166,62 @@ def post_camera_debug_detections(payload: Dict[str, Any]):
 def get_latest_camera_debug_detections():
     return {
         "status": "ok" if LATEST_CAMERA_DEBUG["detections"] else "empty",
-        "detections": LATEST_CAMERA_DEBUG["detections"],
+        "detections": _camera_debug_detections_public(),
     }
+
+
+# --- CHEAT: KONFIDENZ-ZUSCHLAG ---
+# Fuer Vorfuehrungen: jede gemeldete Konfidenz wird um DETECTOR_CONFIG
+# ["confidence_bonus"] angehoben (negativ geht auch).
+#
+# Bewusst BEIM AUSLIEFERN und nicht beim Speichern: LATEST_CAMERA_DEBUG behaelt
+# die echten Werte, ein Zuschlag von 0 liefert sofort wieder die Wahrheit, und
+# nichts anderes im System sieht die frisierten Zahlen -- weder der Kartenlayer
+# noch die Ziele fuer den Sammelroboter, die beide ueber ROS laufen. Der
+# Zuschlag ist reine Anzeige.
+#
+# Jede angehobene Detektion behaelt ihren Rohwert in confidence_raw und traegt
+# confidence_faked, damit im Zweifel nachvollziehbar bleibt, was echt war.
+def _detector_confidence_bonus() -> float:
+    try:
+        return float(DETECTOR_CONFIG.get("confidence_bonus", 0.0))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _camera_debug_detections_public():
+    payload = LATEST_CAMERA_DEBUG["detections"]
+    bonus = _detector_confidence_bonus()
+
+    if not payload or abs(bonus) < 1e-9:
+        return payload
+
+    items = payload.get("detections")
+    if not isinstance(items, list):
+        return payload
+
+    faked = []
+    for det in items:
+        if not isinstance(det, dict):
+            faked.append(det)
+            continue
+        raw = det.get("confidence")
+        try:
+            value = float(raw)
+        except (TypeError, ValueError):
+            faked.append(det)
+            continue
+        copy = dict(det)
+        copy["confidence"] = max(0.0, min(1.0, value + bonus))
+        copy["confidence_raw"] = value
+        copy["confidence_faked"] = True
+        faked.append(copy)
+
+    # Flache Kopie: die gespeicherte Nutzlast darf nicht veraendert werden.
+    out = dict(payload)
+    out["detections"] = faked
+    out["confidence_bonus"] = bonus
+    return out
 
 
 @app.get("/api/camera_debug/latest")
@@ -176,7 +230,7 @@ def get_latest_camera_debug():
         "status": "ok" if (LATEST_CAMERA_DEBUG["image"] or LATEST_CAMERA_DEBUG["detections"]) else "empty",
         "received_at": LATEST_CAMERA_DEBUG["received_at"],
         "image": LATEST_CAMERA_DEBUG["image"],
-        "detections": LATEST_CAMERA_DEBUG["detections"],
+        "detections": _camera_debug_detections_public(),
         # So the dashboard can tell whether the backend already knows its crop —
         # after a backend restart the dashboard re-POSTs it from localStorage.
         "crop": _camera_crop_public(),
@@ -869,6 +923,8 @@ DETECTOR_CONFIG: Dict[str, Any] = {
     "confirm_frames": 3,
     "max_lost": 5,
     "jpeg_quality": 80,
+    # Cheat fuer Vorfuehrungen. 0.0 = aus, also die echten Werte.
+    "confidence_bonus": 0.0,
 }
 
 # (Minimum, Maximum, Typ) je Feld. Ausserhalb wird geklemmt, nicht abgelehnt:
@@ -878,6 +934,9 @@ DETECTOR_LIMITS = {
     "confirm_frames": (1, 30, int),
     "max_lost": (1, 60, int),
     "jpeg_quality": (1, 100, int),
+    # Negativ erlaubt: derselbe Regler taugt dann auch, um eine Demo
+    # absichtlich pessimistischer aussehen zu lassen.
+    "confidence_bonus": (-0.95, 0.95, float),
 }
 
 
