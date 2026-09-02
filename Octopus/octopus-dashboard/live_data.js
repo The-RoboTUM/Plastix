@@ -5374,6 +5374,93 @@ if (document.readyState === "loading") {
 // --- END OCTOPUS EVE CAMERA FRONTEND ---
 
 
+// --- ABORT: ALLES STOPPEN ---
+// Fuehrt serverseitig genau das aus, was man sonst tippt:
+//   OCTOPUS_STOP_EVE=true ./scripts/stop_octopus_debug_stack.sh
+//
+// Zwei Klicks, weil dieser Knopf oben rechts in der Topbar sitzt und mit einem
+// Fehlklick die Kamera und die Pixhawk-Bruecke der Drohne mit abschaltet. Der
+// erste Klick stellt scharf, der zweite fuehrt aus; ohne zweiten Klick fällt er
+// nach ABORT_ARM_SEC von selbst zurueck.
+const ABORT_ARM_SEC = 5;
+let abortArmedUntil = 0;
+let abortTimer = null;
+
+function abortButtonReset(btn) {
+  abortArmedUntil = 0;
+  if (abortTimer) { clearInterval(abortTimer); abortTimer = null; }
+  btn.classList.remove("is-armed");
+  btn.textContent = "Abort";
+}
+
+function abortButtonArm(btn) {
+  abortArmedUntil = Date.now() + ABORT_ARM_SEC * 1000;
+  btn.classList.add("is-armed");
+
+  const tick = () => {
+    const left = Math.ceil((abortArmedUntil - Date.now()) / 1000);
+    if (left <= 0) {
+      abortButtonReset(btn);
+      if (typeof addTimeline === "function") addTimeline("Abort not confirmed - nothing stopped.", "info");
+      return;
+    }
+    btn.textContent = `Stop everything? ${left}`;
+  };
+  tick();
+  abortTimer = setInterval(tick, 250);
+
+  if (typeof addTimeline === "function") {
+    addTimeline(`Abort armed - click again within ${ABORT_ARM_SEC} s to stop the stack, the detector and Eve.`, "warning");
+  }
+}
+
+async function abortRunStop(btn) {
+  if (abortTimer) { clearInterval(abortTimer); abortTimer = null; }
+  abortArmedUntil = 0;
+  btn.classList.remove("is-armed");
+  btn.classList.add("is-stopping");
+  btn.textContent = "Stopping...";
+  btn.disabled = true;
+
+  if (typeof addTimeline === "function") {
+    addTimeline("Abort confirmed - stopping backend, ROS nodes, rosbridge, detector and Eve.", "error");
+  }
+
+  try {
+    const response = await fetch("/api/system/stop", { method: "POST" });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok || data.status === "stop_failed") {
+      throw new Error(data.error || `HTTP ${response.status}`);
+    }
+    // Ab hier stirbt das Backend innerhalb der Karenzsekunde. Jeder Poll
+    // scheitert danach, und die Pills gehen von selbst auf rot -- das ist die
+    // ehrliche Anzeige. Nur der Knopf sagt noch, dass das so gewollt war.
+    btn.textContent = "Stopped";
+  } catch (error) {
+    btn.classList.remove("is-stopping");
+    btn.disabled = false;
+    btn.textContent = "Abort";
+    if (typeof addTimeline === "function") addTimeline(`Abort failed: ${error.message}`, "error");
+  }
+}
+
+function initAbortButton() {
+  const btn = document.getElementById("abort-button");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    if (Date.now() < abortArmedUntil) abortRunStop(btn);
+    else abortButtonArm(btn);
+  });
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initAbortButton);
+} else {
+  initAbortButton();
+}
+// --- END ABORT ---
+
+
 // --- OCTOPUS EVE PX4 BRIDGE + DETECTOR FRONTEND ---
 // Beide Bloecke folgen dem Muster der Eve-Kamera darueber: ein setXUi(), ein
 // refresh, start/stop, ein Log-Button und ein Poll-Intervall.

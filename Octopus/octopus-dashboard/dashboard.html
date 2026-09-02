@@ -183,7 +183,32 @@
       border-radius: 999px;
       font-weight: 800;
       padding: 7px 10px;
-      cursor: not-allowed;
+      cursor: pointer;
+      font-family: inherit;
+      font-size: inherit;
+    }
+    .danger-button:hover { border-color: rgba(239,68,68,0.9); color: #fff; }
+    /* Scharf gestellt: der naechste Klick stoppt wirklich alles. Deutlich
+       anders aussehen als der Ruhezustand, sonst merkt es niemand. */
+    .danger-button.is-armed {
+      background: #b91c1c;
+      color: #fff;
+      border-color: #fecaca;
+      animation: abort-pulse 0.9s ease-in-out infinite;
+    }
+    @keyframes abort-pulse {
+      0%, 100% { box-shadow: 0 0 0 0 rgba(239,68,68,0.55); }
+      50%      { box-shadow: 0 0 0 6px rgba(239,68,68,0); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .danger-button.is-armed { animation: none; }
+    }
+    .danger-button.is-stopping {
+      background: rgba(30,41,59,0.9);
+      color: var(--text-muted);
+      border-color: var(--border-subtle);
+      cursor: progress;
+      animation: none;
     }
 
     .dashboard {
@@ -2130,7 +2155,8 @@ body.octopus-view-debug .camera-debug-panel .item-card {
       <div id="pipeline-status-pill" class="pill unknown"><span class="dot"></span><span>Pipeline</span></div>
       <div id="camera-transform-status-pill" class="pill unknown"><span class="dot"></span><span>Transform</span></div>
       <div id="last-refresh-pill" class="pill muted"><span class="dot"></span><span>--:--:--</span></div>
-      <button class="danger-button" title="Placeholder only. Not connected to robot commands yet.">Abort</button>
+      <button id="abort-button" class="danger-button" type="button"
+              title="Stops everything: dashboard backend, ROS nodes, rosbridge and the detector on this machine, plus Eve's camera and PX4 bridge on the Pi. Needs a second click to confirm.">Abort</button>
     </div>
   </header>
 

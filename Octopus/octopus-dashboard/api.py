@@ -935,6 +935,61 @@ def octopus_detector_log():
 # --- END OCTOPUS DETECTOR ROUTES ---
 
 
+# --- OCTOPUS SYSTEM STOP (ABORT BUTTON) ---
+# Der Abort-Knopf im Dashboard fuehrt genau den Befehl aus, den man sonst von
+# Hand tippt:
+#
+#   OCTOPUS_STOP_EVE=true ./scripts/stop_octopus_debug_stack.sh
+#
+# Also: Backend, ROS-Nodes, rosbridge und Detektor auf diesem Rechner, dazu
+# Kamera und PX4-Bruecke auf der Pi.
+#
+# Der Aufruf darf NICHT auf das Skript warten: das Skript beendet unter anderem
+# dieses Backend, die Antwort auf diesen Request kaeme also nie an. Deshalb wird
+# es abgekoppelt gestartet, mit einer Sekunde Vorlauf, damit die Antwort noch
+# rausgeht -- und der Browser weiss, dass sein Klick angekommen ist, statt einen
+# Netzwerkfehler zu sehen.
+OCTOPUS_STOP_SCRIPT = "./scripts/stop_octopus_debug_stack.sh"
+OCTOPUS_STOP_GRACE_SEC = 1
+
+
+@app.post("/api/system/stop")
+def octopus_system_stop():
+    env = dict(os.environ)
+    env["OCTOPUS_STOP_EVE"] = "true"
+
+    command = f"sleep {OCTOPUS_STOP_GRACE_SEC}; exec {OCTOPUS_STOP_SCRIPT}"
+
+    try:
+        _octopus_pipeline_subprocess.Popen(
+            ["/bin/bash", "-c", command],
+            cwd=OCTOPUS_ROOT,
+            env=env,
+            # start_new_session, sonst nimmt das Skript beim Beenden dieses
+            # Backends sein eigenes Sterben mit -- es haengt an derselben
+            # Prozessgruppe und wuerde vor dem Rest abgeschossen.
+            start_new_session=True,
+            stdout=open("/tmp/octopus_system_stop.log", "ab", buffering=0),
+            stderr=_octopus_pipeline_subprocess.STDOUT,
+            stdin=_octopus_pipeline_subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        return {
+            "status": "stop_failed",
+            "error": str(exc),
+            "timestamp": _octopus_pipeline_datetime.now().isoformat(),
+        }
+
+    return {
+        "status": "stopping",
+        "stops_eve": True,
+        "grace_sec": OCTOPUS_STOP_GRACE_SEC,
+        "log": "/tmp/octopus_system_stop.log",
+        "timestamp": _octopus_pipeline_datetime.now().isoformat(),
+    }
+# --- END OCTOPUS SYSTEM STOP ---
+
+
 
 CAMERA_TRANSFORM_STATUS = {
     "mode": "apriltag_field_homography",
