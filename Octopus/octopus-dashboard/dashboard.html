@@ -778,6 +778,32 @@
     .camera-crop-details .camera-crop-block { border: 0; padding: 6px 0 0; margin: 0; }
     .camera-crop-details .pipeline-control-title { display: none; }
 
+    /* Umschalter zwischen Drohnenkompass und Handeingabe fuer den Eve-Yaw.
+       Angelegt: gerastet = der Kurs kommt von der Drohne, offen = Handbetrieb.
+       Ausgegraut, wenn kein brauchbarer Kurs anliegt -- dann waere der Anker
+       ein Versprechen, das die Daten nicht halten. */
+    .yaw-anchor {
+      border: 1px solid var(--border-subtle);
+      background: rgba(15, 23, 42, 0.72);
+      color: var(--text-muted);
+      border-radius: 7px;
+      padding: 1px 5px;
+      font-size: 12px;
+      line-height: 1.5;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .yaw-anchor:hover:not(:disabled) { border-color: var(--tum-blue-light); color: var(--text-main); }
+    .yaw-anchor[aria-pressed="true"] {
+      color: #86efac;
+      border-color: rgba(34, 197, 94, 0.45);
+      background: rgba(22, 101, 52, 0.30);
+    }
+    .yaw-anchor:disabled { opacity: 0.4; cursor: not-allowed; }
+    /* Am Kompass haengend ist der Regler Anzeige, nicht Bedienelement. */
+    .eve-yaw-slider:disabled { opacity: 0.45; cursor: not-allowed; }
+    #eve-yaw-label.is-live { color: #86efac; }
+
     /* --- Verbindungsabzeichen und Eve-Teilsysteme --- */
     /* Vier Zustaende, dieselbe Farbsprache wie die Pills oben: gruen laeuft,
        gelb braucht Aufmerksamkeit, rot/grau kein Kontakt. */
@@ -2143,6 +2169,12 @@ body.octopus-view-debug .camera-debug-panel .item-card {
             <button id="project-detections-button" class="ghost" title="Project the live camera trash detections onto the map, relative to Eve's position and camera footprint">Project detections</button>
             <label class="resolution-control" id="eve-yaw-control" title="Eve heading (yaw). 0° = camera looking north, increasing clockwise. Rotates the detection projection and footprint.">
               <span>Eve yaw</span>
+              <!-- Der Anker sagt: der Wert haengt am Kompass der Drohne und wird
+                   nicht von Hand gesetzt. Er ist ein eigener Button und liegt
+                   damit ausserhalb des <label> -- ein Klick auf ein Label
+                   landet sonst beim Slider. -->
+              <button id="eve-yaw-source-btn" type="button" class="yaw-anchor" aria-pressed="false"
+                      title="Eve yaw source">⚓</button>
               <input id="eve-yaw-input" class="eve-yaw-slider" type="range" min="0" max="359" step="1" value="0" aria-label="Eve heading yaw in degrees" />
               <span id="eve-yaw-label">0°</span>
             </label>

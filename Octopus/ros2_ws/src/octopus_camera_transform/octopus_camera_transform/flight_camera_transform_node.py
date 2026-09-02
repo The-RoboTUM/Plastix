@@ -501,6 +501,13 @@ class FlightCameraTransformNode(Node):
             "indoor_static_map_yaw_offset_rad": float(self.get_parameter("indoor_static_map_yaw_offset_rad").value),
             "indoor_static_yaw_zero_rad": self.indoor_static_yaw_zero_rad,
 
+            # Live-Kurs der Drohne, damit das Dashboard den Eve-Yaw-Regler
+            # aus dem Magnetometer speisen kann statt aus einer Handeingabe.
+            # indoor_static_yaw_zero_rad taugt dafuer nicht: der Wert wird beim
+            # ersten projizierten Punkt eingefroren und bleibt danach stehen --
+            # und ohne Detektion ist er ueberhaupt null.
+            **self.live_yaw_payload(),
+
             "state": pose_state["state"],
             "transform_ready": pose_state["transform_ready"],
             "pose_ready": pose_state["pose_ready"],
@@ -559,6 +566,51 @@ class FlightCameraTransformNode(Node):
         self.status_pub.publish(msg)
 
 
+
+    def live_yaw_payload(self):
+        """Aktueller Kurs aus der Odometrie, plus was der Konsument zur
+        Beurteilung braucht.
+
+        yaw ist nur dann ein Kompasskurs, wenn pose_frame == 1 (NED) ist -- dann
+        ist das Quaternion erdfest und 0 rad zeigt nach Norden. Bei FRD (2) ist
+        es ein koerperfester Winkel und als Kartenausrichtung wertlos, deshalb
+        wird der Frame mitgeschickt und nicht stillschweigend angenommen.
+
+        Ob hinter dem Kurs wirklich ein Magnetometer steht, kann dieser Node
+        nicht sagen -- das weiss nur der EKF. yaw_source benennt deshalb die
+        Herkunft der Zahl, nicht die Sensorik dahinter.
+        """
+        odom = self.last_odometry
+        age = self.age_sec(self.last_odometry_receive_time)
+
+        if odom is None:
+            return {
+                "live_yaw_rad": None,
+                "live_yaw_deg": None,
+                "live_yaw_age_sec": None,
+                "live_yaw_frame": None,
+                "live_yaw_is_compass": False,
+                "live_yaw_source": None,
+            }
+
+        yaw = self._octopus_yaw_from_quat_wxyz(odom.q)
+        try:
+            pose_frame = int(odom.pose_frame)
+        except Exception:
+            pose_frame = None
+
+        fresh = age is not None and age <= self.pose_stale_sec
+
+        return {
+            "live_yaw_rad": yaw,
+            "live_yaw_deg": None if yaw is None else math.degrees(yaw) % 360.0,
+            "live_yaw_age_sec": age,
+            "live_yaw_frame": pose_frame,
+            # Die eine Zusage, auf die sich das Dashboard verlassen darf:
+            # erdfest, frisch, und eine Zahl ist da.
+            "live_yaw_is_compass": bool(yaw is not None and pose_frame == 1 and fresh),
+            "live_yaw_source": self.odometry_topic,
+        }
 
     def _octopus_yaw_from_quat_wxyz(self, q):
         """Return yaw from PX4 quaternion [w, x, y, z]."""

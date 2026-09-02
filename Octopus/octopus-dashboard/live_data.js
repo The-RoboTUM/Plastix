@@ -131,6 +131,12 @@ const OCTOPUS = {
   legendCollapsed: localStorage.getItem("octopusLegendCollapsed") === "1",
   manualEve: JSON.parse(localStorage.getItem("octopusManualEve") || "null"),
   eveYawDeg: parseFloat(localStorage.getItem("octopusEveYawDeg") || "0") || 0,
+  // "drone" = Kurs kommt aus der Odometrie, "manual" = Handeingabe.
+  eveYawSource: localStorage.getItem("octopusEveYawSource") === "drone" ? "drone" : "manual",
+  // Der Handwert wird beim Umschalten auf den Kompass NICHT ueberschrieben:
+  // wer zurueckschaltet, will seinen eingestellten Winkel wiederhaben und ihn
+  // nicht neu suchen muessen.
+  eveYawManualDeg: parseFloat(localStorage.getItem("octopusEveYawDeg") || "0") || 0,
   projectDetections: (localStorage.getItem("octopusProjectDetections") ?? "1") === "1",
   missionArea: JSON.parse(localStorage.getItem("octopusMissionArea") || "null"),
   gridMode: localStorage.getItem("octopusGridMode") || "fixed_camera_footprint",
@@ -5039,6 +5045,8 @@ function setupEventListeners() {
     clearEveButton.addEventListener("click", clearManualEve);
   }
 
+  initEveYawSourceToggle();
+
   const yawInput = $("eve-yaw-input");
   const yawLabel = $("eve-yaw-label");
   if (yawInput) {
@@ -5048,6 +5056,9 @@ function setupEventListeners() {
     let yawRafPending = false;
     yawInput.addEventListener("input", () => {
       OCTOPUS.eveYawDeg = parseFloat(yawInput.value) || 0;
+      // Getrennt gemerkt: wer vom Kompass zurueckschaltet, bekommt seinen
+      // eigenen Winkel wieder und nicht den letzten Kompasswert.
+      OCTOPUS.eveYawManualDeg = OCTOPUS.eveYawDeg;
       localStorage.setItem("octopusEveYawDeg", String(OCTOPUS.eveYawDeg));
       if (yawLabel) yawLabel.textContent = `${Math.round(OCTOPUS.eveYawDeg)}°`;
       if (!yawRafPending) {
@@ -5893,6 +5904,122 @@ function setCameraTransformText(id, value) {
   if (el) el.textContent = value;
 }
 
+// --- Eve-Yaw: Drohnenkompass oder Handeingabe ---
+// Der Kurs aus /octopus/flight_camera_transform/status ist nur dann als
+// Kartenausrichtung brauchbar, wenn der Node ihn selbst dafuer haelt:
+// live_yaw_is_compass ist true bei erdfestem Frame (NED), frischer Odometrie
+// und vorhandener Zahl. Alles andere wird hier nicht nachgerechnet -- der Node
+// sitzt naeher an den Daten.
+function droneYawReading() {
+  const st = OCTOPUS.latest.cameraTransformStatus || {};
+  const deg = Number(st.live_yaw_deg);
+  if (!st.live_yaw_is_compass || !Number.isFinite(deg)) return null;
+  return {
+    deg: ((deg % 360) + 360) % 360,
+    ageSec: Number.isFinite(Number(st.live_yaw_age_sec)) ? Number(st.live_yaw_age_sec) : null,
+    source: st.live_yaw_source || "drone",
+  };
+}
+
+function eveYawUsesDrone() {
+  return OCTOPUS.eveYawSource === "drone" && droneYawReading() !== null;
+}
+
+function setEveYawSource(source) {
+  const next = source === "drone" ? "drone" : "manual";
+  OCTOPUS.eveYawSource = next;
+  localStorage.setItem("octopusEveYawSource", next);
+
+  if (next === "manual") {
+    // Zurueck auf den Wert, den jemand von Hand gesetzt hat -- nicht auf den
+    // zuletzt vom Kompass gelieferten.
+    OCTOPUS.eveYawDeg = OCTOPUS.eveYawManualDeg;
+    localStorage.setItem("octopusEveYawDeg", String(OCTOPUS.eveYawDeg));
+  }
+
+  applyEveYawFromDrone(true);
+
+  if (typeof addTimeline === "function") {
+    const reading = droneYawReading();
+    addTimeline(
+      next === "drone"
+        ? (reading
+            ? `Eve yaw follows the drone compass (${reading.deg.toFixed(0)}°).`
+            : "Eve yaw set to follow the drone compass, but no usable heading is arriving yet.")
+        : `Eve yaw back to manual (${Math.round(OCTOPUS.eveYawDeg)}°).`,
+      next === "drone" && !reading ? "warning" : "info",
+    );
+  }
+}
+
+// Faehrt Regler, Beschriftung und Ankerknopf auf den aktuellen Stand nach.
+// force=true zeichnet die Karte auch dann neu, wenn sich der Winkel nicht
+// geaendert hat -- beim Umschalten der Quelle aendert sich sonst nichts
+// Sichtbares, obwohl die Bedeutung eine andere ist.
+function applyEveYawFromDrone(force = false) {
+  const btn = document.getElementById("eve-yaw-source-btn");
+  const input = document.getElementById("eve-yaw-input");
+  const label = document.getElementById("eve-yaw-label");
+  const reading = droneYawReading();
+  const live = eveYawUsesDrone();
+
+  if (btn) {
+    btn.setAttribute("aria-pressed", live ? "true" : "false");
+    // Ohne brauchbaren Kurs ist der Anker nicht anklickbar: sonst schaltet man
+    // auf eine Quelle um, die nichts liefert, und der Regler friert ein.
+    btn.disabled = reading === null && OCTOPUS.eveYawSource !== "drone";
+    btn.title = reading === null
+      ? "No usable heading from the drone (needs fresh NED odometry). Yaw stays manual."
+      : live
+        ? `Yaw follows the drone compass — ${reading.deg.toFixed(1)}° from ${reading.source}. Click for manual.`
+        : `Manual yaw. Click to follow the drone compass (${reading.deg.toFixed(1)}°).`;
+  }
+
+  const previous = OCTOPUS.eveYawDeg;
+
+  if (live) {
+    OCTOPUS.eveYawDeg = reading.deg;
+  } else if (OCTOPUS.eveYawSource === "drone") {
+    // Auf Kompass gestellt, aber es kommt nichts: der zuletzt bekannte
+    // Handwert ist die ehrlichere Anzeige als ein eingefrorener Kompasswert.
+    OCTOPUS.eveYawDeg = OCTOPUS.eveYawManualDeg;
+  }
+
+  const rounded = Math.round(((OCTOPUS.eveYawDeg % 360) + 360) % 360);
+  if (input) {
+    input.disabled = live;
+    if (Math.round(parseFloat(input.value)) !== rounded) input.value = String(rounded);
+  }
+  if (label) {
+    label.textContent = `${rounded}°`;
+    label.classList.toggle("is-live", live);
+  }
+
+  const changed = Math.abs((OCTOPUS.eveYawDeg || 0) - (previous || 0)) > 1e-6;
+  if (changed || force) {
+    // Bewusst erst im naechsten Frame: diese Funktion laeuft auch waehrend der
+    // Skriptauswertung (init), und das Neuzeichnen greift auf
+    // OCTOPUS_HBVCAM_640X480 zu, das weiter unten per const deklariert ist.
+    // Direkt aufgerufen stirbt es dort an der Temporal Dead Zone -- und nimmt
+    // den Rest der Skriptauswertung mit, inklusive des Status-Pollings.
+    requestAnimationFrame(() => {
+      if (typeof cameraGridMode === "function" && cameraGridMode() !== "off") redrawCameraGrid();
+      else if (typeof renderMissionMap === "function") renderMissionMap();
+    });
+  }
+}
+
+function initEveYawSourceToggle() {
+  const btn = document.getElementById("eve-yaw-source-btn");
+  if (!btn) return;
+  btn.addEventListener("click", () => {
+    setEveYawSource(eveYawUsesDrone() ? "manual" : "drone");
+  });
+  // Ohne force: beim Init gibt es noch nichts neu zu zeichnen, und der erste
+  // Statusabruf faehrt den Regler eine Sekunde spaeter ohnehin nach.
+  applyEveYawFromDrone(false);
+}
+
 function setCameraTransformUi(status, errorMessage = "") {
   const currentStatus = errorMessage
     ? { state: "offline", error: errorMessage }
@@ -5900,6 +6027,10 @@ function setCameraTransformUi(status, errorMessage = "") {
 
   OCTOPUS.latest.cameraTransformStatus = currentStatus;
   OCTOPUS.latest.cameraTransformError = errorMessage || "";
+
+  // Der Kurs steckt in derselben Nachricht, die ohnehin jede Sekunde kommt --
+  // ein eigener Endpunkt dafuer waere ein zweiter Poll fuer dieselbe Quelle.
+  applyEveYawFromDrone();
 
   const view = cameraTransformView(currentStatus, errorMessage);
   const markerRow = cameraTransformMarkerRow(view);
