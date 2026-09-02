@@ -3,7 +3,8 @@
 Einstiegspunkt für alle Dokumente in diesem Ordner.
 
 **Willst du die Demo starten? → [`SETUP.md`](SETUP.md).** Das ist das primäre und am
-aktuellsten gehaltene Dokument.
+aktuellsten gehaltene Dokument. Ohne Drohne am Schreibtisch:
+[`SETUP_without_drone.md`](SETUP_without_drone.md).
 
 Die meisten älteren Dokumente sind auf Englisch, die neueren auf Deutsch. Das ist historisch
 gewachsen und nicht vereinheitlicht.
@@ -12,7 +13,8 @@ gewachsen und nicht vereinheitlicht.
 
 | Dokument | Inhalt |
 |---|---|
-| [`SETUP.md`](SETUP.md) | **Start hier.** Indoor-Demo hochfahren, Terminal für Terminal, mit Health-Check und Fehlersuche. Enthält auch die [Variante ohne Drohne](SETUP.md#variante-ohne-drohne): Stufe 1 nur Dashboard ohne ROS, Stufe 2 optional mit GripperX |
+| [`SETUP.md`](SETUP.md) | **Start hier.** Indoor-Demo mit Drohne hochfahren: ein Befehl für alles, Einmal-Einrichtung von Laptop und Pi, Health-Check und Fehlersuche |
+| [`SETUP_without_drone.md`](SETUP_without_drone.md) | Dasselbe ohne Drohne, Pi und Detektor. Stufe 1 nur Dashboard ohne ROS, Stufe 2 optional mit GripperX auf der Mission Map |
 | [`how_to_connect_pi_camera.md`](how_to_connect_pi_camera.md) | Kamera-Node auf der Pi starten, Bild auf dem Laptop ansehen |
 
 ## Schnittstellen

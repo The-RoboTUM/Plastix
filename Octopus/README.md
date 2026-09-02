@@ -7,7 +7,7 @@ This README explains how to set up the `eve-octopus` branch on a new laptop, con
 > **Just want to start it?** The startup sequence is in **[docs/SETUP.md](docs/SETUP.md)**.
 > This README covers concepts, first-time installation, the presentation flow and further
 > troubleshooting.
-> Dashboard test without the drone: [docs/SETUP.md, „Variante ohne Drohne“](docs/SETUP.md#variante-ohne-drohne).
+> Dashboard test without the drone: [docs/SETUP_without_drone.md](docs/SETUP_without_drone.md).
 > Index of all other documents: [docs/README.md](docs/README.md).
 
 The current indoor demo pipeline is:
