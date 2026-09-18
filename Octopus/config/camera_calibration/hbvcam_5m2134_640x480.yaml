@@ -1,0 +1,29 @@
+camera_name: hbvcam_5m2134_v11
+image_width: 640
+image_height: 480
+
+camera_matrix:
+  fx: 359.3292231592479
+  fy: 359.2290038414162
+  cx: 312.8204647201454
+  cy: 237.947360594595
+
+distortion_model: plumb_bob
+distortion_coefficients:
+  k1: -0.057128411511179616
+  k2: 0.0028040539388385884
+  p1: 0.00015933624483912515
+  p2: -0.001408459710522939
+  k3: 0.0
+
+rectification_matrix:
+  data: [1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0]
+
+projection_matrix:
+  data: [341.4726257324219, 0.0, 310.10405604206426, 0.0,
+         0.0, 349.030517578125, 237.422867206129, 0.0,
+         0.0, 0.0, 1.0, 0.0]
+
+checkerboard:
+  square_size_m: 0.02275
+  inner_corners: "7x10 or 10x7 depending on orientation"
