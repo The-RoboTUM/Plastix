@@ -6,14 +6,17 @@ Modes:
   explore    — torque OFF on all; move by hand and watch live positions
   calibrate  — one servo at a time; records the straight-ahead centre plus the
                OUTWARD and INWARD end position of every wheel as two separate,
-               angle-labelled quantities (the steering range is asymmetric:
-               100 deg outward / 30 deg inward, measured 2026-08-13)
+               angle-labelled quantities (the steering range is asymmetric;
+               see `config/steer_servo.yaml` for the current outward/inward
+               limits and their measurement provenance)
 
 Usage:
   ros2 run gripperx_control steer_servo_calibrate -- scan
   ros2 run gripperx_control steer_servo_calibrate -- explore --ids 11,14,12,13
-  ros2 run gripperx_control steer_servo_calibrate -- calibrate --ids 11,14,12,13 \
-      --outward-deg 100 --inward-deg 30
+  ros2 run gripperx_control steer_servo_calibrate -- calibrate --ids 11,14,12,13
+
+The two end-stop labels default to the current limits (steering_limits.py, which
+mirrors steer_servo.yaml); pass --outward-deg / --inward-deg only to override them.
 
 No mode commands a servo position — torque is only ever switched off and back on,
 every wheel is moved by hand. Nothing here can make the robot drive.
@@ -38,6 +41,11 @@ import tty
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, List, Sequence
 
+from gripperx_control.steering_limits import (
+    DEFAULT_INWARD_LIMIT_DEG,
+    DEFAULT_OUTWARD_LIMIT_DEG,
+)
+
 if TYPE_CHECKING:  # pragma: no cover
     from gripperx_control.sts_servo_bus import StsServoBus
 
@@ -46,12 +54,12 @@ if TYPE_CHECKING:  # pragma: no cover
 DEFAULT_PORT = "/dev/steering_servo"
 DEFAULT_BAUD = 1_000_000
 # MUST match steer_servo.yaml protocol_end (0 = SCS, no byte swap). Calibrating at 1
-# byte-swaps every position read, so the recorded counts would not be the counts the
-# node later writes back. This defaulted to 1 until 2026-08-13.
+# byte-swaps every position read, so the recorded counts would not be the
+# counts the node later writes back.
 DEFAULT_PROTOCOL = 0
 DEFAULT_NAMES = ("FL", "FR", "BL", "BR")
-# Measured on the machine 2026-08-13 (turn each wheel by hand, torque off, watch
-# which id moves): in joint order FL, FR, BL, BR the ids are 13, 14, 11, 12. The
+# Measured on the machine (turn each wheel by hand, torque off, watch which
+# id moves): in joint order FL, FR, BL, BR the ids are 13, 14, 11, 12. The
 # list committed in steer_servo.yaml ([11, 14, 12, 13]) is wrong — see the note
 # there before "fixing" it, the stale count arrays are aligned with the old order.
 DEFAULT_IDS = (13, 14, 11, 12)
@@ -63,30 +71,36 @@ DEFAULT_JOINTS = ("f_left_steer", "f_right_steer", "b_leftsteer", "b_rightsteer"
 SCAN_ID_MIN = 0
 SCAN_ID_MAX = 253
 
-# Mechanical steering range as measured by the user 2026-08-13: every wheel swings
-# 100 deg away from the chassis ("outward") and only 30 deg towards it ("inward").
-# The tool cannot measure an angle — these values are the LABELS for the two end
-# positions the operator holds the wheel at, and they must match
-# steering_outward_limit_deg / steering_inward_limit_deg in steer_servo.yaml.
-DEFAULT_OUTWARD_DEG = 100.0
-DEFAULT_INWARD_DEG = 30.0
+# Mechanical steering range: every wheel swings much further AWAY from the
+# chassis ("outward") than TOWARDS it ("inward") — current values in
+# steer_servo.yaml. The tool cannot measure an angle — these values are the
+# LABELS for the two end positions the operator holds the wheel at, and they
+# must match steering_outward_limit_deg / steering_inward_limit_deg there.
+#
+# Taken from steering_limits, never written out. These two are worse than a
+# stale number elsewhere: a calibration run writes the recorded end stops into
+# steer_servo.yaml under whatever angle these name, so a stale label here
+# mislabels the machine's own reference data. They carried 100/30 for five days
+# after the 2026-09-18 recalibration moved the limits to 125/35.
+DEFAULT_OUTWARD_DEG = DEFAULT_OUTWARD_LIMIT_DEG
+DEFAULT_INWARD_DEG = DEFAULT_INWARD_LIMIT_DEG
 
 # One servo revolution in raw counts (Feetech STS, 0..4095).
 COUNTS_PER_REV = 4096
 
 # Joint-angle sign of the OUTWARD direction per wheel (FL, FR, BL, BR).
-# MEASURED on the machine 2026-08-13, not derived: all four servos were driven
-# 15 deg in the measured outward tick direction and the pose was inspected — the
+# MEASURED on the machine, not derived: all four servos were driven 15 deg in
+# the measured outward tick direction and the pose was inspected — the
 # wheels lined up tangentially for an in-place spin, matching the (-, +, +, -)
 # pattern the kinematics produces for pure rotation. A purely URDF-based reading
 # gives (+1, -1, +1, -1) and is WRONG on the front pair; under it the spin pose
-# would violate the 30 deg inward limit on three wheels. See the sign-convention
+# would violate the inward limit on three wheels. See the sign-convention
 # block in steer_servo_node.py — KEEP IN SYNC with DEFAULT_OUTWARD_SIGN there
 # (not imported, because importing the node would pull in rclpy and scservo_sdk).
 EXPECTED_OUTWARD_SIGN = (-1, 1, 1, -1)
-# Raw-count direction of an OUTWARD turn, measured on the machine 2026-08-13
-# (diagonal, not per-side: FL/BR count down, FR/BL count up). Ground truth, used
-# to check the recorded endpoints — a mismatch means the wheel/id assignment is
+# Raw-count direction of an OUTWARD turn, measured on the machine (diagonal,
+# not per-side: FL/BR count down, FR/BL count up). Ground truth, used to
+# check the recorded endpoints — a mismatch means the wheel/id assignment is
 # wrong. KEEP IN SYNC with DEFAULT_OUTWARD_TICK_DIRECTION in steer_servo_node.py.
 MEASURED_OUTWARD_TICK_DIRECTION = (-1, 1, 1, -1)
 SIDE_OF_JOINT = ("LEFT", "RIGHT", "LEFT", "RIGHT")
@@ -292,11 +306,22 @@ def run_calibrate(
     print("\n=== MANUAL CALIBRATION (one servo at a time) ===")
     print(f"Recorded per wheel: centre (0°), outward end ({outward_deg:.0f}°), "
           f"inward end ({inward_deg:.0f}°).")
+    # "OUTWARD" IS NOT A TOE DIRECTION. The wheel hangs on a lateral lever
+    # arm off the king pin, so steering swings the wheel BODY fore/aft
+    # around the pin; outward means the body swings AWAY from the chassis —
+    # FORWARDS at the front, BACKWARDS at the rear. In toe terms that is
+    # toe-in at the front and toe-out at the rear, so any single toe wording
+    # is wrong on one axle and will mislead an operator sighting "tyre front
+    # away from the body". The per-wheel line printed below (LEFT/RIGHT,
+    # from EXPECTED_OUTWARD_SIGN) is correct; do not replace it with a
+    # toe-direction summary.
     print("For each wheel:")
     print("  1. Torque OFF only on that servo")
-    print("  2. Hold the wheel at its OUTWARD limit (tyre front away from the body), ENTER")
+    print("  2. Hold the wheel at its OUTWARD limit, ENTER. OUTWARD = the wheel BODY")
+    print("     swings away from the chassis: FORWARDS on FL/FR, BACKWARDS on BL/BR.")
+    print("     It is NOT a toe direction — see the per-wheel line for each wheel.")
     print("  3. Confirm that this was the direction the tool named for that wheel")
-    print("  4. Hold the wheel at its INWARD limit (tyre front towards the body), ENTER")
+    print("  4. Hold the wheel at its INWARD limit (the opposite direction), ENTER")
     print("Both end positions must be the mechanical limits the angles above refer")
     print("to — do NOT sweep to some arbitrary 'safe' point and do not force the")
     print("wheel against the stop. The centre (0°) is the straight-ahead position")

@@ -30,8 +30,7 @@ Hard rules, each enforced here rather than merely documented:
 * **A failed cancel is reported, never escalated.** The caller logs ERROR and
   raises an ERROR diagnostic, and that is the whole response. It does NOT publish
   ``/teleop/set_mode: keyboard``, and no parameter to make it do so exists
-  anywhere in this package - user decision, 2026-08-18, superseding the earlier
-  ``default false`` escape hatch. Publishing that topic would add a second writer
+  anywhere in this package. Publishing that topic would add a second writer
   to a mode-arbitration topic (SR-9/OP-19) and would let the external path arm the
   very chain it is gated by (SR-15 rule 6). Nothing in this package publishes on
   ``/teleop/set_mode`` or on any motion-chain topic.
@@ -63,8 +62,8 @@ TRIGGER_EXCESSIVE_ABORTS = "EXCESSIVE_ABORTS"
 #: gateway drives it from a monotonic reference.
 TRIGGER_CLOCK_STALLED = "CLOCK_STALLED"
 #: The ROS clock went BACKWARDS (SAFETY.md F-30). A separate trigger from
-#: :data:`TRIGGER_CLOCK_STALLED` by an explicit user decision (SR-15 rule 7,
-#: 2026-08-19): a stopped clock and a discontinuous one are different
+#: :data:`TRIGGER_CLOCK_STALLED` by an explicit user decision (SR-15 rule 7):
+#: a stopped clock and a discontinuous one are different
 #: conditions with different operator responses - "your clock publisher is
 #: dead" against "somebody reset the world" - and that difference has to be
 #: machine-distinguishable, not merely readable in the detail string. The
@@ -298,9 +297,8 @@ class ArmingMachine:
         other method here - since SAFETY.md F-29 that is a MONOTONIC instant,
         and it must not be the frozen ROS value however tempting that looks: the
         expiry comparison in :meth:`disarm` would then subtract two different
-        epochs and report ``TIMEOUT`` for a clock event. Observed, in the twin
-        suite, from exactly that mistake. What the ROS clock said belongs in
-        ``detail``, where it informs without being arithmetic.
+        epochs and report ``TIMEOUT`` for a clock event. What the ROS clock said
+        belongs in ``detail``, where it informs without being arithmetic.
         """
         if advancing:
             return None

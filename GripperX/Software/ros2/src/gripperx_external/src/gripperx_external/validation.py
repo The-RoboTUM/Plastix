@@ -69,9 +69,8 @@ VERDICT_REJECTED = "REJECTED"
 #: must be idempotent.
 VERDICT_DUPLICATE = "DUPLICATE"
 #: Valid but deliberately not dispatched - disarmed or dry_run. A separate
-#: verdict because it must not be counted or logged as a rejection: "disarmed"
-#: is the correct, designed state, and burying it among errors would train the
-#: operator to ignore the rejection counter.
+#: verdict, not a rejection: "disarmed" is a correct state, and counting it
+#: as an error would train the operator to ignore the rejection counter.
 VERDICT_PREVIEW = "PREVIEW"
 
 # --- severities ------------------------------------------------------------
@@ -93,10 +92,8 @@ NO_STAMP = "NO_STAMP"
 CONVERSION_FAILED = "CONVERSION_FAILED"
 GRASP_OFFSET_NOT_CONFIGURED = "GRASP_OFFSET_NOT_CONFIGURED"
 #: The geofence rectangle is still TO-VERIFY. Raised by the caller BEFORE the
-#: pipeline runs: with no measured area there is nothing to validate against,
-#: and defaulting to some invented rectangle would make every verdict a guess
-#: (FR-12 item 6). Counted as a LOCAL failure because it is our configuration
-#: that is missing, not the peer's payload that is wrong.
+#: pipeline runs - an invented rectangle would make every verdict a guess
+#: (FR-12 item 6). LOCAL: our configuration is missing, not the peer's payload.
 GEOFENCE_NOT_CONFIGURED = "GEOFENCE_NOT_CONFIGURED"
 NO_APPROACH_CANDIDATE = "NO_APPROACH_CANDIDATE"
 OUTSIDE_GEOFENCE = "OUTSIDE_GEOFENCE"
@@ -106,12 +103,10 @@ COST_TOO_HIGH = "COST_TOO_HIGH"
 PATH_NOT_FOUND = "PATH_NOT_FOUND"
 BLACKLISTED = "BLACKLISTED"
 # --- goal/target correlation (SAFETY.md F-6, C-7) ---------------------------
-#: `/octopus/trash_goal` is a bare NavSatFix with no id, so the id it refers to
-#: is recovered by position from `/octopus/trash_gps`. These three are the ways
-#: that recovery can fail, and each of them BLOCKS the dispatch - not only the
-#: acknowledgement. Driving to a goal we could not name would mean arriving with
-#: no id to acknowledge and no way to report which object we are standing at.
-#: See `correlation.py` for why ambiguity is a refusal rather than a choice.
+#: `/octopus/trash_goal` is a bare NavSatFix with no id; the id is recovered by
+#: position from `/octopus/trash_gps`. These three are the ways that recovery
+#: can fail, and each BLOCKS the dispatch - arriving with no id to acknowledge
+#: is worse than not arriving. See `correlation.py` for why ambiguity refuses.
 GOAL_NOT_CORRELATED = "GOAL_NOT_CORRELATED"
 GOAL_AMBIGUOUS = "GOAL_AMBIGUOUS"
 GOAL_ID_MISMATCH = "GOAL_ID_MISMATCH"
@@ -371,9 +366,8 @@ def validate_goal(ctx: ValidationContext) -> ValidationResult:
     warnings: List[str] = []
 
     # 7 -- grasp offset configured. No placeholder exists, so this fires until
-    #      the bench measurement is done. `configured` covers offset_x/y only:
-    #      grasp.tolerance_m gates the post-arrival reached check and nothing
-    #      here (user decision 2026-08-19).
+    #      the bench measurement is done. `configured` covers offset_x/y only;
+    #      grasp.tolerance_m gates the post-arrival reached check, not this.
     if not ctx.grasp_offset.configured:
         return _reject(
             GRASP_OFFSET_NOT_CONFIGURED,
@@ -409,15 +403,11 @@ def validate_goal(ctx: ValidationContext) -> ValidationResult:
     warnings.extend(approach.warnings)
     if not approach.ok:
         reasons = sorted(set(approach.failure_reasons()))
-        # When every heading failed for the SAME reason there is no ambiguity
-        # about what is wrong, so report that reason (OUTSIDE_GEOFENCE,
-        # OUTSIDE_COSTMAP, COST_TOO_HIGH, PATH_NOT_FOUND) rather than the
-        # generic one - "no approach found" tells an operator nothing. This is
-        # also the path an operator heading override takes, since an override
-        # reduces the ring to a single candidate.
-        # NO_APPROACH_CANDIDATE is reserved for the genuinely mixed case: each
-        # heading was blocked by something different, i.e. the object is boxed
-        # in rather than one constraint being violated.
+        # When every heading fails for the SAME reason, report that reason
+        # (e.g. OUTSIDE_GEOFENCE) rather than the generic one - "no approach
+        # found" tells an operator nothing. NO_APPROACH_CANDIDATE is reserved
+        # for the genuinely mixed case: each heading blocked differently, i.e.
+        # the object is boxed in rather than one constraint being violated.
         reason = reasons[0] if len(reasons) == 1 else NO_APPROACH_CANDIDATE
         return _reject(
             reason,

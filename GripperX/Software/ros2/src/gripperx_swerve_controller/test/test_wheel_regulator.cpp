@@ -263,10 +263,10 @@ TEST(WheelRegulator, IntegratorIsFlushedWhenTheSetpointReturnsToZero)
   // stale-twist branches of update(), which call write_wheel_commands with
   // zeros, provably free of any correction.
   //
-  // SINCE 2026-08-21 THE SLOW-END FLOOR REACHES THIS CASE FIRST — a zero setpoint
-  // is below any positive floor, so the wheel is gated off before the bound is
-  // even computed. The observable result is unchanged, which is the point: the
-  // floor SUBSUMES the zero-bound argument rather than competing with it.
+  // THE SLOW-END FLOOR REACHES THIS CASE FIRST — a zero setpoint is below any
+  // positive floor, so the wheel is gated off before the bound is even
+  // computed. The observable result is unchanged: the floor SUBSUMES the
+  // zero-bound argument rather than competing with it.
   Rig rig(test_config());
   rig.run(5.0, uniform(kReferenceSetpoint), uniform(2.4));
   ASSERT_GT(rig.regulator.integrator(0), 0.0);
@@ -725,19 +725,15 @@ TEST(WheelRegulatorStatus, StandstillIsNotReportedAsSaturated)
 
 TEST(WheelRegulatorStatus, APerfectlyStationaryMachineReportsTheFloorAndNotStaleness)
 {
-  // EXPECTATION CHANGED 2026-08-21 WITH THE SLOW-END FLOOR, and the old one is
-  // written out because it is still HALF true. A machine that is genuinely
-  // standing still emits a feed in which NOTHING CHANGES — same velocities, same
-  // accumulated positions — and the only evidence of a new frame a state
-  // interface can carry is a changed value. So a true standstill IS also stale,
-  // and until the floor existed that is what this state reported.
-  //
-  // It now reports the FLOOR instead, because the floor is tested first, and
-  // that ordering is A17's requirement rather than a preference: A17's own
-  // scenario is "a command below the floor and a measured speed of zero", which
-  // is precisely the case that is stale as well. Reporting staleness there would
-  // hide the operative reason behind an incidental one. Staleness above the
-  // floor is unaffected and is still exercised — see EachGateReportsItsOwnReason.
+  // A machine standing genuinely still emits a feed where NOTHING CHANGES — same
+  // velocities, same accumulated positions — so by the state interface's own
+  // definition of freshness a true standstill IS also stale. This reports the
+  // FLOOR instead, because the floor is tested first: A17's ordering
+  // requirement, not a preference. A17's own scenario ("a command below the
+  // floor and a measured speed of zero") is exactly this stale case, and
+  // reporting staleness there would hide the operative reason behind an
+  // incidental one. Staleness above the floor is unaffected — see
+  // EachGateReportsItsOwnReason.
   //
   // Neither state has a control consequence here: at a zero setpoint the
   // authority bound is zero anyway, so a regulating wheel and a gated one command
@@ -801,7 +797,7 @@ TEST(WheelRegulatorStatus, EachGateReportsItsOwnReason)
 }
 
 // ---------------------------------------------------------------------------
-// THE SLOW-END FLOOR — FR-14 item 12, acceptance A17, user decision 2026-08-21.
+// THE SLOW-END FLOOR — FR-14 item 12, acceptance A17.
 //
 // THE FLOOR IS NOT A NUMBER OF ITS OWN: it is HWR-30a's arming threshold
 // stall_min_command_rad_s, handed in per cycle from the detector's own config.
@@ -829,8 +825,8 @@ TEST(WheelRegulatorFloor, BelowTheFloorThereIsNoCorrectionAndTheIntegratorIsHeld
       EXPECT_EQ(rig.regulator.integrator(i), 0.0) << "wheel " << i << " cycle " << c;
       EXPECT_EQ(result.status[i], gripperx_swerve_controller::kRegulatorOffBelowFloor)
         << "wheel " << i << " cycle " << c;
-      // The half of A17 that used to hold only by construction: it never even
-      // approaches the authority limit, because it never regulates.
+      // A17's authority-limit half: never even approached here, because the
+      // wheel never regulates below the floor.
       EXPECT_NE(result.status[i], gripperx_swerve_controller::kRegulatorAtAuthorityLimit)
         << "wheel " << i << " cycle " << c;
     }

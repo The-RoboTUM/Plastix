@@ -46,8 +46,8 @@ cuts the overshoot by roughly a factor of five. The conservative constant still
 applies until the first repeat has been seen, which is exactly the interval the
 constant was needed for.
 
-THE DEAD-MAN CEILING IS NEVER REMOVED. Safety incident 06.07.: a latched W in a
-forgotten terminal left the motors running. Release events make the dead-man
+THE DEAD-MAN CEILING IS NEVER REMOVED: a latched W in a forgotten or dead
+terminal must not leave the motors running. Release events make the dead-man
 fire EARLIER, never later — `held()` requires both "no release seen" AND "an
 event within the ceiling". A terminal that dies, a suspended process or a lost
 SSH pipe delivers no release, and the ceiling is what still stops the robot.

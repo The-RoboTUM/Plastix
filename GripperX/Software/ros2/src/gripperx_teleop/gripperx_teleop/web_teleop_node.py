@@ -349,18 +349,15 @@ class WebTeleopNode(KeyboardTeleopNode):
         """Notice when the crab heading crosses a dead band, and say so.
 
         Steering a crab is continuous only inside the reachable arcs; between
-        them psi JUMPS the 45 deg gap (crab_psi_snap). Measured on the desk rig
-        2026-08-24: the modules swing that 45 deg WITH TRACTION STILL ON. The
-        teleop TransitionGuard does not cover it -- it withholds drive on a
-        change of MANOEUVRE, and a steered crab stays crab_left throughout. The
-        thing that is meant to cover it is swerve_controller's alignment gate,
-        which ships DISABLED on purpose (ros2_controllers.yaml: "the ONE key to
-        change to try it").
+        them psi JUMPS the dead-band gap (crab_psi_snap), modules swinging with
+        traction still on. The teleop TransitionGuard does not cover this -- it
+        withholds drive on a change of MANOEUVRE, and a steered crab stays
+        crab_left throughout. swerve_controller's alignment gate is meant to
+        cover it, but ships DISABLED by default (ros2_controllers.yaml).
 
-        So this is not a defect to fix here; it is a regime the operator has to
-        be able to see they are in. psi moves at the crab steering rate, a
-        couple of degrees per tick, so anything above 20 deg in one tick is a
-        gap crossing and nothing else.
+        Not a defect to fix here -- a regime the operator must be able to see.
+        psi moves a couple of degrees per tick, so anything above 20 deg in one
+        tick is a gap crossing and nothing else.
         """
         psi = self._crab_psi
         if psi is None:
@@ -400,11 +397,11 @@ class WebTeleopNode(KeyboardTeleopNode):
             'rivals': list(self._rivals),
             'limits': {
                 'steer_limit_deg': math.degrees(self._limit),
-                # A/D became MOMENTARY on 2026-08-24: straight ahead is the
-                # resting state, and the angle springs back to exactly 0 when
-                # neither key is held. The page has to say which of the two
-                # models it is showing, because the difference is invisible in
-                # a still picture and decisive in a moving one.
+                # A/D is MOMENTARY: straight ahead is the resting state, and
+                # the angle springs back to exactly 0 when neither key is
+                # held. The page has to say which of the two models it is
+                # showing, because the difference is invisible in a still
+                # picture and decisive in a moving one.
                 'steer_rate_deg_s': math.degrees(self._rate),
                 'steer_return_rate_deg_s': math.degrees(self._return_rate),
                 'linear_vel_m_s': self._lin_vel,

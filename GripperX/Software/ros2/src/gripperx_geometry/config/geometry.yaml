@@ -14,11 +14,9 @@
 #   the consumers).
 #
 # WHY IT EXISTS
-#   Before this file, `wheel_radius` was written out at 13 code sites plus
-#   documentation, and `a`/`b` at 8. They drifted: as of 2026-08-21 three node
-#   defaults and three test files still carried the obsolete 0.203 / 0.16556
-#   CAD pair while the configs had moved to 0.180 / 0.110. See the
-#   KNOWN_DIVERGENCES registry in test/test_geometry_consistency.py.
+#   Duplicated geometric values drift out of agreement with each other
+#   undetected. See the KNOWN_DIVERGENCES registry in
+#   test/test_geometry_consistency.py for the consistency check this enables.
 #
 # THE RULE THAT MAKES IT WORK
 #   Quantities are DISTINCT AND NAMED. Two numbers that happen to be equal today

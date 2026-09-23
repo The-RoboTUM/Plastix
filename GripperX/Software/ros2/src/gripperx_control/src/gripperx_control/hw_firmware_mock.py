@@ -46,15 +46,14 @@ class HwFirmwareMock(Node):
 
         self.declare_parameter("joint_commands_topic", "/hw/joint_commands")
         self.declare_parameter("joint_states_topic", "/hw/joint_states")
-        # 30.0 Hz, deliberately MATCHING the real firmware rather than being fast.
-        # The firmware publishes /hw/joint_states every STATES_PUBLISH_US = 33333 us
-        # (Software/microros/firmware/src/main.cpp) -> 30 Hz, measured 29.999 Hz on
-        # hardware 2026-08-20. This mock is the ONLY stand-in for the firmware that
-        # exists anywhere - the twin replaces the whole hardware interface with
-        # gz_ros2_control and has no /hw/* topics at all - so anything characterised
-        # against it sees this cadence. It was 100.0 (3.3x the real rate), which made
-        # any timing conclusion drawn here wrong by construction.
-        # KEEP THIS IN STEP WITH STATES_PUBLISH_US. Raise it per-launch if you want a
+        # 30.0 Hz, deliberately MATCHING the real firmware rather than being
+        # fast: the firmware publishes /hw/joint_states every
+        # STATES_PUBLISH_US = 33333 us (Software/microros/firmware/src/main.cpp)
+        # -> 30 Hz. This mock is the ONLY stand-in for the firmware that
+        # exists anywhere - the twin replaces the whole hardware interface
+        # with gz_ros2_control and has no /hw/* topics at all - so anything
+        # characterised against it sees this cadence.
+        # KEEP THIS IN STEP WITH STATES_PUBLISH_US. Raise it per-launch for a
         # deliberate over-rate stress test; do not raise the default.
         self.declare_parameter("publish_rate_hz", 30.0)
 

@@ -6,7 +6,8 @@ Controls:
   W / S       Forward / backward (deadman: only drives while held)
   A / D       Steer left / right  (cumulative — stays put when released)
   Arrow ←/→   Crab walk left / right (sideways, deadman)        FR-7
-  Arrow ↑/↓   Spin in place clockwise / counter-clockwise (deadman)
+  Arrow ↑/↓   Steer the crab's direction of travel while crabbing (deadman)
+  0 / 9       Spin in place clockwise / counter-clockwise (deadman)
   Space       EMERGENCY STOP: stop + straight ahead + back to keyboard mode
   K           Mode: keyboard (manual control)
   G           Mode: autonomous (Nav2 takes over, goal via RViz)
@@ -19,22 +20,17 @@ Controls:
 
 Two routes, one node
 --------------------
-A/D steering keeps the legacy DIRECT route: a fixed per-wheel pattern on
-`/teleop/direct_steer`, which `steer_servo_node` applies as an override on top
-of `/hw/joint_commands`. That route has no kinematics behind it and no per-wheel
-limit awareness beyond the servo node's own clamp.
+A/D steering uses the legacy DIRECT route: a fixed per-wheel pattern on
+`/teleop/direct_steer`, applied by `steer_servo_node` as an override on top of
+`/hw/joint_commands`. Crab and spin need wheel poses that pattern cannot
+express, so they go the IK route instead: cmd_vel (linear.y / angular.z) ->
+teleop_mux -> swerve_cmd_node -> per-wheel limits -> ros2_control. While a
+manoeuvre is active this node STOPS publishing `/teleop/direct_steer`, so the
+override in steer_servo_node lapses after its `direct_timeout_sec` and the IK
+path owns the steering. The legacy route is bypassed, not removed.
 
-Crab and spin need wheel poses a fixed pattern cannot express (all four at
--+90 deg, and -+50.8 deg outward respectively), and they need the calibrated
-per-wheel steering windows so no wheel is silently clamped out of the pose. So
-they go the IK route instead: cmd_vel (linear.y / angular.z) -> teleop_mux ->
-swerve_cmd_node -> per-wheel limits -> ros2_control. While a manoeuvre is
-active this node STOPS publishing `/teleop/direct_steer`, so the override in
-steer_servo_node lapses after its `direct_timeout_sec` and the IK path actually
-owns the steering. The legacy route is bypassed, not removed.
-
-Because the two routes park the wheels in completely different poses, every
-switch between them runs through `manoeuvre.TransitionGuard`, which withholds
+Because the two routes park the wheels in different poses, every switch
+between them runs through `manoeuvre.TransitionGuard`, which withholds
 traction until the modules have measurably reached the new pose.
 """
 import sys
@@ -92,26 +88,20 @@ from gripperx_teleop.manoeuvre import (
 
 STEER_JOINT_COUNT = 4
 
-# Node names that publish the same cmd_vel this one does. Two of them at once is
-# the single genuinely dangerous way to run this system: both publish at their
-# own rate onto the same topic, teleop_mux forwards whichever arrived last, and
-# NEITHER OPERATOR'S DEAD-MAN COVERS THE OTHER'S TRAFFIC. Releasing every key
-# here does not stop a robot the other one is driving, and neither does the
-# space bar -- center() zeroes this node's twist, and the other node overwrites
-# it on its next tick. Impossible to notice by eye, cheap to detect, so it is
-# detected. Both front-ends are listed: two terminals is as bad as one of each.
+# Node names that publish the same cmd_vel this one does. Running two at once
+# is the one genuinely dangerous configuration: both publish at their own
+# rate, teleop_mux forwards whichever arrived last, and NEITHER OPERATOR'S
+# DEAD-MAN COVERS THE OTHER'S TRAFFIC — releasing keys or hitting space here
+# does not stop what the other node commands. Both front-ends are listed.
 RIVAL_NODE_NAMES = ("keyboard_teleop_node", "web_teleop_node")
 
-# On a timer, not only at start-up: the likelier mistake is a second teleop
-# started AFTERWARDS, by the operator who forgot about the first.
+# Checked on a timer, not only at start-up: a second teleop can start later.
 RIVAL_CHECK_PERIOD_SEC = 2.0
 
-# Operator default arming window for the external authority gate
-# (gripperx_external's goal_gateway_node, service /gripperx/external/set_arming).
-# Mirrors AGREED_DEFAULT_ARMING_DURATION_SEC in goal_gateway_node.py — the
-# gateway refuses a SetArming request with a missing/zero duration outright
-# (there is no indefinite arming window), so this must always be sent
-# explicitly and non-zero.
+# Arming window for the external authority gate (goal_gateway_node's
+# /gripperx/external/set_arming). Mirrors AGREED_DEFAULT_ARMING_DURATION_SEC
+# there; the gateway refuses a missing/zero duration outright, so this must
+# always be sent explicit and non-zero.
 ARM_REQUEST_DURATION_SEC = 120.0
 
 # Drive keys (dead-man, SR-3) versus the cumulative steering keys. The arrows
@@ -130,19 +120,17 @@ STEER_PATTERN = (1.0, 1.0, -1.0, -1.0)
 def _pattern_steer_limit(outward_rad, inward_rad, outward_sign, pattern):
     """Largest |steering value| this node may emit without being clamped.
 
-    The reachable joint window is asymmetric and per wheel (calibrated
-    2026-08-13, gripperx_control/config/steer_servo.yaml): ~100 deg outward,
-    ~30 deg inward, with `outward_sign` saying which sign of the joint angle is
-    outward for that wheel (MEASURED: [-1, +1, +1, -1] — do not derive it from
-    the URDF, that gives the wrong answer on the front pair).
+    The reachable joint window is asymmetric and per wheel (mirrors
+    gripperx_control/config/steer_servo.yaml, the source of truth, for the
+    current outward/inward limits). `outward_sign` says which sign of the
+    joint angle is outward for each wheel — MEASURED: [-1, +1, +1, -1], do not
+    derive it from the URDF (wrong on the front pair).
 
-    Because A/D drives all four wheels from ONE value and in BOTH directions,
-    the usable envelope is the tightest bound over all wheels and both signs.
-    With the counter-rotating pattern above, every steering direction puts two
-    wheels on their inward side, so the answer is the inward limit — 30 deg.
-    That is a real mechanical bound, not a policy choice: asking for more would
-    only be clamped by steer_servo_node, silently, leaving the four wheels in a
-    pose that matches no single instantaneous centre of rotation.
+    A/D drives all four wheels from one value in both directions, so the
+    usable envelope is the tightest bound over all wheels and signs; with the
+    counter-rotating pattern above that is always the inward limit. Asking for
+    more would be clamped by steer_servo_node silently, leaving a pose that
+    matches no single instantaneous centre of rotation.
     """
 
     bound = float('inf')
@@ -168,13 +156,12 @@ def update_steering_angle(
 ) -> float:
     """One tick of the MOMENTARY A/D steering angle.
 
-    Pure, and module-level for the same reason _pattern_steer_limit above is:
-    the behaviour the operator will judge this branch by is decided here, so it
-    has to be checkable without a robot (test/check_steering_return.py).
+    Pure and module-level: the behaviour the operator judges this by is
+    decided here, so it is checkable without a robot
+    (test/check_steering_return.py).
 
-    Holding both A and D is not an error and not a special case — the two
-    increments simply cancel, which is also what the operator would expect from
-    pressing both. Holding neither runs the angle back to EXACTLY zero.
+    Holding both A and D cancels rather than erroring. Holding neither runs
+    the angle back to EXACTLY zero.
     """
 
     if steering_left:
@@ -193,76 +180,60 @@ def update_steering_angle(
 class KeyboardTeleopNode(Node):
 
     def __init__(self, node_name: str = 'keyboard_teleop_node'):
-        # The name is a parameter only so a second front-end can reuse this
-        # node without colliding in the ROS graph (web_teleop_node). Default
+        # node_name is a parameter only so a second front-end (web_teleop_node)
+        # can reuse this class without colliding in the ROS graph. Default
         # unchanged -- every existing launch and `ros2 run` invocation keeps
         # the name it had.
         super().__init__(node_name)
 
         self.declare_parameter('steer_rate_rad_s',  0.6)
-        # SELF-CENTRING RETURN RATE (user decision 2026-08-24). A/D are now
-        # momentary: the angle grows while the key is held and runs back to zero
-        # when it is not, so STRAIGHT AHEAD IS THE RESTING STATE and the robot
-        # can no longer be driven off with a steering angle somebody set minutes
-        # ago and forgot. That forgotten-angle case was the reason the cumulative
-        # model needed a separate centring command at all (FR-13).
-        #
-        # Separate from steer_rate_rad_s rather than reusing it, because the two
-        # are not the same judgement: the outward rate is how fast the operator
-        # may ASK for angle, the return rate is how fast the machine takes it
-        # away again. Defaulted EQUAL to it, so the symmetric behaviour is what
-        # ships and an asymmetry has to be chosen deliberately.
-        #
-        # It is NOT a stop path and must not be read as one: the drive is
-        # commanded by W/S through the dead-man and is unaffected by this. The
-        # emergency stop keeps its own step to zero.
+        # Self-centring return rate for momentary A/D steering (FR-13):
+        # straight ahead is the resting state, so the robot cannot be driven
+        # off with a steering angle set minutes ago and forgotten. Separate
+        # from steer_rate_rad_s because ask-rate and give-back-rate are not
+        # the same judgement — defaulted equal so any asymmetry is deliberate.
+        # NOT a stop path: drive (W/S) is commanded through the dead-man and
+        # unaffected by this; the emergency stop keeps its own step to zero.
         self.declare_parameter('steer_return_rate_rad_s', 0.6)
         # Reachable steering window, mirroring gripperx_control/config/steer_servo.yaml
-        # (calibrated 2026-08-13, source of truth). Joint order FL, FR, BL, BR.
-        self.declare_parameter('steer_outward_limit_rad', math.radians(100.0))
-        self.declare_parameter('steer_inward_limit_rad',  math.radians(35.0))
-        self.declare_parameter('steer_outward_sign',      [-1, 1, 1, -1])
-        # Operator cap on the A/D steering value. It is additionally capped at
-        # what the window above actually allows for this node's steering pattern
-        # (see _pattern_steer_limit) — an operator can only ever ask for LESS
-        # than the mechanics allow, never for an angle the servo node would then
-        # silently clamp. 35 deg is exactly that mechanical bound — written as
-        # radians(35) rather than a rounded 0.6109, which would sit a hair ABOVE
-        # the limit and trip the guard below on every start.
+        # (the source of truth). Joint order FL, FR, BL, BR.
+        # These defaults are TAKEN from gripperx_control.steering_limits, not
+        # written out: the outward limit was raised 100 -> 125 deg on 2026-09-18
+        # and this node kept commanding against the old number for five days,
+        # because a copied default has no way of noticing that its source moved.
+        # Do not replace these with literals.
+        self.declare_parameter('steer_outward_limit_rad',
+                               math.radians(DEFAULT_OUTWARD_LIMIT_DEG))
+        self.declare_parameter('steer_inward_limit_rad',
+                               math.radians(DEFAULT_INWARD_LIMIT_DEG))
+        self.declare_parameter('steer_outward_sign',      list(DEFAULT_OUTWARD_SIGN))
+        # Operator cap on the A/D steering value, additionally capped by
+        # whatever _pattern_steer_limit allows for this pattern — an operator
+        # can only ask for LESS than the mechanics allow, never something
+        # steer_servo_node would then clamp silently. Written as radians(35),
+        # not a rounded literal, which would sit a hair above the limit and
+        # trip the check below on every start.
         self.declare_parameter('steer_limit_rad',   math.radians(35.0))
         self.declare_parameter('publish_rate_hz',   50.0)
         self.declare_parameter('linear_vel_m_s',    0.5)
-        # DEAD-MAN CEILING for driving. Its MEANING CHANGED with the key input
-        # layer (gripperx_teleop/key_input.py) and it is no longer the normal
-        # stopping time:
-        #
-        #   * terminal WITH the kitty keyboard protocol — the robot stops on the
-        #     real key-release event, typically within one publish tick (20 ms).
-        #     This value then only covers a terminal that died without sending
-        #     the release, which is the case the 06.07. incident is about.
-        #   * terminal WITHOUT it — the tracker MEASURES the auto-repeat interval
-        #     and stops roughly 3 repeats after the last one (~0.1 s at a 30 ms
-        #     repeat rate). This value applies in full only until the first
-        #     repeat has been seen, i.e. across the terminal's ~0.5 s initial
-        #     repeat delay, which is the interval it was sized for and the one
-        #     reason it cannot simply be lowered.
-        #
-        # It is a CEILING in both regimes: nothing can extend the dead-man past
-        # it, and the measured window is clamped to it. The old advice to raise
-        # the X11 repeat rate (`xset r rate`) is dropped — it is X11-only, and
-        # tying the robot's stopping distance to a desktop setting was never a
-        # property anyone could verify.
+        # DEAD-MAN CEILING for driving — a CEILING in both regimes, not the
+        # normal stopping time. With the kitty keyboard protocol the robot
+        # stops on the real key-release (~one publish tick); this value then
+        # only covers a terminal that died without sending the release.
+        # Without the protocol, the tracker measures the auto-repeat interval
+        # and stops ~3 repeats after the last one, sized for the terminal's
+        # ~0.5 s initial repeat delay — it cannot simply be lowered. Raising
+        # the X11 repeat rate does not help: X11-only, and ties stopping
+        # distance to an unverifiable desktop setting.
         self.declare_parameter('drive_hold_sec',     0.6)
         self.declare_parameter('direct_steer_topic', '/teleop/direct_steer')
         self.declare_parameter('cmd_vel_topic',      '/teleop/keyboard/cmd_vel')
         self.declare_parameter('arm_command_topic',  '/arm/command')
-        # DT-4/M2 digital twin: in the sim there is no steer_servo_node
-        # to consume /teleop/direct_steer. Default false → cmd_vel.angular.z
-        # always stays 0, byte-identical real behavior. true (sim launch only)
-        # additionally mirrors the cumulative A/D steering angle as angular.z onto
-        # cmd_vel_topic, so that teleop_mux (keyboard_pass_angular_z=true) →
-        # swerve_cmd_node can take over steering. See DT-10 for the
-        # planned real servo steering path in the sim.
+        # DT-4/M2 digital twin: sim has no steer_servo_node to consume
+        # /teleop/direct_steer. Default false keeps cmd_vel.angular.z at 0
+        # (byte-identical real behaviour); true (sim launch only) mirrors the
+        # cumulative A/D angle onto cmd_vel_topic so teleop_mux/swerve_cmd_node
+        # can take over steering. See DT-10 for the planned real servo path.
         self.declare_parameter('publish_steer_cmd_vel', False)
         self.declare_parameter('steer_to_omega_gain',   1.0)
 
@@ -272,53 +243,36 @@ class KeyboardTeleopNode(Node):
         # and crab in particular moves the robot along an axis it has no sensor
         # coverage for.
         self.declare_parameter('crab_speed_m_s',   0.25)
-        # 0.60 -> 0.55 on 2026-08-21, to match FollowPath.max_vel_theta so a
-        # teleop turn and a Nav2 turn smear the scan by the same amount. Below
+        # Matched to FollowPath.max_vel_theta so a teleop turn and a Nav2 turn
+        # smear the scan by the same amount. Cannot go much lower: below
         # ~0.45 rad/s the wheels drop under the 0.12 m/s floor and the robot
-        # stops turning rather than turning slowly, so this cannot go much
-        # lower: at r_eff 0.2665 m, 0.55 rad/s puts the wheels at 0.147 m/s.
-        # The residual 3.1 deg of LiDAR smear per scan is a property of a 10 Hz
-        # sensor on a machine with a rotation floor, not something a speed
-        # setting can remove. Removing it needs scan de-skewing.
+        # stops turning rather than turning slowly (at r_eff 0.2665 m, 0.55
+        # rad/s puts the wheels at 0.147 m/s). The residual LiDAR smear is a
+        # property of a 10 Hz sensor on a machine with a rotation floor;
+        # removing it needs scan de-skewing, not a speed change.
         self.declare_parameter('spin_speed_rad_s', 0.55)
         # Traction while the modules are still slewing into the new pose. The
-        # IK's steering angle atan2(vy_i, vx_i) is INVARIANT under a positive
-        # scaling of the whole twist, so a scaled-down twist commands exactly
-        # the target pose at a fraction of the wheel speed. It cannot be 0:
-        # a zero twist is not "the same pose slowly", it is "wheels straight".
-        # There is no steer-only command in this chain (see the note in
-        # docs/TELEOP_MANOEUVRES.md) — 2 % of 0.25 m/s for the ~1 s of slewing
-        # is ~5 mm of wheel travel, against the full speed it would be without
-        # the guard.
+        # IK's steering angle atan2(vy_i, vx_i) is invariant under a positive
+        # scaling of the whole twist, so a scaled-down twist commands the same
+        # target pose at a fraction of the wheel speed. Cannot be 0 — a zero
+        # twist gives "wheels straight", not "the same pose slowly". There is
+        # no steer-only command in this chain (see docs/TELEOP_MANOEUVRES.md).
         self.declare_parameter('manoeuvre_pose_scale', 0.02)
-        # ── Steering a crab (arrow up/down), added 2026-08-24 ──────────────
+        # ── Steering a crab (arrow up/down) ─────────────────────────────────
         # Rate at which arrow up/down rotate the crab's DIRECTION OF TRAVEL psi.
         # Matched to steer_rate_rad_s so both steering keys move the machine at
-        # the same rate and the operator only has one number to learn.
+        # the same rate and the operator has only one number to learn.
         self.declare_parameter('crab_steer_rate_rad_s', 0.6)
-        # WHAT HAPPENS AT A DEAD BAND, and this is the one behavioural choice in
-        # the feature.
-        #
-        # A pure translation puts all four modules on the SAME angle, and the
-        # asymmetric windows leave only four reachable arcs with four 45 deg dead
-        # bands between them (see reachable_translation_arcs() in manoeuvre.py):
-        #
-        #     reachable  [-180,-145] [-100,-80] [-35,+35] [+80,+100] [+145,+180]
-        #
-        # So psi CANNOT sweep continuously from pure crab (+-90, and it has only
-        # +-10 deg of room) into the forward cone (+-35). In between there is no
-        # pose at all, and swerve_controller would return kRejected, zero the
-        # drive and hold the steering for the whole 45 deg.
-        #
-        #   true  -- psi JUMPS across the gap to the far edge and the robot pauses
-        #            while the modules swing the 45 deg. The pause is real, it is
-        #            what the machine has to do, and it is exactly the transition
-        #            the guard (and swerve_controller's alignment gate) exist for.
-        #   false -- psi STOPS at the edge of the arc. Honest, but then steering a
-        #            crab means +-10 deg and nothing more.
-        #
-        # Defaulted true: stopping at +-80 deg makes the keys look broken, and the
-        # jump is bounded, guarded and announced.
+        # WHAT HAPPENS AT A DEAD BAND: a pure translation puts all four modules
+        # on the same angle, and the asymmetric windows leave four reachable
+        # arcs with 45 deg dead bands between them (see
+        # reachable_translation_arcs() in manoeuvre.py) — psi cannot sweep
+        # continuously between them.
+        #   true  -- psi jumps across the gap to the far edge; the robot pauses
+        #            while the modules swing, which is exactly what the guard
+        #            (and swerve_controller's alignment gate) exist for.
+        #   false -- psi stops at the edge of the arc instead.
+        # Defaulted true: stopping at the arc edge makes the keys look broken.
         self.declare_parameter('crab_psi_snap', True)
         # Must be >= steer_servo_node's direct_timeout_sec (0.5 s), otherwise
         # the pose is commanded while the direct-steer override still wins.
@@ -331,38 +285,32 @@ class KeyboardTeleopNode(Node):
         self.declare_parameter('steer_states_topic',   '/hw/steer_states')
         self.declare_parameter('steer_states_timeout_sec', 0.5)
         self.declare_parameter('manoeuvre_topic',      '/teleop/manoeuvre')
-        # Geometry and steering window used ONLY to predict the pose
-        # swerve_cmd_node will command, so the guard waits for the right angles.
+        # Geometry and steering window used ONLY to predict the pose the motion
+        # chain will command, so the guard waits for the right angles.
         # Mirrors gripperx_control/config/swerve_cmd.yaml and, through it,
         # config/steer_servo.yaml (the calibrated source of truth).
-        # NOTE: this node is superseded by gripperx_swerve_controller/SwerveController
-        # and is on the deletion-round list (out of the active path since 19c33c4),
-        # still present on disk pending a separate, user-owned removal.
-        # GEOMETRY COMES FROM THE SINGLE SOURCE OF TRUTH, NOT FROM A LOCAL DEFAULT.
-        # Declared WITHOUT a default on purpose: gripperx_teleop/config/keyboard_teleop.yaml
-        # supplies a, b and wheel_radius, and that file is held to
-        # gripperx_geometry/config/geometry.yaml by colcon test. A node-level default here
-        # would be a second copy that can drift, and drift is exactly what bit this file.
         #
-        # WHY, kept from the branch that carried the interim stop-gap (2026-08-24), because
-        # the reasoning is the reason the guard is moving into the controller at all:
-        # the retired values were a = 0.203 / b = 0.16556, which are not the numbers the
-        # controller plans with. That was not cosmetic -- it made the guard structurally
-        # unable to do its job for one of the two manoeuvres:
-        #
-        #     controller commands the spin pose at  atan2(0.1809, 0.1087) = 58.999 deg
-        #     this node predicted it at             atan2(0.203,  0.16556) = 50.80 deg
-        #     difference                                                     8.20 deg
-        #     align_tolerance_rad                                            6.00 deg
-        #
-        # so the measured angles could NEVER come within tolerance of the pose being waited
-        # for, and every in-place spin armed on the TIMEOUT -- "pose NOT confirmed", 1.5 s
-        # after the key, whether or not the modules had arrived. Crab was unaffected,
-        # because +-90 deg is a property of a pure translation and not of a or b, which is
-        # why this stayed invisible.
-        #
-        # The branch's stop-gap (a hardcoded 0.180 / 0.110) is SUPERSEDED by the parameter
-        # file rather than merged: it was still a second copy, and not even the CAD pair.
+        # WHAT IS SUPERSEDED HERE, precisely — this note used to say only
+        # "superseded ... pending a separate, user-owned removal", and it was
+        # not clear whether that meant this node, this parameter block, or the
+        # guard. Established 2026-09-23:
+        #   - THIS NODE IS ACTIVE. So is TransitionGuard, which is load-bearing:
+        #     it withholds traction until the modules have measurably reached
+        #     the new pose (constructed below, driven in the key loop).
+        #   - What is out of the active path is swerve_cmd_node, which used to
+        #     turn these parameters into wheel commands; gripperx_swerve_controller
+        #     does that now. control.launch.py is deliberately not launched, and
+        #     the files stay on disk only so one revert restores the old chain —
+        #     deletion is the step after hardware sign-off (real_robot.launch.py).
+        #   - The prediction stays correct across that change: both chains derive
+        #     the crab and spin poses from the same geometry, so the angles the
+        #     guard waits for are the angles that arrive. The dead thing is the
+        #     PROVENANCE of these parameters, not their values.
+        # GEOMETRY COMES FROM THE SINGLE SOURCE OF TRUTH, NOT A LOCAL DEFAULT:
+        # declared without one so gripperx_teleop/config/keyboard_teleop.yaml
+        # must supply a, b, wheel_radius — held to
+        # gripperx_geometry/config/geometry.yaml by colcon test. A node-level
+        # default here would be a second, driftable copy.
         self.declare_parameter('a',            Parameter.Type.DOUBLE)
         self.declare_parameter('b',            Parameter.Type.DOUBLE)
         self.declare_parameter('wheel_radius', Parameter.Type.DOUBLE)
@@ -450,11 +398,10 @@ class KeyboardTeleopNode(Node):
         )
 
         self._lock      = threading.Lock()
-        # Key state. `release_reporting` is decided by the reader thread once it
-        # has a raw tty and has negotiated with the terminal (_key_reader), so
-        # the tracker starts in the FALLBACK regime and is upgraded in place.
-        # Starting the other way round would mean a terminal without the
-        # protocol spends its first seconds believing every key is still down.
+        # release_reporting starts False (fallback regime) until the reader
+        # thread negotiates with the terminal (_key_reader) and upgrades it in
+        # place; the other way round would leave a terminal without the
+        # protocol believing every key is still down for its first seconds.
         self._keys      = KeyStateTracker(
             ALL_KEYS,
             ceiling_sec=float(self.get_parameter('drive_hold_sec').value),
@@ -497,10 +444,9 @@ class KeyboardTeleopNode(Node):
             f'(max {math.degrees(self._limit):.1f} deg) | '
             f'Drive→{cmd_vel_topic} | Arm→{arm_topic}'
         )
-        # Follows the 2026-08-24 rebinding, which the banner box below already
-        # carries: arrow up/down steer the crab, the spins are on 0 and 9. This
-        # line was missed in that pass and still advertised the old binding --
-        # a start-up log that names the wrong keys is worse than none.
+        # Must track the actual bindings above (arrow keys steer the crab; 0/9
+        # spin) — a stale log message here still reads plausibly, so drift is
+        # easy to miss.
         self.get_logger().info(
             f'Manoeuvres: arrow ←/→ crab at {self._crab_speed:.2f} m/s '
             f'(arrow ↑/↓ steer it), 0 spin CW / 9 spin CCW at '
@@ -514,12 +460,10 @@ class KeyboardTeleopNode(Node):
     def _check_for_rivals(self):
         """Notice a second teleop publishing the same cmd_vel as this one.
 
-        Deliberately does NOT kill the other node. It might be the one an
-        operator is actually holding a key on, and killing it blind would be a
-        worse failure than the one being prevented -- a robot mid-manoeuvre
-        whose commands stop arriving is not the same as a robot that was told
-        to stop. So this says so, and leaves the decision to the human who can
-        see both.
+        Deliberately does NOT kill the other node: it might be the one an
+        operator is holding a key on, and killing it blind risks a robot
+        mid-manoeuvre whose commands stop arriving — worse than the failure
+        being prevented. Leaves the decision to the human who can see both.
         """
         own = self.get_name()
         names = self.get_node_names()
@@ -592,11 +536,10 @@ class KeyboardTeleopNode(Node):
     def _active_manoeuvre(self, now: float) -> str:
         """Which manoeuvre the currently held arrow key asks for.
 
-        The manoeuvre is defined solely by the held arrow — no latch, so
-        releasing it ends the manoeuvre within the dead-man window (SR-3) and
-        the wheels return to straight ahead. `press()` already invalidates the
-        competing keys, so at most one can be inside the window; the loop below
-        is only a deterministic tie-breaker.
+        Defined solely by the held arrow — no latch, so releasing it ends the
+        manoeuvre within the dead-man window (SR-3). `press()` already
+        invalidates competing keys, so at most one can be in the window; the
+        loop below is only a deterministic tie-breaker.
         """
         for key in MANOEUVRE_KEY_PRECEDENCE:
             if self._keys.held(key, now, self._drive_hold):
@@ -606,15 +549,13 @@ class KeyboardTeleopNode(Node):
     def _update_crab_psi(self, manoeuvre: str, now: float) -> float:
         """One tick of the crab's direction of travel. Caller holds the lock.
 
-        psi starts at the plain crab heading (+-90 deg) and arrow up/down rotate
-        it. THE RULE IS THE SAME ON BOTH SIDES: up steers towards the FRONT
-        (psi -> 0), down towards the REAR (psi -> +-180). Expressed through the
-        side sign rather than as two cases, so a crab-left and a crab-right
-        cannot drift into behaving differently.
+        psi starts at the plain crab heading (+-90 deg); up steers towards the
+        front (psi -> 0), down towards the rear (psi -> +-180), same rule on
+        both sides via the side sign so left/right cannot drift apart.
 
-        psi is CLAMPED TO THE ROBOT'S OWN SIDE. Letting a crab-left steer through
-        zero into a crab-right would silently change which manoeuvre is active
-        while the operator is still holding the left arrow.
+        Clamped to the robot's own side: letting psi cross zero would silently
+        change which manoeuvre is active while the operator still holds the
+        arrow.
         """
 
         side = 1.0 if manoeuvre == CRAB_LEFT else -1.0
@@ -625,10 +566,8 @@ class KeyboardTeleopNode(Node):
         up = self._held('up')
         down = self._held('down')
         if up == down:
-            # Neither, or both cancelling. psi HOLDS — unlike A/D it does not
-            # spring back, because there is no direction here that is more
-            # "neutral" than another: the operator picked a heading and the robot
-            # is travelling along it.
+            # Neither, or both cancelling: psi HOLDS rather than springing back
+            # like A/D — no direction here is "neutral".
             return psi
 
         step = self._crab_steer_rate * self._dt
@@ -650,10 +589,9 @@ class KeyboardTeleopNode(Node):
                 )
                 psi = snapped
         else:
-            # No snap: refuse to enter the dead band at all, i.e. stop at the arc
-            # edge. Without this psi would walk into a region where
-            # swerve_controller rejects every twist, and the operator would see
-            # the robot simply stop with no reason given.
+            # No snap: stop at the arc edge instead. Without this, psi would
+            # enter a region where swerve_controller rejects every twist and
+            # the robot simply stops with no visible reason.
             reachable = snap_psi_into_reach(psi, self._translation_arcs, moving_towards_zero)
             if reachable != psi:
                 psi = self._crab_psi if self._crab_psi is not None else side * (math.pi / 2.0)
@@ -674,34 +612,31 @@ class KeyboardTeleopNode(Node):
                 # cumulative A/D angle has.
                 self._crab_psi = None
             if self._guard.request(manoeuvre, now) and manoeuvre != CORNERING:
-                # The cumulative A/D angle describes a pose the manoeuvre is
-                # about to leave. Zero it, so releasing the arrow key returns the
-                # wheels to straight ahead instead of snapping back to a stale
-                # steering angle the operator set minutes ago.
+                # Zero the cumulative A/D angle: it describes a pose the
+                # manoeuvre is leaving, and left alone the wheels would snap
+                # back to a stale angle when the arrow key is released.
                 self._steer = 0.0
 
             if crabbing:
                 self._crab_psi = self._update_crab_psi(manoeuvre, now)
 
-            # A/D are MOMENTARY, and W/S are deliberately not consulted here:
-            # steering and driving are independent axes of one command, so the
-            # operator can hold W and correct with A at the same time. `press()`
-            # already declines to invalidate the drive keys when a steer key
-            # arrives, so nothing above this line stands in the way either.
+            # A/D are MOMENTARY; W/S are deliberately not consulted here —
+            # steering and driving are independent axes of one command, and
+            # `press()` already avoids invalidating drive keys when a steer
+            # key arrives.
             #
-            # NOTE FOR THE OPERATOR, and it is not a defect of this branch: a
-            # TERMINAL cannot report two keys held at once — it auto-repeats only
-            # the LAST key pressed — so under a plain terminal, tapping A while
-            # holding W still lets the drive lapse. What removes that is the key
-            # input layer on Theo-teleop-responsive; this branch supplies the
-            # SEMANTICS and that one supplies the key state. Each is testable
-            # alone; together they are the feature.
-            # Self-centring converges on EXACTLY zero rather than
-            # asymptotically: a residual of a few milliradians would keep
-            # /teleop/direct_steer alive at a non-zero angle for ever, and that
-            # override wins over the IK inside swerve_controller (A2), so
-            # "almost straight" would quietly hold the servos off the IK path
-            # indefinitely. See update_steering_angle().
+            # A plain terminal cannot report two keys held at once (it
+            # auto-repeats only the last key pressed), so tapping A while
+            # holding W can still let the drive lapse; the key input layer's
+            # release reporting removes that — this method supplies the
+            # semantics, that layer supplies key state.
+            #
+            # Self-centring converges on EXACTLY zero, not asymptotically: a
+            # residual of a few milliradians would keep /teleop/direct_steer
+            # alive at a non-zero angle forever, and that override wins over
+            # the IK inside swerve_controller (A2) — "almost straight" would
+            # quietly hold the servos off the IK path indefinitely. See
+            # update_steering_angle().
             self._steer = update_steering_angle(
                 self._steer,
                 self._held('a'),
@@ -713,10 +648,10 @@ class KeyboardTeleopNode(Node):
             )
             angle = self._steer
 
-            # Deadman: only drives while the key is held (key-repeat window).
-            # No latch — safety incident 06.07.: a latched W in a
-            # forgotten terminal left the motors running continuously. The
-            # arrow keys are drive keys too and use the same window.
+            # Deadman: only drives while the key is held. No latch — a latched
+            # W in a forgotten terminal left the motors running continuously
+            # (incident 2026-07-06). The arrow keys are drive keys too and use
+            # the same window.
             if manoeuvre == CORNERING:
                 if self._held('w', self._drive_hold):
                     drive = 1
@@ -752,21 +687,20 @@ class KeyboardTeleopNode(Node):
             steer_msg = Float64MultiArray()
             steer_msg.data = [angle * factor for factor in STEER_PATTERN]  # FL, FR, BL, BR
             self._steer_pub.publish(steer_msg)
-        # else: deliberately SILENT. steer_servo_node applies /teleop/direct_steer
-        # as an override on top of /hw/joint_commands for direct_timeout_sec
-        # (0.5 s) after the last message. Staying quiet lets that override lapse,
-        # which is the only way the IK path can own the steering servos. The
-        # legacy route is bypassed here, not removed.
+        # else: deliberately SILENT — staying quiet lets steer_servo_node's
+        # /teleop/direct_steer override (direct_timeout_sec, 0.5 s) lapse,
+        # which is the only way the IK path can own the steering servos.
+        # Legacy route bypassed, not removed.
 
         # Drive → cmd_vel (teleop_mux → swerve_cmd_node → controller)
         cmd = Twist()
         if manoeuvre == CORNERING:
             cmd.linear.x = self._lin_vel * drive if armed else 0.0
             if self._publish_steer_cmd_vel:
-                # Sim helper steering (DT-4/M2, see DT-10): mirror the same cumulative
-                # steering angle that goes to direct_steer above additionally as omega
-                # onto cmd_vel — a single source of truth for "how far
-                # steered", on the real robot the value stays unused (default false).
+                # Sim helper steering (DT-4/M2, see DT-10): mirrors the
+                # cumulative A/D angle as omega onto cmd_vel too — single
+                # source of truth for "how far steered"; unused on the real
+                # robot (default false).
                 cmd.angular.z = angle * self._steer_to_omega_gain
         elif pose_on:
             vx, vy, omega = manoeuvre_twist(
@@ -781,11 +715,10 @@ class KeyboardTeleopNode(Node):
         # the OLD pose — the exact thing this guard exists to prevent.
         self._cmd_vel_pub.publish(cmd)
 
-        # Observation hook. A no-op here; a front-end that wants to SHOW what
-        # was just published (the browser UI) overrides it instead of
-        # recomputing the tick for itself. Recomputation would be a second,
-        # silently diverging copy of a safety-relevant decision -- this way the
-        # display can only ever show what actually went on the wire.
+        # Observation hook, no-op here. A front-end that wants to SHOW what was
+        # published (the browser UI) overrides this instead of recomputing the
+        # tick itself, which would risk a silently diverging safety-relevant
+        # copy.
         self._observe(manoeuvre, angle, target, cmd, armed, pose_on, status)
 
         self._announce(status)
@@ -799,8 +732,8 @@ class KeyboardTeleopNode(Node):
         """Make the active manoeuvre visible — it is no longer inferable.
 
         Which key is held no longer tells the operator what the wheels are
-        doing: arrow-left first swings all four modules to 90 deg before
-        anything moves sideways, and that is alarming unannounced.
+        doing: e.g. arrow-left swings all four modules to 90 deg before
+        anything moves sideways, which is alarming unannounced.
         """
         with self._lock:
             if status == self._status_line:
@@ -852,11 +785,9 @@ class KeyboardTeleopNode(Node):
                 for other in MANOEUVRE_KEYS:
                     self._keys.clear(other, now)
             elif key in CRAB_STEER_KEYS:
-                # Arrow up/down are MODIFIERS of an active crab, not manoeuvres,
-                # so they invalidate NOTHING — the operator has to be able to
-                # hold left and up at once. That also means pressing one while no
-                # crab is active does nothing at all, which is the right answer:
-                # there is no heading to steer.
+                # Modifiers of an active crab, not manoeuvres — invalidate
+                # nothing, so the operator can hold e.g. left and up together.
+                # Pressing one with no crab active correctly does nothing.
                 pass
 
     def center(self):
@@ -944,16 +875,12 @@ class KeyboardTeleopNode(Node):
         self._arm_pub.publish(msg)
         self.get_logger().info('Arm: home position')
 
-    # ── External authority gate (Octopus goal gateway) ─────────────────────
-    #
-    # SR-15 rule 4: arming may only ever happen through an explicit operator
-    # act. These two methods are that act — one per direction, deliberately
-    # NOT one toggle key: a toggle can arm by accident (operator unsure of
-    # the current state, or a stray keypress) with no way to tell from the
-    # keypress alone which direction it just took. Two dedicated keys make
-    # every press unambiguous, at the cost of one more key to remember.
-    # There is no auto-arm, no arm-on-startup and no re-arm-on-expiry
-    # anywhere in this node — arming happens ONLY here, from a keypress.
+    # ── External authority gate (Octopus goal gateway) ──────────────────────
+    # SR-15 rule 4: arming only through an explicit operator act. Two
+    # dedicated keys, deliberately not one toggle — a toggle can arm by
+    # accident with no way to tell from the keypress which direction it took.
+    # No auto-arm, no arm-on-startup, no re-arm-on-expiry anywhere in this
+    # node: arming happens ONLY here, from a keypress.
 
     def _call_arming(self, arm: bool, duration_sec: float):
         if not self._arming_client.service_is_ready():
@@ -1123,11 +1050,11 @@ def _key_reader(node: KeyboardTeleopNode, stop_event: threading.Event):
                 break
             if ch == ' ':
                 _dispatch(node, 'space', PRESS, stop_event)
-            # 0 and 9 are SPIN CW / CCW since 2026-08-24. They belong in this
-            # list for the same reason every other bound key does: under the
-            # kitty protocol nothing arrives as plain bytes, and a key missing
-            # from the fallback path is a key the operator cannot press when
-            # the protocol is absent.
+            # 0 and 9 are SPIN CW/CCW. They belong in this fallback list for
+            # the same reason every other bound key does: under the kitty
+            # protocol nothing arrives as plain bytes, and a key missing from
+            # here is a key the operator cannot press when the protocol is
+            # absent.
             elif ch in ('w', 's', 'a', 'd', '0', '9',
                         'q', 'k', 'g', 'p', 'o', 'i', 'u', 'l'):
                 _dispatch(node, ch, PRESS, stop_event)

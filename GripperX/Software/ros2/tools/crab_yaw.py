@@ -10,18 +10,11 @@ not satisfy it.
 
 OP-29 crab half — does the diagonal wheel fold produce a YAW COUPLE?
 
-THE HYPOTHESIS, and it is the only candidate left. `manoeuvre.py` was read
-2026-08-21 and is innocent: its crab pose is correct, reachable, uniquely
-determined and an exact rigid translation. But crab is the ONLY manoeuvre whose
-reversed wheels form a DIAGONAL pair:
-
-    straight   reversed: none
-    spin CCW   reversed: the LEFT pair      -> a symmetric error
-    crab left  reversed: FL and BR          -> a YAW COUPLE
-
-So any forward/reverse asymmetry in the drivetrain — PWM deadband, breakaway,
-backlash taken up in one direction only — shows up as a symmetric speed error in
-a spin and as a ROTATION in a crab. Structural; entirely unmeasured on hardware.
+Crab is the ONLY manoeuvre whose reversed wheels form a DIAGONAL pair (FL and
+BR), rather than the symmetric pair a spin reverses. So any forward/reverse
+asymmetry in the drivetrain — PWM deadband, breakaway, backlash taken up in
+one direction only — shows up as a symmetric speed error in a spin but as a
+ROTATION in a crab. Structural; entirely unmeasured on hardware.
 
 THE DISCRIMINATOR is the SIGN under reversal: a yaw couple from drivetrain
 asymmetry flips with the crab direction. A steering zero-offset does not.
@@ -48,7 +41,9 @@ from gripperx_control_msgs.msg import WheelVelocityReport
 R = 0.070
 X_HALF = 0.180900              # king pin longitudinal, localization.yaml
 CRAB_DEG = [-90.0, +90.0, +90.0, -90.0]        # FL, FR, BL, BR
-WINDOW_DEG = [(-100.0, 35.0), (-35.0, 100.0), (-35.0, 100.0), (-100.0, 35.0)]
+# Per-wheel steering window, joint order FL, FR, BL, BR. Mirrors
+# gripperx_control/config/steer_servo.yaml, which is the source of truth.
+WINDOW_DEG = [(-125.0, 35.0), (-35.0, 125.0), (-35.0, 125.0), (-125.0, 35.0)]
 LABELS = ["FL", "FR", "BL", "BR"]
 STATUS = {0: "DISABLED", 1: "ACTIVE", 2: "AT_LIMIT", 3: "OFF_PROVENANCE",
           4: "OFF_NO_MEAS", 5: "OFF_STALE", 6: "OFF_STALL", 7: "OFF_BELOW_FLOOR"}
@@ -139,13 +134,45 @@ def main():
 
     # ---- closed-loop alignment to the crab pose, no drive ------------------
     print("\n  ALIGN: closed-loop to the crab pose (no drive). 90 deg outward,")
-    print("         window is 100 deg outward, so 10 deg of margin.")
+    print("         window is 125 deg outward, so 35 deg of margin.")
     target = [math.radians(d) for d in CRAB_DEG]
     lo = [math.radians(w[0]) for w in WINDOW_DEG]
     hi = [math.radians(w[1]) for w in WINDOW_DEG]
     tol = math.radians(a.align_tol_deg)
-    cmd = list(target)
+    # ALIGNMENT IS SETTLE-THEN-TRIM, AND IT IS HARD-BOUNDED. An earlier integrator
+    # loop (exit as soon as the MEASURED value crossed inside tolerance, then a
+    # continuous proportional trim) wound the command PAST the target while the
+    # servo was still travelling, ran to the window clamp within about half a
+    # second, and made all four steering couplings slip against their wheels --
+    # it looked like success on the console right up to costing a day's
+    # calibration.
+    #
+    # A commanded angle is reached faithfully -- commanding 77 deg settles at
+    # 77 deg. The loop only has to compensate travel TIME, which is not an
+    # error and cannot be trimmed away. The rules here, each tied to the
+    # failure mode above:
+    #   * The command only ever changes when the steering has STOPPED MOVING. Settling
+    #     is judged on the measurement standing still, not on the error being small --
+    #     a servo passing through the target is standing still on neither count.
+    #   * A trim applies the FULL settled residual once, then waits to settle again.
+    #     That is deadbeat on a real offset and impossible to wind up.
+    #   * The command is clamped to target +- MAX_TRIM_DEG, on top of the window clamp.
+    #     This is the backstop: even if settling detection fails completely, the command
+    #     cannot walk to the window limit.
+    #   * Alignment is accepted only when the error is inside tol AND settled.
+    SETTLE_EPS = math.radians(0.15)   # movement below this counts as "stopped"
+    SETTLE_SAMPLES = 10               # ~0.5 s of standing still at the 0.05 s period
+    MAX_TRIMS = 6
+    MAX_TRIM_DEG = 10.0               # hard bound on how far a trim may leave the target
+
+    trim_lo = [max(l, tg - math.radians(MAX_TRIM_DEG)) for l, tg in zip(lo, target)]
+    trim_hi = [min(h, tg + math.radians(MAX_TRIM_DEG)) for h, tg in zip(hi, target)]
+
+    cmd = [min(max(tg, l), h) for tg, l, h in zip(target, trim_lo, trim_hi)]
     aligned = False
+    trims = 0
+    still = 0
+    prev = None
     t0 = time.time()
     while time.time() - t0 < a.align_sec:
         msg = Float64MultiArray(); msg.data = cmd
@@ -155,11 +182,31 @@ def main():
             cur = list(n.steer_meas) if n.steer_meas else None
         if not cur:
             continue
-        err = [t - c for t, c in zip(target, cur)]
-        if max(abs(e) for e in err) < tol:
+
+        if prev is not None and max(abs(c - p) for c, p in zip(cur, prev)) < SETTLE_EPS:
+            still += 1
+        else:
+            still = 0
+        prev = cur
+        if still < SETTLE_SAMPLES:
+            continue
+
+        err = [tg - c for tg, c in zip(target, cur)]
+        worst = max(abs(e) for e in err)
+        if worst < tol:
             aligned = True
             break
-        cmd = [min(max(c + 0.30 * e, l), h) for c, e, l, h in zip(cmd, err, lo, hi)]
+        if trims >= MAX_TRIMS:
+            print("    settled %.2f deg off target after %d trims -- not converging."
+                  % (math.degrees(worst), trims))
+            break
+        cmd = [min(max(c + e, l), h) for c, e, l, h in zip(cmd, err, trim_lo, trim_hi)]
+        trims += 1
+        still = 0
+        print("    trim %d: settled %.2f deg off, commanding %s"
+              % (trims, math.degrees(worst),
+                 ["%+.2f" % math.degrees(x) for x in cmd]))
+
     with n.lock:
         cur = list(n.steer_meas)
     worst_deg = math.degrees(max(abs(c - t) for c, t in zip(cur, target)))
@@ -167,7 +214,8 @@ def main():
     print("    worst error:   %.2f deg -> %s"
           % (worst_deg, "ALIGNED" if aligned else "NOT aligned"))
     rec(event="align", target=target, commanded=cmd, reached=cur,
-        aligned=aligned, worst_deg=worst_deg)
+        aligned=aligned, worst_deg=worst_deg, trims=trims,
+        settled=(still >= SETTLE_SAMPLES))
     if not aligned:
         print("ABORT: steering did not reach the crab pose; not commanding a crab.")
         for _ in range(20):

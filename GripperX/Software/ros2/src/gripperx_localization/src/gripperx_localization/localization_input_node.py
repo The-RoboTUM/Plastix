@@ -50,50 +50,45 @@ class LocalizationInputNode(Node):
         )
         # Defaults mirror config/localization.yaml, which is the source of truth
         # and carries the full rationale (CAD origin, and why these are wheel
-        # CONTACT POINTS rather than king-pin positions). They are kept in step so
-        # that running this node without a params file does not silently fall back
-        # to a different robot; the previous defaults were the obsolete-CAD values.
+        # CONTACT POINTS rather than king-pin positions) — kept in step so that
+        # running this node without a params file does not silently fall back to a
+        # different robot.
         self.declare_parameter(
             "wheel_positions",
             Parameter.Type.DOUBLE_ARRAY,
         )
         self.declare_parameter("effective_wheel_radius", Parameter.Type.DOUBLE)
         self.declare_parameter("drive_joint_multipliers", [1.0, 1.0, 1.0, 1.0])
-        # WHICH QUANTITY THE WHEEL RATE COMES FROM. Default changed to "position"
-        # 2026-08-21, and the reason is a failure mode, not a preference:
+        # WHICH QUANTITY THE WHEEL RATE COMES FROM. Default is "position", and the
+        # reason is a failure mode, not a preference:
         #
         # /joint_states velocity for a wheel is index 4-7 of the firmware's
         # /hw/joint_states, and gripperx_hardware_interface/INTERFACE.md states that
-        # index is "EITHER a real encoder measurement OR the commanded velocity handed
-        # straight back" -- MotorController::getRPM() falls back to the target when the
-        # encoder is not running -- "and nothing in the value itself distinguishes the
-        # two". The only discriminator is the provenance array (indices 12-15,
+        # index is EITHER a real encoder measurement OR the commanded velocity handed
+        # straight back -- MotorController::getRPM() falls back to the target when the
+        # encoder is not running -- and nothing in the value itself distinguishes the
+        # two. The only discriminator is the provenance array (indices 12-15,
         # /hw/wheel_feedback_valid), which THIS NODE DOES NOT READ.
         #
-        # So on a wheel whose encoder is unplugged -- which is a state the robot was
-        # actually found in on 2026-08-21, BL and BR both -- the velocity path makes this
-        # node integrate the command as though it were motion. Odometry then reports
+        # So on a wheel whose encoder is unplugged, the velocity path makes this node
+        # integrate the command as though it were motion: odometry then reports
         # confident, plausible numbers with no relation to the ground, and nothing
-        # upstream objects.
+        # upstream objects. The accumulated wheel POSITION cannot echo a command: with
+        # no encoder the firmware publishes 8 values instead of 12, read() leaves the
+        # position state untouched, and the derived rate is 0 -- odometry goes flat and
+        # STAYS flat, which is wrong in the way that gets noticed. Fail loudly rather
+        # than quietly.
         #
-        # The accumulated wheel POSITION cannot echo a command: with no encoder the
-        # firmware publishes 8 values instead of 12, read() leaves the position state
-        # untouched, and the derived rate is 0. Odometry goes flat and STAYS flat, which
-        # is wrong in the way that gets noticed. Fail loudly rather than quietly.
-        #
-        # THE COST IS REAL AND IS NOT ZERO: the firmware's velocity is a first difference
-        # over a >=100 ms sliding window taken from 200 Hz sampling, i.e. already
-        # smoothed. A position difference taken here is a first difference over one
-        # /joint_states period (~33 ms at 30 Hz) against an encoder quantisation of
-        # 2*pi/3200 = 0.00196 rad, so a single count is ~0.06 rad/s of resolution. This
-        # trades noise for honesty. If the noise proves to matter, the right fix is to
-        # subscribe to the provenance topic and gate the velocity path on it, NOT to go
-        # back to trusting an unverifiable quantity.
+        # The cost is real: a position difference here is noisier than the firmware's
+        # smoothed velocity (quantisation ~0.06 rad/s at 30 Hz vs. 2*pi/3200 per encoder
+        # tick). This trades noise for honesty. If the noise proves to matter, the right
+        # fix is to subscribe to the provenance topic and gate the velocity path on it,
+        # NOT to go back to trusting an unverifiable quantity.
         #
         #   position          derive the rate from the accumulated wheel position (default)
         #   velocity          use the reported velocity, unconditionally
         #   velocity_if_valid use the reported velocity when it is present and finite,
-        #                     else fall back to position -- the behaviour before 2026-08-21
+        #                     else fall back to position -- the previous default behaviour
         self.declare_parameter("wheel_rate_source", "position")
         self.declare_parameter("odom_frame", "odom")
         self.declare_parameter("base_frame", "base_footprint")
@@ -387,8 +382,8 @@ class LocalizationInputNode(Node):
         odom.pose.covariance[28] = 1e6
         odom.pose.covariance[35] = 0.05
 
-        odom.twist.covariance[0] = 0.2 #0.05
-        odom.twist.covariance[7] = 0.5 #0.05
+        odom.twist.covariance[0] = 0.2
+        odom.twist.covariance[7] = 0.5
         odom.twist.covariance[14] = 1e6
         odom.twist.covariance[21] = 1e6
         odom.twist.covariance[28] = 1e6

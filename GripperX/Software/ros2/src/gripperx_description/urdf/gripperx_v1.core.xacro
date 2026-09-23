@@ -92,11 +92,12 @@
 
   <xacro:macro name="gripperx_robot" params="mesh_dir">
     <xacro:property name="mesh_uri_root" value="${mesh_dir}" />
-    <!-- STEERING WINDOW — asymmetric and per wheel (calibrated on the machine
-         2026-08-13; source of truth: gripperx_control/config/steer_servo.yaml).
-         Every wheel reaches ~100 deg OUTWARD (tyre swings away from the chassis)
-         and only ~30 deg INWARD, and which SIGN of the joint angle is outward
-         differs per wheel — MEASURED as [-1,+1,+1,-1] for FL, FR, BL, BR. It is
+    <!-- STEERING WINDOW — asymmetric and per wheel (source of truth:
+         gripperx_control/config/steer_servo.yaml; current values recalibrated
+         2026-09-18). Every wheel reaches an outward limit far larger than the
+         inward one (see the table below for the current figures), and which
+         SIGN of the joint angle is outward differs per wheel — MEASURED as
+         [-1,+1,+1,-1] for FL, FR, BL, BR. It is
          NOT derivable from this model: each wheel hangs on a lateral lever arm
          off its king pin (*_wheel_offset_xyz, y = +-0.0556 m), so turning the
          joint swings the wheel fore/aft around the pin, and a URDF-only reading
@@ -109,23 +110,35 @@
          rounds. A stale value left in prose is exactly how it hid.
 
          Resulting joint windows (all four joints turn about base_link +Z, so
-         +angle points a wheel to the robot's left):
-             f_left_steer   [-100, +30]      b_leftsteer   [-30, +100]
-             f_right_steer  [ -30, +100]     b_rightsteer  [-100, +30]  deg
+         +angle points a wheel to the robot's left; current values, see
+         steer_servo.yaml):
+             f_left_steer   [-125, +35]      b_leftsteer   [-35, +125]
+             f_right_steer  [ -35, +125]     b_rightsteer  [-125, +35]  deg
 
          This is the digital twin's model too: the twin must not be able to reach
          a pose the real robot cannot, so these are the real limits and NOT a
          relaxed sim variant. The former symmetric front_steer_limit /
          rear_steer_limit (1.0472 = 60 deg both ways) is gone — it allowed the
-         twin 60 deg inward, twice what the mechanics has, while wasting 40 deg
-         of the outward travel. The in-place spin pose (+-58.57 deg, outward on
-         all four) still fits comfortably. -->
-    <xacro:property name="steer_outward_limit" value="1.745329" />
+         twin more inward travel than the mechanics has, while wasting outward
+         travel. The in-place spin pose (+-58.57 deg, outward on all four) still
+         fits comfortably. -->
+    <xacro:property name="steer_outward_limit" value="2.181662" />
     <xacro:property name="steer_inward_limit" value="0.610865" />
-    <!-- inward 30 -> 35 deg (0.523599 -> 0.610865) on 2026-08-18, tracking
-         gripperx_control/config/steer_servo.yaml (source of truth). Both the
-         35 deg limit and the inward travel it sits in are TO-VERIFY - see the
-         unresolved inward-stop contradiction documented in that file. -->
+    <!-- outward 100 -> 125 deg (1.745329 -> 2.181662) on 2026-09-18, inward
+         30 -> 35 deg (0.523599 -> 0.610865) on 2026-08-18, both tracking
+         gripperx_control/config/steer_servo.yaml (source of truth). The
+         inward-stop contradiction that made these TO-VERIFY is RESOLVED: the
+         stops were re-measured at the real mechanical limit on 2026-09-18 and
+         the tightest inward travel is 50.3 deg, so 35 deg sits on 15.3 deg of
+         margin rather than the ~0.6 deg once feared. 125 deg outward is a
+         chosen working margin, not a value derived from a hard constraint: it
+         leaves roughly 70 deg to the measured mechanical stop (193.6-196.4 deg
+         on the tightest wheel) and stays short of the angle where the left and
+         right wheel could touch in an unfavourable combination. CORRECTED
+         2026-09-23: this comment previously said 125 was bound by FL's
+         raw-count wrap — wrong twice over, see gripperx_control's
+         steering_limits.py for the full correction; the mechanical stop binds
+         long before any wrap. -->
     <xacro:property name="joint_effort" value="10" />
     <xacro:property name="joint_velocity" value="10" />
     <xacro:property name="joint_damping" value="0.1" />

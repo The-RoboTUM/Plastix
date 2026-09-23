@@ -41,10 +41,11 @@ arrows ─► /teleop/keyboard/cmd_vel ─► teleop_mux ─► /cmd_vel ─► 
 
 Crab and spin need wheel poses a fixed per-wheel pattern cannot express — all
 four at ∓90° and ∓50.8° respectively — and they need the calibrated per-wheel
-steering windows (`FL[-100,+30] FR[-30,+100] BL[-30,+100] BR[-100,+30]`) so no
-wheel is silently clamped out of the pose. The direct-steer route has none of
-that. So the arrows take the IK route, where the limits, the ±180° module flip
-and the per-wheel speed split all come for free.
+steering windows (see `gripperx_control/config/steer_servo.yaml`, the source
+of truth, for the current per-wheel limits) so no wheel is silently clamped
+out of the pose. The direct-steer route has none of that. So the arrows take
+the IK route, where the limits, the ±180° module flip and the per-wheel speed
+split all come for free.
 
 The legacy direct-steer route is **bypassed, not removed**: `A`/`D` still use
 it unchanged, and the `/hw/joint_commands` double-publisher question is
@@ -145,7 +146,8 @@ Note that crab left and crab right share **one** pose and differ only in the
 sign of the wheel speeds, so switching between them needs no slew at all. Crab
 reaches ∓90° because `resolve_wheel_targets` takes the ±180° flip on FL and BR,
 whose windows exclude the naive +90°; those two wheels then drive backwards.
-Spin needs 50.80° **outward** on all four, 49° inside the 100° outward limit.
+Spin needs 50.80° **outward** on all four, comfortably inside the outward
+limit (`gripperx_control/config/steer_servo.yaml`).
 
 ## Dependency: `enable_point_turn` must stay `false`
 

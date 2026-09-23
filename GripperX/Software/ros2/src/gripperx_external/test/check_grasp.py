@@ -115,11 +115,10 @@ def main() -> int:
         "the refusal carries a machine-readable reason",
     )
 
-    # -- user decision 2026-08-19: the tolerance gates the REACHED check only --
-    # It appears nowhere in the standoff arithmetic, so coupling it to
-    # resolution gated the wrong thing: an unmeasured tolerance used to block
-    # every goal from resolving at all. Resolution now works without it; the
-    # reached verdict becomes UNKNOWN instead, loudly, and never a number.
+    # -- the tolerance gates the REACHED check only --
+    # It appears nowhere in the standoff arithmetic: resolution works without
+    # it, and the reached verdict becomes UNKNOWN instead, loudly, and never a
+    # number.
     offset_only = GraspOffset.from_params(0.360, 0.000, "TO-VERIFY")
     check(
         offset_only.configured,

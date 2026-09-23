@@ -5,10 +5,9 @@ WHY THIS EXISTS
 ===============
 SAFETY.md F-24: the twin runs on sim time and every timer-driven safety
 mechanism in the gateway is measured on the clock ``use_sim_time`` selects. The
-acceptance suite runs against mocks rather than Gazebo, so there was no
-``/clock`` in it at all - which is why the whole suite was forced to
-``use_sim_time:=false`` and why every green result in SAFETY.md revisions 2 and
-3 was taken in a configuration the launch file did not produce.
+acceptance suite runs against mocks rather than Gazebo, so it has no ``/clock``
+of its own - which is why, without this fixture, the whole suite is forced to
+``use_sim_time:=false``, a configuration the launch file does not produce.
 
 This node is the missing half. It stands in for Gazebo's clock publication so
 the suite can exercise BOTH clock modes:
@@ -26,12 +25,10 @@ the suite can exercise BOTH clock modes:
   perfectly; what breaks is the continuity of the timeline.
 * **discontinuous the OTHER way**, by setting ``jump_forward_sec`` - an NTP step
   on a wall clock, or a simulation that was stepped on rather than run.
-  SAFETY.md F-40 is about this direction and was SUSPECTED rather than
-  reproduced precisely because this parameter did not exist: the auditor could
-  argue from the code that a forward jump re-baselines the reference and PROVES
-  the clock, but could not run it. The two directions are separate parameters
-  rather than one signed one, so a scenario cannot ask for a backwards jump and
-  get a forward one out of a sign slip.
+  SAFETY.md F-40 is about this direction; this parameter is what lets it be
+  reproduced rather than merely argued from the code. The two directions are
+  separate parameters rather than one signed one, so a scenario cannot ask for
+  a backwards jump and get a forward one out of a sign slip.
 
 ``paused`` KEEPS PUBLISHING THE SAME VALUE on purpose. A clock that stops by
 going silent is the easy case, because something is missing and absence is
@@ -45,9 +42,8 @@ it was asked to pause.
 
 WHERE SIM TIME STARTS IS ITSELF A TEST DIMENSION - ``--epoch-mode``
 ==================================================================
-Added 2026-08-21 by user decision, on a finding from the first real-Gazebo
-campaign: this fixture seeded sim time at ``time.time()``, while a real Gazebo
-starts it at **0**. That difference is not cosmetic, and it HID a mechanism.
+This fixture can seed sim time at ``time.time()``, while a real Gazebo starts
+it at **0**. That difference is not cosmetic, and it HID a mechanism.
 
 Measured against a real Gazebo (SAFETY.md F-35, `use_sim_time:=false` with a live
 ``/clock``): with sim time starting at 0 the two epochs are ~1.787e9 seconds
@@ -56,11 +52,10 @@ map -> base_footprint transform` - and the gateway refuses a goal it is armed
 for. Fail-safe, but by a mechanism nobody predicted.
 
 With sim time seeded near wall time the epochs are CLOSE, so that protection is
-absent by construction: the lookup succeeds and the ages are small. And that is
-not the exotic case - it is the one the whole finding was argued from. §6.4 item
-8 names *"there is no /clock on the robot"* as the premise that stops being true
-the moment somebody starts a **bag replay**, and a replay carries stamps near
-wall time.
+absent by construction: the lookup succeeds and the ages are small. That is not
+the exotic case: §6.4 item 8 names *"there is no /clock on the robot"* as the
+premise that stops being true the moment somebody starts a **bag replay**, and
+a replay carries stamps near wall time.
 
 So both are kept and neither is the "right" one:
 
@@ -111,8 +106,7 @@ class SimClock(Node):
         # from a start instant. That is what makes `scale` possible at all, and
         # it also means pausing cannot make sim time JUMP when it resumes: a
         # Gazebo that is unpaused continues, it does not skip the wall time it
-        # spent paused. (The earlier version subtracted a paused total to get
-        # the same property; accumulating gets it for free.)
+        # spent paused.
         self._prev_mono = time.monotonic()
         self._paused_since = None
         self._publishes = 0

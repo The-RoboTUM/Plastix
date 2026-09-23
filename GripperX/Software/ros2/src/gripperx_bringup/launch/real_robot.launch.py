@@ -70,10 +70,9 @@ def make_lidar_node(use_lidar):
             # gripper are permanently inside the scan plane BEHIND the sensor;
             # structurally unavoidable. The driver masks data INSIDE the interval
             # (see ldlidar_stl_ros2/launch/ld19.launch.py header): everything with
-            # angle_crop_min <= angle <= angle_crop_max is set to NaN. (This said
-            # "zeroed" until 2026-08-24; demo.cpp:199-201 sets quiet_NaN(), and
-            # the difference matters -- scan_range_filter only rewrites FINITE
-            # values, so crop-masked points pass through it untouched.)
+            # angle_crop_min <= angle <= angle_crop_max is set to NaN via
+            # quiet_NaN(); scan_range_filter only rewrites FINITE values, so
+            # crop-masked points pass through it untouched.
             #
             # Occluders at the 260 mm scan plane, all within +-14 deg of the rear:
             # gripper_base (0.064-0.145 m), gripper_connector (0.142-0.148 m),
@@ -109,10 +108,9 @@ def make_scan_range_filter(use_lidar):
         name='scan_range_filter',
         output='screen',
         condition=IfCondition(use_lidar),
-        # respawn like the driver above it. Audit 2026-08-24 found this was the
-        # only node in the lidar chain without it: with the driver on /scan_raw,
-        # this node dying takes /scan away from slam_toolbox and both costmaps
-        # for the rest of the session. The loud failure is intended, a permanent
+        # respawn like the driver above it: with the driver on /scan_raw, this
+        # node dying takes /scan away from slam_toolbox and both costmaps for
+        # the rest of the session. The loud failure is intended, a permanent
         # one is not, and the driver it depends on already respawns.
         respawn=True,
         respawn_delay=5.0,
@@ -245,13 +243,14 @@ def generate_launch_description():
         respawn_delay=5.0,
     )
 
-    # --controller-manager-timeout 150 (was 30). It MUST exceed the SR-14 activation gate
-    # (steer_states_activation_timeout_sec, user-set to 120 s in gripperx_v1.ros2_control.xacro)
-    # plus the rest of controller_manager startup: the CM does not serve the spawners while
+    # --controller-manager-timeout 150. It MUST exceed the SR-14 activation gate
+    # (steer_states_activation_timeout_sec in gripperx_v1.ros2_control.xacro) plus
+    # the rest of controller_manager startup: the CM does not serve the spawners while
     # the hardware component's on_activate() is still blocked on /hw/steer_states, so a
     # spawner timeout below the gate kills the spawners while the gate is still legitimately
     # waiting — and the gate then never gets to do its job or report why it failed.
-    # 150 = 120 + 30 s margin. If the gate value changes, change these three with it.
+    # If the gate value changes, change this timeout here and on swerve_controller
+    # below with it.
     joint_state_broadcaster = Node(
         package="controller_manager",
         executable="spawner",

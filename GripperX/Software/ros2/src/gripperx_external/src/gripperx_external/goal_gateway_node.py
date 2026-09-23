@@ -1,78 +1,60 @@
 #!/usr/bin/env python3
 """Validation, geodesy, grasp resolution, the arming gate, preview, telemetry.
 
-ROLLOUT STAGE 3 - DISPATCH EXISTS AND IS GATED, NOT ABSENT
-==========================================================
-Stages 0-2 contained no action client of any kind. This build adds the two that
-FR-12 and SR-16 describe - ``NavigateToPose`` and ``PickPlastic`` - plus the
-``trash_goal_done`` acknowledgement, and every one of them is behind the arming
-gate. What changed is only *what a dispatch needs*; nothing about the gate has
-been widened, and the default is still disarmed under every configuration.
+DISPATCH IS GATED, NOT ABSENT
+==============================
+This node holds the two action clients FR-12 and SR-16 describe -
+``NavigateToPose`` and ``PickPlastic`` - plus the ``trash_goal_done``
+acknowledgement, all behind the arming gate. Two independent conditions block
+dispatch and both must clear:
 
-THE TWO INDEPENDENT BLOCKS ON DISPATCH
-======================================
-1. ``armed`` is false and there is exactly one code path that can change that:
-   :meth:`_on_set_arming`, the ``SetArming`` service handler, calling
-   ``ArmingMachine.arm``. No parameter, launch argument or environment variable
-   reaches it (SR-15 rule 4).
-2. ``dry_run`` is true.
+1. ``armed`` is false by default. The only code path that can change that is
+   :meth:`_on_set_arming` (the ``SetArming`` service handler, via
+   ``ArmingMachine.arm``) - no parameter, launch argument or environment
+   variable reaches it (SR-15 rule 4).
+2. ``dry_run`` is true by default.
 
-The third block of stage 2 - "no action client exists" - is structurally gone,
-which is exactly what a safety audit had to clear first. Disabling either
-remaining one alone still prevents dispatch, and :meth:`_dispatch_blocks`
-reports both so an operator can see that the second is still there when the
-first opens.
+:meth:`_dispatch_blocks` reports both so an operator can see the second is
+still active when the first opens.
 
-EVERY DISPATCH GOES THROUGH validate_dispatch, ON THE COORDINATES DISPATCHED
-===========================================================================
-C-5 / SAFETY.md F-5 and F-9. The goal that is previewed and the goal that is
-dispatched are now the same object: :meth:`_resolve_goal` resolves the
-``/octopus/trash_goal`` fix - the stream a dispatch actually uses - correlates it
-to a ``trash_gps`` id by position, and its result feeds the preview, the status
-topic and the dispatch alike. ``validation.validate_dispatch`` is the single
-entry to sending a goal AND the re-validation that runs on every tick while one
-is in flight, so a geofence change, a datum move or a dead mux cancels the goal
-that is running instead of only affecting the next one.
+VALIDATION RUNS ON THE DISPATCHED COORDINATES, EVERY TICK (C-5, SAFETY.md F-5/F-9)
+===================================================================================
+The goal that is previewed and the goal that is dispatched are the same object:
+:meth:`_resolve_goal` resolves the ``/octopus/trash_goal`` fix, correlates it to
+a ``trash_gps`` id by position, and its result feeds the preview, the status
+topic and the dispatch alike. ``validation.validate_dispatch`` gates both the
+initial send and the re-validation that runs every tick while a goal is in
+flight, so a geofence change, a datum move or a dead mux cancels the goal that
+is running, not just the next one.
 
 THE ACKNOWLEDGEMENT IS IRREVERSIBLE - C-7
 =========================================
-``trash_goal_done`` means *collected* to the Octopus and their protocol has no
-way to take it back and no way to say "I could not do this". It is therefore
-published only after a **successful PickPlastic result**, only while **armed**,
-and only on a **unique** position correlation. Never on arrival, never on a
-timer, never on an ambiguous match.
+``trash_goal_done`` means *collected* to the Octopus, and their protocol has no
+way to take it back and no way to say "I could not do this". It is published
+only after a successful ``PickPlastic`` result, only while armed, and only on a
+unique position correlation - never on arrival, never on a timer, never on an
+ambiguous match. The correlation is recomputed against the current target list
+at three separate points: every dispatch tick while in flight (cancels), at
+arrival before the pick is sent (refuses to actuate the arm), and immediately
+before publication (refuses to publish) - an ambiguity appearing after dispatch
+is caught at whichever of the three runs next (SAFETY.md F-13). A target that
+fails ``max_attempts_per_target`` times is blacklisted locally, deliberately NOT
+acknowledged, and surfaced loudly - stalling the mission by design until
+Octopus has a failure channel (proposal item 2).
 
-The correlation is not a decision taken once and carried: it is recomputed from
-the mission's own fix against the target list AS IT IS at each of three points -
-every dispatch tick while the goal is in flight (which CANCELS), at arrival
-before the pick is sent (which refuses to actuate the arm), and immediately
-before the publication (which refuses to publish). An ambiguity that appears
-after dispatch used to change none of the three; that was SAFETY.md F-13, and
-"the correlation was unique when we set off" is not a statement about now.
+**Deliberate absence: no parameter can make an arrival acknowledge.** C-7 is
+normative. The reasoning is the one this package already applies to
+``allow_arm`` and to the also-absent ``escalate_to_keyboard_mode``: a decided
+rule belongs in the structure, not in a default somebody can flip - a switch
+that can put a false "collected" on a channel whose only meaning is "collected"
+is a switch that will eventually be flipped by someone who has not read this.
 
-A target that fails
-``max_attempts_per_target`` times is blacklisted locally, deliberately NOT
-acknowledged, and surfaced loudly - which stalls their mission by design, that
-being the honest outcome until they add the failure channel (proposal item 2).
-
-**There is no parameter that can make an arrival acknowledge.** FR-12 item 7
-once described a weaker branch - with auto-pick off, acknowledge on reach and
-log that the semantics are weaker - and it was briefly implemented behind an
-opt-in parameter defaulting to false. **User decision 2026-08-19: C-7 is
-normative and FR-12 item 7 is aligned to it, so that parameter was REMOVED
-outright rather than left at false.** The reasoning is the one this package
-already applies to ``allow_arm`` and to the rejected
-``escalate_to_keyboard_mode``: a decided rule belongs in the structure, not in a
-default somebody can flip. A switch that can put a false "collected" on a
-channel whose only meaning is "collected" is a switch that will eventually be
-flipped by someone who has not read this.
-
-Arrival is still fully observable - it simply is not an acknowledgement. It gets
-its own ``ExternalGoalStatus.STATE_REACHED`` publication, its own log line with
-the reached-check detail, and its own counters on ``/diagnostics``, where
-``reached`` and ``acknowledged`` are reported side by side. The gap between them
-is not a defect to be closed; it is the honest measure of a protocol that cannot
-express failure.
+Arrival is still fully observable without being an acknowledgement: its own
+``ExternalGoalStatus.STATE_REACHED`` publication, its own log line with the
+reached-check detail, and its own counters on ``/diagnostics``, where
+``reached`` and ``acknowledged`` are reported side by side. The gap between
+them is the honest measure of a protocol that cannot express failure, not a
+defect to be closed.
 
 WHAT THIS NODE MUST NEVER DO
 ============================
@@ -80,77 +62,68 @@ It subscribes ``/teleop/active_mode`` and treats ``autonomous`` as a
 **precondition it observes**, never as a state it creates. It has no publisher
 on ``/teleop/set_mode`` or on any topic of the motion command chain, under any
 condition including failure conditions - see ``FORBIDDEN_PUBLISH_TOPICS`` in
-``octopus_link_node``, which is enforced at construction time here too.
+``octopus_link_node``, enforced at construction time here too.
 
-The keyboard-mode cancel-failure escalation that an earlier draft proposed was
-**rejected outright** (SR-15 rule 9, user decision 2026-08-18). It is not
-disabled by default - the parameter ``escalate_to_keyboard_mode`` must not exist
-at all. The acceptance rule for that used to be a literal grep for the name, and
-SAFETY.md 6.3 (revision 3) ruled that **the rule is about the mechanism, not the
-string**: the grep fired on this very paragraph, which exists to keep the
-mechanism out, and it would have passed for the same escalation written under
-any other name - a ``String("keyboard")`` on a mode topic, or a service client
-for the mux's mode switch, contains none of those characters. What enforces it
-now is structural and mechanism-shaped: ``/teleop/active_mode`` is in
-``FORBIDDEN_PUBLISH_TOPICS`` beside ``/teleop/set_mode`` so the mux's own output
-cannot be written either, and ``assert_no_command_clients`` sweeps both
+**Deliberate absence: the parameter ``escalate_to_keyboard_mode`` must not
+exist at all** (SR-15 rule 9) - a keyboard-mode cancel-failure escalation is
+rejected outright, not merely disabled by default. The acceptance rule for
+that is mechanism-shaped, not name-shaped (SAFETY.md 6.3): a grep for the name
+would pass for the same escalation written under any other name (a
+``String("keyboard")`` on a mode topic, or a service client for the mux's mode
+switch). What enforces it is structural: ``/teleop/active_mode`` is in
+``FORBIDDEN_PUBLISH_TOPICS`` beside ``/teleop/set_mode`` so the mux's own
+output cannot be written either, and ``assert_no_command_clients`` sweeps both
 constructors for service clients (there must be none) and for action clients
 (there must be exactly the two named at the call site). A cancel that is not
-confirmed within
-``cancel_confirm_timeout_sec`` logs ERROR and raises an ERROR diagnostic, and
-that is the ENTIRE escalation: this node reports and lets the mechanisms that
-own stopping do their job. A parameter that must never be enabled is a
-parameter that will eventually be enabled by someone who has not read the
-requirement.
+confirmed within ``cancel_confirm_timeout_sec`` logs ERROR and raises an ERROR
+diagnostic, and that is the ENTIRE escalation: this node reports and lets the
+mechanisms that own stopping do their job.
 
-KILLING THIS NODE DOES NOT STOP THE ROBOT
-=========================================
-Stated here because it is the single most dangerous thing to assume wrongly
-about this process (SAFETY.md F-4). The gateway is a *command source*, not a
-stop mechanism. SR-15 rule 11: it introduces no new stop path. Ending it -
-``systemctl stop``, closing the launch terminal, ``Ctrl-C``, ``SIGTERM``, an OOM
-kill, a crash - removes it as a source of new goals and nothing more. A
-``NavigateToPose`` goal that Nav2 has already accepted keeps executing, and
-``/cmd_vel`` keeps flowing while ``teleop_mux`` is in ``autonomous``.
+KILLING THIS NODE DOES NOT STOP THE ROBOT (SAFETY.md F-4)
+==========================================================
+The gateway is a *command source*, not a stop mechanism (SR-15 rule 11: it
+introduces no new stop path). Ending it by any means - ``systemctl stop``,
+``Ctrl-C``, ``SIGTERM``, an OOM kill, a crash - removes it as a source of new
+goals and nothing more. A ``NavigateToPose`` goal Nav2 has already accepted
+keeps executing, and ``/cmd_vel`` keeps flowing while ``teleop_mux`` is in
+``autonomous``.
 
 What actually stops the vehicle, all of it upstream of this node and unchanged
-by this package: the spacebar E-stop (``set_mode=keyboard``, which makes the mux
-publish a zero ``Twist`` immediately), a Nav2 cancel, ``teleop_mux
+by this package: the spacebar E-stop (``set_mode=keyboard``, which makes the
+mux publish a zero ``Twist`` immediately), a Nav2 cancel, ``teleop_mux
 cmd_timeout_sec: 0.5``, and the firmware ``CMD_TIMEOUT_MS`` of 1000 ms (NFR-4,
 §3.1.7). This is why the shutdown path below cancels *before* the context goes
 away instead of relying on ``destroy_node``: a cancel is the only stop-shaped
-thing this node can contribute, and it can only contribute it while it is still
-alive. On ``SIGKILL`` it contributes nothing at all - by then only the upstream
-mechanisms exist, which is exactly the shape of the 2026-07-06 incident.
+thing this node can contribute, and only while it is still alive. On
+``SIGKILL`` it contributes nothing at all - by then only the upstream
+mechanisms exist.
 
 THREE CLOCKS, ON PURPOSE - AND ONE OF THEM WATCHES THE OTHERS
 =============================================================
-External ``header.stamp`` values are the Octopus's **wall clock** (their nodes
-stamp with ``time.time()``), while in the twin this node runs on **sim time**,
-which starts near zero. Comparing the two would make the staleness check
-meaningless - a wall-clock stamp is always "in the future" relative to sim time,
-so nothing would ever be stale. External stamps are therefore compared against
-``time.time()``, and TF/mode ages against the ROS clock. Like with like. The age
-of their **target list** belongs to the first group and not the second: it is
-their 1 Hz publication on their clock, and since SAFETY.md F-28 it is measured
-monotonically and refused past ``max_target_list_age_sec`` - a list that stopped
-being refreshed answers every correlation question with the same confident
-answer for ever, and their silence on one topic is invisible to the link
-watchdog, which measures the last frame of ANY topic.
+External ``header.stamp`` values are the Octopus's **wall clock**
+(``time.time()``); this node may run on **sim time**, which starts near zero,
+so comparing the two would make the staleness check meaningless - a
+wall-clock stamp would always be "in the future" relative to sim time.
+External stamps are therefore compared against ``time.time()``, and TF/mode
+ages against the ROS clock. Like with like. The age of the **target list**
+belongs to the first group: it is refused past ``max_target_list_age_sec``
+(SAFETY.md F-28), because a list that stopped refreshing answers every
+correlation question with the same confident wrong answer, and the link
+watchdog - which only measures the last frame of ANY topic - cannot see that
+this one topic alone has gone silent.
 
-The third clock is the point of SAFETY.md F-24. **Every timer-driven safety
+The third clock is the point of SAFETY.md F-24. Every timer-driven safety
 mechanism here - the arming expiry, the link watchdog, the cancel-confirm
-report, the in-flight re-validation and the in-flight correlation gate - is
-delivered by a timer on the ROS clock**, and ``use_sim_time`` decides what that
-clock is. With it true and no ``/clock`` publisher, NOT ONE of those timers
-fires - measured: zero callbacks in three seconds - while the node reports
-itself up and healthy and says nothing. So ``use_sim_time`` is startup-only
-here (a runtime change is refused before rclpy's own ``TimeSource`` callback can
-see it), it is refused outright at startup on a domain that is not a known
-simulation domain, and ``_clock_watchdog`` runs on a ``STEADY_TIME`` clock that
-no parameter can switch and no publisher can stop: a stalled ROS clock refuses
-arming and disarms, loudly, on a channel that is not itself one of the frozen
-timers.
+report, the in-flight re-validation and the in-flight correlation gate - runs
+on the ROS clock, and ``use_sim_time`` decides what that clock is. With it
+true and no ``/clock`` publisher, NOT ONE of those timers fires while the node
+reports itself up and healthy and says nothing. So ``use_sim_time`` is
+startup-only here (a runtime change is refused before rclpy's own
+``TimeSource`` callback can see it), it is refused outright at startup on a
+domain that is not a known simulation domain, and ``_clock_watchdog`` runs on
+a ``STEADY_TIME`` clock that no parameter can switch and no publisher can
+stop: a stalled ROS clock refuses arming and disarms, loudly, on a channel
+that is not itself one of the frozen timers.
 """
 
 from __future__ import annotations
@@ -230,32 +203,28 @@ from .octopus_link_node import (
     guarded_publisher,
 )
 
-#: SR-15 rule 5, user decision 2026-08-18. NOT configurable upward: a config
-#: file may lower the ceiling, never raise it. A request above the ceiling is
-#: REJECTED, never clamped - a silently shortened arming window is a window the
-#: operator believes they have and does not.
+#: SR-15 rule 5. NOT configurable upward: a config file may lower the ceiling,
+#: never raise it. A request above the ceiling is REJECTED, never clamped - a
+#: silently shortened arming window is a window the operator believes they
+#: have and does not.
 HARD_MAX_ARMING_DURATION_SEC = 600.0
 #: The agreed operator default. It is never applied automatically: `SetArming`
 #: requires an explicit duration and a request without one is refused. This
 #: value exists so the refusal can name it.
 AGREED_DEFAULT_ARMING_DURATION_SEC = 120.0
 
-#: Parameters that may not change after startup. Everything about the authority
-#: gate and the domain is fixed when the node comes up, so a `ros2 param set`
-#: cannot widen it behind the operator's back.
-#: Parameters this node reads ONCE, at construction, and never again - each
-#: with the reason a running node refuses to pretend otherwise.
+#: Parameters read ONCE at construction and never again; a `ros2 param set` on
+#: any of these is refused, each with the reason below - the authority gate and
+#: the domain must not be widened by a running node.
 #:
-#: SAFETY.md F-8: the defect being fixed here is not that these are fixed. It is
-#: that a `ros2 param set` on them used to be ACCEPTED and then silently ignored,
-#: with the node logging "set to X; re-validating on the next tick". An operator
-#: NARROWING a safety window got a confirmation and no protection. Of the three
-#: possible behaviours - take effect, refuse, or accept-and-ignore - the third is
-#: the only one that cannot be reasoned about, so it is gone. Where a runtime
-#: change was wanted it is implemented instead: the geofence, the grasp offsets,
+#: SAFETY.md F-8: of the three possible behaviours for a runtime change to a
+#: fixed parameter - take effect, refuse, or accept-and-ignore - only
+#: accept-and-ignore cannot be reasoned about (an operator NARROWING a safety
+#: window got a confirmation and no protection), so it is the one that is gone
+#: here. Runtime-changeable values (the geofence, the grasp offsets,
 #: `datum_jump_warn_m`, `goal_match_tolerance_m`, `max_attempts_per_target`,
-#: `max_stamp_age_sec`, `max_tf_age_sec`, `max_teleop_mode_age_sec` and
-#: `max_goal_cost` are all re-read at the point of use and are NOT in this list.
+#: `max_stamp_age_sec`, `max_tf_age_sec`, `max_teleop_mode_age_sec`,
+#: `max_goal_cost`) are re-read at the point of use and are NOT in this list.
 _AUTHORITY_REASON = (
     "the authority gate and the domain must not be widened by a running node "
     "(SR-8, SR-15 rule 4)"
@@ -268,12 +237,11 @@ _STARTUP_ONLY_PARAMS = {
         "A-4), and least of all this one, which stands between a NO_MATCH and "
         "an arm that actuates"
     ),
-    # NOT declared by this node - rclpy declares it on every node - and that is
-    # exactly why it was missing here (SAFETY.md F-24). rclpy's `TimeSource`
-    # registers its OWN set-parameters callback, so a runtime change used to be
-    # honoured; ours is registered later and rclpy inserts callbacks at the
-    # front and stops at the first refusal, so refusing here means TimeSource
-    # never sees it at all (verified against rclpy/node.py:907-916,1110).
+    # NOT declared by this node - rclpy declares it on every node - which is
+    # why it was missing here (SAFETY.md F-24). rclpy's `TimeSource` registers
+    # its own set-parameters callback; ours is registered later, and rclpy
+    # inserts callbacks at the front and stops at the first refusal, so
+    # refusing here means TimeSource never sees the change at all.
     "use_sim_time": (
         "it selects the CLOCK that the arming window, the link watchdog, the "
         "cancel-confirm report, the in-flight re-validation and the in-flight "
@@ -368,8 +336,67 @@ _STARTUP_ONLY_PARAMS = {
 
 _TO_VERIFY = "TO-VERIFY"
 
+#: Floor under BOTH clock-discontinuity thresholds, and it is a floor rather
+#: than a value: below it a `/clock` message overtaken by its BEST_EFFORT
+#: successor is indistinguishable from a rewind, and an "excess" smaller than
+#: one watchdog period is scheduling jitter rather than a discontinuity. A
+#: configured value below it is RAISED to it, not refused - a detector must not
+#: be made to fire on noise, and must not be switched off either.
+_CLOCK_THRESHOLD_FLOOR_SEC = 0.05
 
-def _measured_descriptor() -> ParameterDescriptor:
+#: PROVISIONAL, AND DELIBERATELY NOT CALLED A MEASUREMENT. Both clock
+#: thresholds are declared `TO-VERIFY` (SR-15 rule 14: measured or explicitly
+#: unmeasured, never invented) and these are what the two DETECTORS run at
+#: while that is so.
+#:
+#: WHY AN UNMEASURED CLOCK THRESHOLD DOES NOT PRODUCE A REFUSAL, unlike an
+#: unmeasured geofence or grasp offset. Those decide whether a goal may be
+#: dispatched, so refusing on them means "nothing moves" - the safe direction.
+#: These two decide whether a clock DISCONTINUITY IS NOTICED AT ALL, so a
+#: refusal here would remove the detector instead of the motion: a clock event
+#: nobody is told about is exactly the 2026-09-02 failure (a 7 d clock skew
+#: silently disabled an external-stamp staleness gate), arriving through the
+#: front door rather than the back. The unmeasured state therefore leaves the
+#: detectors running exactly as before and is REPORTED: `_unset_items` lists
+#: both on `/diagnostics external/config`, the startup line names them, and
+#: `clock_forward_jump_sec` reads `unset` on `external/clock`.
+#:
+#: The numbers are the ones this build has run since the F-36/F-40
+#: parameterisation of 2026-08-20 - 0.2 is exactly what the pre-F-36 derivation
+#: `1.0 / max(2.0, safety_rate_hz)` produced at the configured 5 Hz - so routing
+#: the pair through the sentinel changes what is REPORTED and nothing about what
+#: is DETECTED. Measuring either one replaces it at the PARAMETER; these two
+#: constants stay what they are, the fallback for a configuration that has not
+#: measured it yet.
+#:
+#: What the forward value was reasoned to be, kept because it says what a
+#: measurement would have to overturn: 1.0 s is comfortably above the excess an
+#: honest real-time-factor change can produce in one watchdog period, and below
+#: any time-sync step worth reporting. Every `/clock` behind both numbers has
+#: been a test fixture and never a loaded, running Gazebo - which is exactly
+#: what `TO-VERIFY` says here.
+_PROVISIONAL_CLOCK_BACKWARD_EPS_SEC = 0.2
+_PROVISIONAL_CLOCK_FORWARD_JUMP_SEC = 1.0
+
+
+def _clock_threshold_sec(value: object, provisional: float) -> float:
+    """The threshold a clock detector runs at: the measured one, or the
+    provisional one while nobody has measured it.
+
+    Never a refusal and never a zero. An unmeasured threshold changes what is
+    reported about the detector, never how sensitive it is - see
+    `_PROVISIONAL_CLOCK_BACKWARD_EPS_SEC` for why that asymmetry with the
+    geofence is deliberate. The floor applies to both halves, so a configured
+    value under it is raised rather than taken literally.
+    """
+    measured = parse_measured_param(value)
+    return max(
+        _CLOCK_THRESHOLD_FLOOR_SEC,
+        float(provisional if measured is None else measured),
+    )
+
+
+def _measured_descriptor(unit: str = "metres") -> ParameterDescriptor:
     """Descriptor for a value that is either a measured number or ``TO-VERIFY``.
 
     ``dynamic_typing`` is what makes both halves of the requirement possible at
@@ -387,9 +414,13 @@ def _measured_descriptor() -> ParameterDescriptor:
     return ParameterDescriptor(
         dynamic_typing=True,
         description=(
-            "Either a number in metres, or the literal string 'TO-VERIFY' while "
-            "the value is unmeasured. Unmeasured values make the gateway refuse "
-            "rather than fall back to a default."
+            f"Either a number in {unit}, or the literal string 'TO-VERIFY' while "
+            "the value is unmeasured. An unmeasured value is never replaced by "
+            "an invented one, and what it does instead is written at its "
+            "declaration: the geofence and the grasp offset make the gateway "
+            "REFUSE, datum_jump_warn_m saturates so that any change counts, and "
+            "the two clock thresholds keep detecting at a named provisional "
+            "value that is reported as unmeasured."
         ),
     )
 
@@ -448,13 +479,12 @@ ACK_NOT_CORRELATED = "NOT_CORRELATED"
 #: The correlation was unique at dispatch and has stopped being unique, or has
 #: stopped naming the id this mission was started for. Distinct from
 #: ACK_NOT_CORRELATED, which means there never was an id: this one means the id
-#: we hold stopped being provable while we were holding it. That is the F-13
-#: case, and it is the one that used to acknowledge anyway (SAFETY.md rev 2).
+#: we hold stopped being provable while we were holding it (SAFETY.md F-13).
 ACK_CORRELATION_CHANGED = "CORRELATION_CHANGED"
 #: The real robot's domain plus an unmeasured `grasp.tolerance_m`: the pick is
 #: refused because "arrived" cannot be proven, and the arm would actuate on an
-#: unsupported claim (user decision 2026-08-19 on SAFETY.md F-14). Structurally
-#: unreachable on the twin - see `_pick_needs_measured_tolerance`.
+#: unsupported claim (SAFETY.md F-14). Structurally unreachable on the twin -
+#: see `_pick_needs_measured_tolerance`.
 ACK_TOLERANCE_UNMEASURED = "GRASP_TOLERANCE_UNMEASURED"
 
 
@@ -512,7 +542,7 @@ class Mission:
     #: handle to cancel, which is its own hazard - see `_cancel_mission`.
     nav_accepted: bool = False
     ack_suppressed_reason: str = ""
-    #: INTERIM OCCLUSION LATCH (user decision 2026-08-25, see _correlation_holds).
+    #: INTERIM OCCLUSION LATCH - see `_correlation_holds`.
     #: `unique_seen` records that this mission's fix DID correlate uniquely to
     #: its own target at least once. `latch_void_reason` is set the first time
     #: anything other than NO_MATCH goes wrong, and is never cleared: an
@@ -556,11 +586,10 @@ class GoalGatewayNode(Node):
         self.declare_parameter("arming.max_duration_sec", HARD_MAX_ARMING_DURATION_SEC)
         self.declare_parameter("arming.max_consecutive_aborts", 3)
 
-        # Geofence: RUNTIME-ADJUSTABLE by requirement (FR-12 item 6, user
-        # decision 2026-08-18). Read fresh at every validation, so a
-        # `ros2 param set` takes effect on the NEXT validation without a node
-        # restart. A geofence change is NOT an arming event: it may trigger
-        # re-validation and nothing else.
+        # Geofence: RUNTIME-ADJUSTABLE by requirement (FR-12 item 6). Read
+        # fresh at every validation, so a `ros2 param set` takes effect on the
+        # NEXT validation without a node restart. A geofence change is NOT an
+        # arming event: it may trigger re-validation and nothing else.
         self.declare_parameter("geofence.min_x_m", _TO_VERIFY, _measured_descriptor())
         self.declare_parameter("geofence.max_x_m", _TO_VERIFY, _measured_descriptor())
         self.declare_parameter("geofence.min_y_m", _TO_VERIFY, _measured_descriptor())
@@ -581,16 +610,13 @@ class GoalGatewayNode(Node):
         self.declare_parameter("max_teleop_mode_age_sec", 2.0)
         self.declare_parameter("link_lost_sec", 5.0)
         self.declare_parameter("datum_jump_warn_m", _TO_VERIFY, _measured_descriptor())
-        # INTERIM, user decision 2026-08-25. See _correlation_holds for what it
-        # does and what it costs. Startup-only, like every other gate width.
+        # INTERIM. See _correlation_holds for what it does and what it costs.
+        # Startup-only, like every other gate width.
         self.declare_parameter("occlusion_latch_enabled", False)
         self.declare_parameter("goal_match_tolerance_m", 0.25)
         self.declare_parameter("max_attempts_per_target", 2)
-        # SET 2026-08-24 BY USER DECISION: 0.15 m. NOT derived from anything and
-        # NOT measured - the proposal on the table was to reuse
-        # `goal_match_tolerance_m` (0.25) so that "same object" had one
-        # definition; the user chose a tighter number, so it is its own
-        # parameter and says so.
+        # NOT derived from `goal_match_tolerance_m` (0.25) - a deliberately
+        # independent, tighter value; do not couple the two.
         #
         # WHAT IT DECIDES: a blacklisted id reappearing further than this from
         # where it was blacklisted is not the same object, so the entry is
@@ -608,64 +634,49 @@ class GoalGatewayNode(Node):
         # keep an armed window honest is a timer on that clock, so the interval
         # in which it is frozen is an interval in which none of them exist.
         self.declare_parameter("clock_stall_sec", 2.0)
-        # SAFETY.md F-31. "Never yet PROVEN" and "STOPPED after having been
-        # proven" are two different states, and only the second one is a
-        # failure. The first is a startup condition with a DDS discovery latency
-        # behind it: the gateway subscribes `/clock` when it comes up and cannot
-        # see the first message before discovery has matched the publisher. That
-        # latency was measured on this laptop rather than guessed (see the
-        # config files), and it overlaps `clock_stall_sec`, so an ordinary twin
-        # start used to raise the same ERROR that a dead Gazebo raises - which
-        # is how an ERROR becomes something operators scroll past.
-        #
-        # Inside this grace the unproven clock is reported at WARN; after it, at
-        # ERROR. What does NOT change: arming is REFUSED throughout, in both
-        # states, because an unproven clock is an unproven clock (SR-15 rule 5).
-        # Only the loudness is graded, never the gate.
+        # SAFETY.md F-31. Distinguishes "never yet PROVEN" (a startup
+        # condition: DDS discovery latency before the gateway sees the first
+        # `/clock` message) from "STOPPED after having been proven" - only the
+        # second is a failure. Inside this grace the unproven clock is reported
+        # at WARN; after it, at ERROR. Arming is REFUSED throughout, in both
+        # states - only the loudness is graded, never the gate (SR-15 rule 5).
         self.declare_parameter("clock_startup_grace_sec", 10.0)
-        # SAFETY.md F-40, DECIDED by the user 2026-08-20: a forward
-        # discontinuity is REPORTED - WARN plus a /diagnostics value - and does
-        # NOT disarm and does NOT cancel. On the real robot the only sources are
-        # a time-sync step and a manual `date` set, and disarming on every step
-        # of a flaky NAT'd time source would trade a small reporting gap for an
-        # operational one - and would teach the operator to expect spurious
-        # disarms, which is how a safety mechanism gets switched off.
+        # BOTH clock-discontinuity thresholds are `TO-VERIFY` and are declared
+        # through the same sentinel as the geofence, the grasp offsets and
+        # `datum_jump_warn_m`, so that "nobody has measured this" is a fact of
+        # the configuration rather than a claim only a comment makes (SR-15 rule
+        # 14). What differs is the CONSEQUENCE, and it differs on purpose:
+        # unmeasured here does NOT refuse anything - it keeps the detector
+        # running at `_PROVISIONAL_CLOCK_*` and says so, on every startup and
+        # continuously on /diagnostics. The reasoning is at those constants; the
+        # short version is that refusing on an unmeasured geofence stops the
+        # robot, while refusing on an unmeasured clock threshold would stop the
+        # only mechanism that notices a clock jump.
         #
-        # THE VALUE IS `TO-VERIFY`. Nothing measured it. 1.0 s is what this
-        # implementation runs: comfortably above the excess that an honest
-        # change in real-time factor can produce inside one watchdog period, and
-        # below any time-sync step worth telling an operator about. It carries
-        # the SAME verification gap as `clock_stall_sec` - every `/clock` behind
-        # every number here has been a test fixture and never a running Gazebo,
-        # so what a LOADED Gazebo does to it is unmeasured.
+        # `clock_backward_eps_sec` decides how far the ROS clock may go
+        # BACKWARDS before that counts as a discontinuity rather than "no
+        # advance" - `/clock` is BEST_EFFORT, so a message overtaken by its
+        # successor can rewind the clock by about the publication spacing, and a
+        # rewind that small must read as jitter, not a jump. Anything smaller
+        # falls through to the stall path, which needs `clock_stall_sec` of no
+        # advance to fire at all. It is its OWN parameter, deliberately NOT
+        # derived from `safety_rate_hz` or anything else (SR-15 rule 14, audit
+        # finding F-36): a rate parameter must not silently move a clock
+        # tolerance.
         #
-        # SR-15 rule 14: its OWN parameter, not derived from `safety_rate_hz` or
-        # from anything else, so that an edit to a rate cannot silently move a
-        # clock tolerance (audit finding F-36).
-        # SR-15 rule 14 / audit finding F-36. This was DERIVED as
-        # `1.0 / max(2.0, safety_rate_hz)` until 2026-08-20, so an edit to the
-        # SAFETY TICK RATE moved the BACKWARDS-JUMP DETECTION THRESHOLD - two
-        # different quantities, and an edit that does not look like an edit to a
-        # clock tolerance. `safety_rate_hz` is a rate; this is a tolerance; a
-        # rate parameter must not silently move a clock tolerance.
-        #
-        # THE VALUE IS `TO-VERIFY` and is a PARAMETERISATION, not a new number:
-        # 0.2 is exactly what the derivation produced at the `safety_rate_hz:
-        # 5.0` both config files set, so the threshold this build runs is
-        # identical to the one the previous build ran. Nothing measured it then
-        # and nothing measures it now - what changed is that it is now visible
-        # and cannot be moved by editing something else.
-        #
-        # What it means, unchanged from the derivation's own comment: how far
-        # the ROS clock may go BACKWARDS before that is a discontinuity rather
-        # than "no advance". `/clock` is delivered BEST_EFFORT, so a message
-        # overtaken by its successor can rewind the clock by about the
-        # publication spacing, and a rewind that small is indistinguishable from
-        # that. Anything smaller falls through to the stall path, which needs
-        # `clock_stall_sec` of no advance to fire at all - so jitter costs
-        # nothing while a world reset is caught in one tick.
-        self.declare_parameter("clock_backward_eps_sec", 0.2)
-        self.declare_parameter("clock_forward_jump_sec", 1.0)
+        # SAFETY.md F-40: a forward clock discontinuity is REPORTED (WARN plus
+        # a /diagnostics value) and does NOT disarm and does NOT cancel - on
+        # the real robot the only sources are a time-sync step and a manual
+        # `date` set, and disarming on every step of a flaky NAT'd time source
+        # would teach the operator to expect spurious disarms, which is how a
+        # safety mechanism gets switched off. `clock_forward_jump_sec` bounds
+        # the EXCESS over the clock's own observed rate, not an absolute step.
+        self.declare_parameter(
+            "clock_backward_eps_sec", _TO_VERIFY, _measured_descriptor("seconds")
+        )
+        self.declare_parameter(
+            "clock_forward_jump_sec", _TO_VERIFY, _measured_descriptor("seconds")
+        )
 
         # Nav2 / pick action interfaces. Names, not remappings, so the SR-9
         # baseline diff and this file agree about what is talked to.
@@ -723,13 +734,11 @@ class GoalGatewayNode(Node):
             )
             raise SystemExit(2)
 
-        # THE MIRROR OF THE BLOCK ABOVE. SAFETY.md F-35, user decision
-        # 2026-08-20: the reverse case - a LIVE /clock publisher while
-        # `use_sim_time` is false - was not detected anywhere, and this package
-        # did not look for a /clock publisher at all. It WARNS rather than
+        # THE MIRROR OF THE BLOCK ABOVE (SAFETY.md F-35): a LIVE /clock
+        # publisher while `use_sim_time` is false. It WARNS rather than
         # refusing; `clock_publisher_warning` carries the reasoning for why the
-        # two directions get different answers. Nothing here disarms, cancels or
-        # refuses anything.
+        # two directions get different answers. Nothing here disarms, cancels
+        # or refuses anything.
         #
         # Run TWICE, and the second time is not belt and braces: at this instant
         # DDS may not have matched a publisher that is already running, so a
@@ -747,24 +756,18 @@ class GoalGatewayNode(Node):
         self._map_frame = str(self.get_parameter("map_frame").value)
         self._base_frame = str(self.get_parameter("base_frame").value)
         self._link_lost_sec = float(self.get_parameter("link_lost_sec").value)
-        # F-14, user decision 2026-08-19. On a real robot a pick additionally
-        # requires a MEASURED `grasp.tolerance_m`, because without one "we
-        # arrived" is unprovable and the arm would actuate on an unsupported
-        # claim. The discriminator is the LIVE domain (SR-8), not a parameter:
-        # there is deliberately no flag an operator or a config could set to make
-        # the real robot behave like the twin.
+        # F-14. On a real robot a pick additionally requires a MEASURED
+        # `grasp.tolerance_m`, because without one "we arrived" is unprovable
+        # and the arm would actuate on an unsupported claim. The discriminator
+        # is the LIVE domain (SR-8), not a parameter: there is deliberately no
+        # flag an operator or a config could set to make the real robot behave
+        # like the twin.
         #
-        # POLARITY, and it is the whole of SAFETY.md F-27. This used to read
-        # `== REAL_ROBOT_DOMAIN_ID`, i.e. "is this domain 20?", so every domain
-        # that was not exactly 20 took the PERMISSIVE branch - silently, with no
-        # log and nothing in a config file a reviewer would notice. Moving the
-        # robot to another domain for a two-robot demonstration would have
-        # removed the arm's arrival check as a side effect of a network decision,
-        # and this project renumbered a domain inside a week (44924b6). The test
-        # now asks the safe question - "is this provably a simulation?" - so an
-        # unknown domain is treated as a real robot. The twin and the offline
-        # harness stay fully exercisable, which is what keeps the decoupling
-        # decision of the same day intact.
+        # POLARITY (SAFETY.md F-27): the test must ask "is this provably a
+        # simulation?", not "is this domain N?" - an unknown domain is treated
+        # as a real robot, never the reverse, so moving the robot to another
+        # domain cannot silently remove the arrival check. Do not invert this
+        # to an equality test against a known simulation/real domain id.
         self._pick_needs_measured_tolerance = not is_simulation_domain()
 
         configured_max = float(self.get_parameter("arming.max_duration_sec").value)
@@ -859,18 +862,27 @@ class GoalGatewayNode(Node):
             self._clock_stall_sec,
             float(self.get_parameter("clock_startup_grace_sec").value),
         )
-        # SAFETY.md F-30 / F-36. Its OWN parameter since 2026-08-20 - see the
-        # declaration for why, and note that NOTHING but that parameter is read
-        # here: reading `safety_rate_hz` anywhere in this statement is the bug
-        # F-36 is about, and `check_validation.py` part 9 asserts its absence.
+        # SAFETY.md F-30 / F-36. Its OWN parameter - see the declaration for
+        # why - and note that NOTHING but that parameter is read here: reading
+        # `safety_rate_hz` anywhere in this statement is the bug F-36 is about,
+        # and `check_validation.py` part 9 asserts its absence.
         #
-        # Floored, and the floor is NOT the value: below this a `/clock` message
-        # overtaken by its BEST_EFFORT successor is indistinguishable from a
-        # rewind, so a smaller number would disarm on message reordering. Same
-        # shape and same number as `clock_forward_jump_sec`'s floor.
-        self._clock_backward_eps_sec = max(0.05, float(
-            self.get_parameter("clock_backward_eps_sec").value
-        ))
+        # Floored at `_CLOCK_THRESHOLD_FLOOR_SEC`, and the floor is NOT the
+        # value: below it a `/clock` message overtaken by its BEST_EFFORT
+        # successor is indistinguishable from a rewind, so a smaller number
+        # would disarm on message reordering. Same floor as
+        # `clock_forward_jump_sec`.
+        #
+        # The parameter is read TWICE here on purpose. The statement below must
+        # contain the read itself and nothing else - `check_validation.py` part
+        # 9 asserts by AST that the value assigned to `_clock_backward_eps_sec`
+        # comes from this parameter and from no other, which is F-36 stated as a
+        # shape - so the measuredness cannot be carried in through a local.
+        self._clock_backward_eps_measured_sec = self._measured("clock_backward_eps_sec")
+        self._clock_backward_eps_sec = _clock_threshold_sec(
+            self.get_parameter("clock_backward_eps_sec").value,
+            _PROVISIONAL_CLOCK_BACKWARD_EPS_SEC,
+        )
         self._wall_clock = Clock(clock_type=ClockType.STEADY_TIME)
         self._clock_ref_ros_sec = self._started_at_sec
         self._clock_ref_mono = self._started_mono
@@ -882,11 +894,13 @@ class GoalGatewayNode(Node):
         self._clock_rate = rate_mod.ClockRateEstimator()
         # Floored, and the floor is not the value: below one watchdog period the
         # "excess" being measured is scheduling jitter rather than a
-        # discontinuity, so a smaller number would report noise. Same shape as
-        # `clock_stall_sec`'s floor.
-        self._clock_forward_jump_sec = max(0.05, float(
-            self.get_parameter("clock_forward_jump_sec").value
-        ))
+        # discontinuity, so a smaller number would report noise. Read twice for
+        # the same reason as the backwards threshold above.
+        self._clock_forward_jump_measured_sec = self._measured("clock_forward_jump_sec")
+        self._clock_forward_jump_sec = _clock_threshold_sec(
+            self.get_parameter("clock_forward_jump_sec").value,
+            _PROVISIONAL_CLOCK_FORWARD_JUMP_SEC,
+        )
         # SAFETY.md F-40. Reporting state ONLY - nothing here is read by any
         # gate, and no code path below turns either of these into a refusal.
         self._clock_forward_jumps = 0
@@ -1194,9 +1208,8 @@ class GoalGatewayNode(Node):
             f"of more than clock_backward_eps_sec={self._clock_backward_eps_sec:.2f}s "
             "is reported as such, disarms and re-baselines, and a forward jump of "
             f"more than clock_forward_jump_sec={self._clock_forward_jump_sec:.2f}s "
-            "is reported and does NOT disarm (SAFETY.md F-24/F-30/F-40; both "
-            "thresholds are TO-VERIFY and neither is derived from a rate - "
-            "F-36). Before "
+            "is reported and does NOT disarm (SAFETY.md F-24/F-30/F-40; neither "
+            "threshold is derived from a rate - F-36). Before "
             "the clock has ever been observed to advance, the first "
             f"{self._clock_startup_grace_sec:.1f}s are reported at WARN as "
             "/clock discovery, and arming is refused throughout (SAFETY.md "
@@ -1204,6 +1217,29 @@ class GoalGatewayNode(Node):
             f"{self._max_target_age_sec:.1f}s to be correlated against "
             "(SAFETY.md F-28)."
         )
+        # SR-15 rule 14, and the half of it that used to be missing: both
+        # thresholds were literals that a comment CALLED `TO-VERIFY`, so an
+        # unmeasured value could survive indefinitely without anything saying
+        # so. WARN and not INFO, because it is a statement about evidence that
+        # does not exist; and not an ERROR, because nothing is broken and
+        # nothing is refused - the two detectors run exactly as they do with a
+        # measured value. The durable half is `external/config` on
+        # /diagnostics, which repeats it for as long as it is true.
+        unmeasured_clock = self._unmeasured_clock_thresholds()
+        if unmeasured_clock:
+            self.get_logger().warn(
+                "UNMEASURED clock-discontinuity threshold(s): "
+                + ", ".join(unmeasured_clock)
+                + " - detecting at the provisional values backward="
+                f"{self._clock_backward_eps_sec:.2f}s forward="
+                f"{self._clock_forward_jump_sec:.2f}s, which is what this build "
+                "has always run. Nothing measured either of them under a loaded "
+                "or actually-running Gazebo (SR-15 rule 14, SAFETY.md F-36/F-40). "
+                "This refuses no goal and closes no gate: an unmeasured threshold "
+                "here would take away the DETECTOR, not the motion, so it is "
+                "reported instead of enforced. Set the value in the config and "
+                "restart - both are startup-only."
+            )
         self._publish_arming_state()
         self.get_logger().info(
             f"goal_gateway_node up: goal_ingress_enabled={self._ingress} "
@@ -1392,15 +1428,10 @@ class GoalGatewayNode(Node):
         ``ValueError: Logger severity cannot be changed between calls.`` from
         inside ``log()``. The idiomatic-looking
         ``level = get_logger().error if x else get_logger().info; level(msg)``
-        is therefore a LATENT CRASH, and it fires only on the second call - the
-        one with the other severity.
-
-        Found the hard way while exercising the seven auto-disarm triggers: an
-        ``OPERATOR`` disarm (INFO) followed by a ``MODE_CHANGE`` disarm (ERROR)
-        killed the executor, and `prepare_shutdown` then died on the same
-        pattern in `_cancel_mission`, so the in-flight goal was never cancelled.
-        A crash here is the 2026-07-06 shape exactly: the supervising process
-        disappears and the command source behind it does not notice.
+        is therefore a LATENT CRASH that only fires on the second call - the
+        one with the other severity - and it kills the executor: a crash here
+        in `_handle_disarm` or `_cancel_mission` can leave an in-flight goal
+        never cancelled.
 
         Every branch below is its own physical call site. That is the whole fix,
         and it is why this is a method rather than a local variable.
@@ -1430,25 +1461,19 @@ class GoalGatewayNode(Node):
     def _note_frame_relock(self, relocks: int) -> None:
         """A re-lock of their map frame CANCELS what is running. It does not disarm.
 
-        CANCEL, because the alternative is worse and because the precedent is
-        already here: a DATUM MOVE cancels the goal in flight, and this is the
-        same event in a different axis. Their frame turned; a rotation of the
-        reference frame must not be treated more leniently than a translation of
-        its origin.
+        CANCEL because a re-lock is a geometric event, the same axis as a datum
+        move (which also cancels in flight) - a rotation of the reference frame
+        must not be treated more leniently than a translation of its origin.
+        NOT DISARM: the arming window is a promise about TIME to the operator,
+        measured monotonically, and a re-lock is geometry that re-arming would
+        not repair - disarming on it would blur what the gate means without
+        making anything safer.
 
-        NOT DISARM, deliberately. The arming window is a promise about TIME, made
-        to the operator, and it is measured monotonically for exactly that
-        reason. A re-lock is a geometric event that re-arming would not repair,
-        so disarming on it would blur what the arming gate means without making
-        anything safer. The operator keeps the window they were granted; what
-        they lose is the goal that was computed against a frame that has moved.
-
-        WHAT THIS DOES NOT CLAIM. We do not apply their rotation at all - we take
-        their map coordinates as ours. So a re-lock does not make us MORE wrong;
-        it makes visible that an assumption we were already making has stopped
-        holding. Cancelling is the honest response to that. Applying the
-        alignment properly is the owed work, and this signal is what will keep it
-        maintainable once it exists.
+        WHAT THIS DOES NOT CLAIM: we never apply their rotation - we take their
+        map coordinates as ours - so a re-lock does not make us MORE wrong, it
+        makes an assumption we were already making visible as having stopped
+        holding. Cancelling is the honest response; applying the alignment
+        properly is the owed work this signal keeps traceable.
         """
         previous = self._frame_relocks_seen
         self._frame_relocks_seen = relocks
@@ -1467,23 +1492,19 @@ class GoalGatewayNode(Node):
     def _drop_blacklist_on_identity(self, msg: ExternalTargetList) -> None:
         """Drop blacklist entries whose id now names a different object.
 
-        THE BRIDGE, not the fix. `_maybe_drop_blacklist` needs a `collected` flag
-        it saw set and then saw cleared; when their targets are DELETED rather
-        than collected that evidence can never exist, and their ids restart at 1
-        regardless. This asks a different question with the data we do have: is
-        the thing carrying this id still where the thing we blacklisted was?
+        THE BRIDGE, not the fix: `_maybe_drop_blacklist` needs a `collected`
+        flag it saw set and cleared, which cannot exist when their targets are
+        DELETED rather than collected, and their ids restart at 1 regardless.
+        This asks instead: is the thing carrying this id still where the thing
+        we blacklisted was? Compared in WGS84-derived metres against the
+        CURRENT datum, anchor stored as lat/lon, so a datum move displaces both
+        sides equally and cannot fake a mismatch.
 
-        Positions are compared in WGS84-derived metres against the CURRENT datum,
-        and the anchor is stored as lat/lon, so a datum move displaces both sides
-        equally and cannot fake a mismatch.
-
-        It can be wrong in both directions and neither is silent: an object that
-        was physically moved gets a second chance it arguably deserves, and an id
-        reset that happens to place a new object within the tolerance stays
-        blacklisted, where `clear_blacklist` is the operator's door.
-
-        THE REAL FIX IS A `session_id` FROM THEM (proposal item E). With one, this
-        method becomes unnecessary and the question stops being a guess.
+        Wrong in both directions, neither silently: a moved object gets a
+        second chance, and an id reset landing a new object within tolerance
+        stays blacklisted (`clear_blacklist` is the operator's door). THE REAL
+        FIX IS A `session_id` FROM THEM (proposal item E) - with one, this
+        method is unnecessary.
         """
         if not self._blacklist_latlon:
             return
@@ -1523,26 +1544,23 @@ class GoalGatewayNode(Node):
     def _on_clear_blacklist(self, request: Trigger.Request, response: Trigger.Response):
         """Drop the blacklist and the attempt counts, as an explicit operator act.
 
-        WHY THIS EXISTS. `_maybe_drop_blacklist` drops it automatically, but only
-        on EVIDENCE: an id we acknowledged, watched turn `collected: true`, and
-        then saw come back `collected: false`. That evidence CANNOT EXIST when
-        their targets are deleted rather than collected - no flag was ever set,
-        so none can come back - and their ids restart at 1 regardless. Observed
-        live on 2026-08-21: a fresh target arrived as id 1, we still held id 1
-        from the previous id space, and every reachable target behind it was
-        stuck with no error on either side.
+        WHY THIS EXISTS: `_maybe_drop_blacklist` drops it automatically, but
+        only on EVIDENCE - an id we acknowledged, watched turn `collected:
+        true`, then saw come back `collected: false`. That evidence CANNOT
+        EXIST when their targets are deleted rather than collected (no flag
+        was ever set to come back), and their ids restart at 1 regardless,
+        which can wedge every reachable target behind a stale id with no error
+        on either side. The strict evidence rule is NOT relaxed - a looser
+        test would fire on an acknowledgement that never reached them,
+        unbounded retry by another route - so the automatic path keeps its
+        rule and the operator gets a door instead.
 
-        The strict evidence rule is NOT being relaxed. It is strict on purpose: a
-        looser test would fire once a second on an acknowledgement that never
-        reached them, which is unbounded retry by another route. So the automatic
-        path keeps its rule and the operator gets a door.
-
-        It is deliberately NOT gated on the armed state. The blacklist is not an
-        authority gate - clearing it permits nothing, dispatches nothing and
-        moves nothing; a cleared target faces every validation step and the
-        arming gate exactly as it did before. Refusing to clear while armed would
-        force a disarm/re-arm cycle to fix a bookkeeping problem, which is the
-        kind of ceremony that teaches operators to disarm reflexively.
+        Deliberately NOT gated on the armed state: the blacklist is not an
+        authority gate, clearing it permits and dispatches nothing, and a
+        cleared target still faces every validation step and the arming gate.
+        Refusing to clear while armed would force a disarm/re-arm cycle to fix
+        a bookkeeping problem - ceremony that teaches operators to disarm
+        reflexively.
         """
         del request
         cleared = list(self._blacklist)
@@ -1628,12 +1646,12 @@ class GoalGatewayNode(Node):
         # reports the instant ON THIS NODE'S ROS CLOCK at which the window
         # closes.
         #
-        # The rate is what the arithmetic used to be missing. `seconds_remaining`
-        # is monotonic WALL seconds; adding them to a ROS instant assumes the two
-        # clocks run at the same speed, and at a real-time factor of 0.1 that
-        # advertised a gate closing ~595 wall-seconds away for one that closed in
-        # 60.2 s. `seconds_remaining` is still the field that needs no
-        # interpretation - it is the operator's seconds - and it is unchanged.
+        # `seconds_remaining` is monotonic WALL seconds; adding them to a ROS
+        # instant without correcting for the real-time factor can advertise a
+        # gate closing far later than it actually does at any rate other than
+        # 1.0. `seconds_remaining` itself needs no interpretation - it is the
+        # operator's seconds - and stays unchanged; only this projected field
+        # is rate-corrected.
         if snap["expires_at_sec"] is not None:
             expires = rate_mod.project_ros_expiry(
                 self._ros_now(),
@@ -1725,6 +1743,22 @@ class GoalGatewayNode(Node):
             self.get_parameter("grasp.tolerance_m").value,
         )
 
+    def _unmeasured_clock_thresholds(self) -> List[str]:
+        """Which of the two clock-discontinuity thresholds nobody has measured.
+
+        Read at startup for a WARN and on every diagnostics tick, because what
+        this guards against is not a wrong number: it is a `TO-VERIFY` that
+        nothing ever says out loud again once the comment has been read.
+        """
+        return [
+            name
+            for name, measured in (
+                ("clock_backward_eps_sec", self._clock_backward_eps_measured_sec),
+                ("clock_forward_jump_sec", self._clock_forward_jump_measured_sec),
+            )
+            if measured is None
+        ]
+
     def _unset_items(self) -> List[str]:
         unset = []
         if self._geofence_rect() is None:
@@ -1735,10 +1769,17 @@ class GoalGatewayNode(Node):
         if not offset.tolerance_configured:
             # Reported separately because it blocks something different: goals
             # still resolve and dispatch without it, but the post-arrival
-            # reached check cannot return a verdict (user decision 2026-08-19).
+            # reached check cannot return a verdict (SAFETY.md F-14).
             unset.append("grasp.tolerance_m (reached check only)")
         if self._measured("datum_jump_warn_m") is None:
             unset.append("datum_jump_warn_m")
+        # Listed with what they actually do, because unlike the geofence and the
+        # grasp offset these refuse NOTHING while unmeasured: the detector keeps
+        # running at its provisional value. Listed all the same - an unmeasured
+        # threshold that is only in a startup line is invisible the moment that
+        # line has scrolled away, which is the whole defect this closes.
+        for name in self._unmeasured_clock_thresholds():
+            unset.append(f"{name} (clock detection threshold, provisional value in use)")
         return unset
 
     # ==================================================================
@@ -1782,31 +1823,21 @@ class GoalGatewayNode(Node):
     def _safety_now(self) -> float:
         """The clock the AUTHORITY GATE is measured on. SAFETY.md F-29.
 
-        Monotonic, and deliberately not the ROS clock. Two of this node's
-        timeouts are promises made in WALL-CLOCK terms to somebody outside the
-        simulation, and both used to be measured in sim seconds:
+        Monotonic, deliberately not the ROS clock, because both of this node's
+        wall-clock promises must not stretch with the simulation's rate:
 
-        * the **arming window**. An operator who grants 120 s is promising
-          themselves two minutes; SR-15 rule 5 exists so that the window closes
-          BY ITSELF. On a twin at a real-time factor of 0.1 that promise became
-          twenty minutes - measured: a 20 s window had not expired after 123 s
-          of wall time - and the watchdog called the clock healthy throughout,
-          correctly, because it was advancing. A safety bound whose length
-          depends on how loaded Gazebo is, is not a bound.
-        * the **link watchdog** (C-3). `link_lost_sec` is a statement about a
+        * the **arming window**: an operator who grants 120 s is promising
+          themselves two minutes (SR-15 rule 5); the window must close BY
+          ITSELF regardless of how loaded Gazebo is - a safety bound whose
+          length depends on the real-time factor is not a bound.
+        * the **link watchdog** (C-3): `link_lost_sec` is a statement about a
           WiFi link, and a WiFi link does not slow down when Gazebo does.
 
-        So both are read here instead, and the choice is the stronger of the two
-        the auditor offered: not "detect a slow clock and warn", but measure the
-        things that live in wall time on a wall clock, and leave sim time to the
-        things that belong in the simulation - the TF ages, the external stamps'
-        counterparts, the in-flight re-validation, everything whose other operand
-        is a sim-time stamp. Comparing like with like, one level up.
-
-        This does NOT retire the clock watchdog and it must not: those sim-time
-        mechanisms are exactly as inert on a stopped clock as they ever were, so
-        a stalled clock still disarms and still refuses to arm (SAFETY.md F-24).
-        What changes is that the gate's own expiry no longer depends on it.
+        This does NOT retire the clock watchdog: the sim-time mechanisms (TF
+        ages, external stamps, the in-flight re-validation) stay exactly as
+        inert on a stopped clock, so a stalled clock still disarms and still
+        refuses to arm (SAFETY.md F-24). Only the gate's own expiry no longer
+        depends on it.
 
         Only the :class:`ArmingMachine` and the link watchdog take their time
         from here. Anything comparing against a ROS-clock stamp must not: a
@@ -1936,13 +1967,13 @@ class GoalGatewayNode(Node):
     def _on_teleop_mode(self, msg: String) -> None:
         """EVERY message reaches the trigger. Change detection is for the log only.
 
-        C-1 / SAFETY.md F-1. The earlier guard required a *previous* mode and a
-        *change*, so the first message a freshly started gateway ever saw could
-        not disarm it. That is the normal case, not a corner one: `teleop_mux`
-        starts in `keyboard` and republishes `/teleop/active_mode` every tick,
-        so after any restart - including every restart done after an E-stop -
-        the first observed mode is `keyboard`. The gate must close on the state
-        it observes, never on the transition it happened to witness.
+        C-1 / SAFETY.md F-1. `teleop_mux` starts in `keyboard` and republishes
+        `/teleop/active_mode` every tick, so after any restart - including one
+        done after an E-stop - the first observed mode is `keyboard`, which is
+        the normal case, not a corner one. The gate must close on the state it
+        observes, never on the transition it happened to witness: a guard that
+        requires a *previous* mode and a *change* would miss exactly the first
+        message a freshly started gateway ever sees.
 
         Calling unconditionally is cheap and cannot spam: `note_teleop_mode`
         returns `None` for `autonomous`, and `disarm` is idempotent while
@@ -1950,11 +1981,10 @@ class GoalGatewayNode(Node):
         """
         # MONOTONIC (SAFETY.md F-38). `max_teleop_mode_age_sec` is the ONLY
         # thing that catches a `teleop_mux` that stopped publishing, and a mux
-        # does not slow down when Gazebo does - measured before this fix: a dead
-        # mux detected after 22.1 s of wall time against a configured 2.0 s at a
-        # real-time factor of 0.1. The mode message carries no stamp of its own,
-        # so both sides of that comparison are ours and moving them together is
-        # the whole change (SR-15 rule 12).
+        # does not slow down when Gazebo does, so detection must not stretch
+        # with the real-time factor. The mode message carries no stamp of its
+        # own, so both sides of that comparison are ours and moving them
+        # together is the whole change (SR-15 rule 12).
         previous = self._teleop_mode
         self._teleop_mode = msg.data
         self._teleop_mode_mono_sec = self._safety_now()
@@ -2006,35 +2036,31 @@ class GoalGatewayNode(Node):
     def _note_link_session(self, reconnects: int) -> None:
         """A reconnect is a TRANSPORT event and clears NOTHING. SAFETY.md F-16.
 
-        This method used to drop the blacklist and the attempt counts whenever
-        ``ExternalLinkStatus.reconnect_count`` moved, on the reasoning that
-        their ids restart at 1 when their node restarts. The reasoning is sound
-        about a restart of their node and false about the field it was reading:
-        ``reconnect_count`` is ``RosbridgeClient.stats.reconnects``, the number
-        of successful WebSocket connections after the first. A WiFi flap
-        produces it with their node untouched, their ids unchanged and their
-        ``collected`` flags intact - and it then made a target we had proved
-        unpickable retryable again, which is precisely the unbounded retry the
-        blacklist exists to stop. Reproduced by the auditor with one forced
-        reconnect.
+        Do not clear the blacklist or attempt counts on
+        ``ExternalLinkStatus.reconnect_count`` alone: it is
+        ``RosbridgeClient.stats.reconnects``, the count of successful WebSocket
+        connections after the first, and a WiFi flap produces it with their
+        node untouched, their ids unchanged and their ``collected`` flags
+        intact - clearing on it would make an already-proven-unpickable target
+        retryable again, exactly the unbounded retry the blacklist exists to
+        stop.
 
-        So: the blacklist SURVIVES a reconnect. It is dropped only on evidence
-        that the id space itself changed, which is `_note_id_space`'s job, and
-        when there is no such evidence the blacklist is kept and that is said
-        out loud rather than quietly assumed. Asking their side for a session or
-        boot id on the wire is proposal item 3 and is what would make this
-        decidable instead of inferable.
+        The blacklist SURVIVES a reconnect. It is dropped only on evidence that
+        the id space itself changed, which is `_note_id_space`'s job; when
+        there is no such evidence the blacklist is kept and that is said out
+        loud rather than quietly assumed. Asking their side for a session or
+        boot id on the wire (proposal item 3) is what would make this decidable
+        instead of inferable.
         """
         if reconnects == self._link_session:
             return
         # WRITER UNIQUENESS ON OUR OWN STATUS TOPIC. `link_status` is supposed
         # to have exactly one publisher; with two, their reconnect counters
         # interleave and every message looks like a new session, which would
-        # clear the blacklist twice a second and retry an impossible target for
-        # ever. Found by exactly that symptom while verifying this code against
-        # a machine that had orphaned link nodes on it. This is SR-9's principle
-        # applied one topic further out: a second writer produces no error from
-        # the middleware, so it has to produce one from us.
+        # clear the blacklist twice a second and retry an impossible target
+        # forever. This is SR-9's principle applied one topic further out: a
+        # second writer produces no error from the middleware, so it has to
+        # produce one from us.
         publishers = self.count_publishers(self.resolve_topic_name("link_status"))
         if publishers > 1:
             self.get_logger().error(
@@ -2240,9 +2266,9 @@ class GoalGatewayNode(Node):
             latitude_deg=lat,
             longitude_deg=lon,
             status=0,
-            # Their producers always set header.stamp (verified 2026-08-18), and
-            # it is their WALL clock - compared against time.time() in the
-            # context, never against sim time.
+            # Their producers always set header.stamp, and it is their WALL
+            # clock - compared against time.time() in the context, never
+            # against sim time.
             stamp_sec=stamp_sec if stamp_sec > 0.0 else None,
             confidence=None,
             well_formed=well_formed,
@@ -2393,10 +2419,9 @@ class GoalGatewayNode(Node):
         """Does the id this mission carries STILL follow from its own fix?
 
         THE ANSWER IS COMPUTED HERE, EVERY TIME IT IS ASKED. It is never
-        inherited from the dispatch decision. That is the whole of SAFETY.md
-        F-13: the correlation used to be enforced once, when the goal was sent,
-        and an ambiguity that arose 0.56 s later changed nothing at all -
-        neither the drive, nor the pick, nor the irreversible acknowledgement.
+        inherited from the dispatch decision (SAFETY.md F-13): an ambiguity
+        that arises after dispatch must change the drive, the pick and the
+        irreversible acknowledgement alike - never none of them.
 
         Anything other than a unique match NAMING THIS MISSION'S id is a
         refusal, in every direction:
@@ -2450,41 +2475,30 @@ class GoalGatewayNode(Node):
     def _occlusion_latch_holds(self, mission: Mission, result) -> Tuple[bool, str]:
         """INTERIM. Let a NO_MATCH pass while armed, on a mission that once matched.
 
-        WHY THIS EXISTS. On 2026-08-25 the robot navigated correctly to a piece
-        of litter, stood at the grasp standoff, and did not pick it up: from
-        there the ROBOT ITSELF OCCLUDED THE OBJECT, the Octopus stopped seeing
-        it, it left their target list, and the arrival gate read NO_MATCH and
-        refused to actuate the arm. The failure is systematic rather than
-        occasional -- every correct approach ends with the robot in front of the
-        thing it came for -- so the better the navigation, the more reliably the
-        pick is refused. A failure mode that good behaviour causes is not a
+        WHY THIS EXISTS: correct navigation can put the robot's own body
+        between the sensor and the object it is standing over, so the Octopus
+        loses the object from its target list and the arrival gate reads
+        NO_MATCH and refuses to actuate the arm - systematically, for every
+        good approach. A failure mode that good behaviour causes is not a
         safety property.
 
-        WHAT IT DOES NOT COVER, AND THAT IS THE POINT. SAFETY.md F-13 bundles
-        NO_MATCH with AMBIGUOUS, but the two mean opposite things here:
-        AMBIGUOUS says a second object arrived and we might take the wrong one;
-        NO_MATCH-by-occlusion says the object is exactly where we thought and we
-        are standing in front of it. This latch covers NO_MATCH ONLY. Ambiguity,
-        an id that moved, a stale list and a failed re-correlation all still
-        refuse, and any of them voids the latch PERMANENTLY for this mission --
+        WHAT IT DOES NOT COVER, AND THAT IS THE POINT: SAFETY.md F-13 bundles
+        NO_MATCH with AMBIGUOUS, but here they mean opposite things - AMBIGUOUS
+        means a second object may be the wrong one; NO_MATCH-by-occlusion means
+        the object is exactly where expected. This latch covers NO_MATCH ONLY.
+        Ambiguity, a moved id, a stale list or a failed re-correlation still
+        refuse, and any of them VOIDS THE LATCH PERMANENTLY for this mission -
         an ambiguity seen once is not undone by the ambiguity going away.
 
-        ⚠ WHAT IT COSTS, STATED PLAINLY. It re-introduces exactly the gap F-13
-        closed, for one status value: while it holds, "the correlation was
-        unique when we set off" IS being treated as a statement about now. If
-        the object was removed by something other than our own occlusion -- wind,
-        a person, a bad fix -- the arm actuates on a position that no longer has
-        anything at it. The bound on that is the arming window (120 s from the
-        teleop), which is the operator's assertion under SR-16 that the arm's
-        workspace is clear for its duration.
-
-        USER DECISION 2026-08-25, taken with that cost stated. The coordinator
-        recommended a narrower form -- additionally requiring the robot to be
-        within `grasp.tolerance_m` of its own fix, so that self-occlusion is the
-        only available explanation, and a bound of seconds rather than the
-        arming window -- and the operator chose the arming window. Recorded here
-        rather than quietly widened or quietly narrowed. The durable fix is
-        designed separately; this is scaffolding with a name on it.
+        ⚠ WHAT IT COSTS: it re-introduces exactly the gap F-13 closed, for one
+        status value - while it holds, "the correlation was unique when we set
+        off" IS being treated as a statement about now. If the object was
+        removed by something other than our own occlusion (wind, a person, a
+        bad fix), the arm actuates on a position that no longer has anything at
+        it. The bound on that exposure is the arming window itself (the
+        operator's own assertion under SR-16 that the arm's workspace is clear
+        for its duration) - a deliberate, recorded choice, not the tighter
+        distance+timeout bound that was also on the table.
 
         Ships DISABLED by default (`occlusion_latch_enabled: false`) and is
         startup-only, so it cannot be switched on under a running node.
@@ -2545,10 +2559,10 @@ class GoalGatewayNode(Node):
         external system: arming and the teleop mode are operator-owned, the
         server availability and the datum are observations.
 
-        It took a ROS-time `now` until SAFETY.md F-38 and takes no time argument
-        at all now, for the reason `_is_armed` takes none: every age it builds is
-        monotonic, and a caller handing in the tick's ROS instant is exactly how
-        the two epochs got mixed in the first place."""
+        Deliberately takes no time argument, for the reason `_is_armed` takes
+        none: every age it builds is monotonic, and a caller handing in the
+        tick's ROS instant is exactly how the two epochs get mixed
+        (SAFETY.md F-38)."""
         with self._arming_lock:
             armed = self._arming.is_armed(self._safety_now())
         # NOT `now`: `now` is this tick's ROS instant and the mode stamp is
@@ -2760,12 +2774,11 @@ class GoalGatewayNode(Node):
             f"target {mission.target_id} REACHED ({reached_detail})"
         )
         # ARRIVAL IS REPORTED IN ITS OWN RIGHT, on its own state, BEFORE anything
-        # decides what follows. It used to be inferable from an acknowledgement;
-        # since C-7 an acknowledgement means a successful pick and nothing else,
-        # so "we got there" needs a signal that does not depend on what happens
-        # next. Every later outcome - picked, suppressed, blacklisted - overwrites
-        # this with its own state, and none of them can erase the fact that it
-        # was published.
+        # decides what follows: since C-7 an acknowledgement means a successful
+        # pick and nothing else, so "we got there" needs a signal that does not
+        # depend on what happens next. Every later outcome - picked, suppressed,
+        # blacklisted - overwrites this with its own state, and none of them can
+        # erase the fact that it was published.
         self._reached.append(mission.target_id)
         self._last_reached_detail = reached_detail
         self._publish_mission_status(mission, ExternalGoalStatus.STATE_REACHED, "")
@@ -2787,7 +2800,7 @@ class GoalGatewayNode(Node):
         #     here rather than inherited from the dispatch (SAFETY.md F-13);
         #  9. on the real robot only, `grasp.tolerance_m` must be measured, so
         #     that "arrived" is a checked claim and not an assumed one
-        #     (SAFETY.md F-14, user decision 2026-08-19).
+        #     (SAFETY.md F-14).
         if not armed:
             self._finish_unacknowledged(mission, ACK_DISARMED, structural=False)
             return
@@ -2901,13 +2914,8 @@ class GoalGatewayNode(Node):
     def _acknowledge(self, mission: Mission) -> None:
         """Publish `trash_goal_done`. The one irreversible thing this node does.
 
-        Four conditions. The docstring used to claim all four were re-checked
-        here; three were, and the fourth - the correlation - was inherited from
-        the dispatch decision and never looked at again. That gap is SAFETY.md
-        F-13, and an auditor drove it: a fix that became ambiguous 0.56 s after
-        dispatch still acknowledged an id the correlation had explicitly refused
-        to supply. The list is now true, and it is true because the code below
-        does it, not because this paragraph says so:
+        Four conditions, all re-checked here at the instant of publication -
+        none is inherited from the dispatch decision (SAFETY.md F-13):
 
           1. a successful pick - the caller's job, and `_on_pick_result`'s
              success branch is the only caller there is;
@@ -3080,23 +3088,17 @@ class GoalGatewayNode(Node):
         `validate_dispatch`, not through a second set of inline checks (C-5).
         """
         if mission.cancelling:
-            # The server that owned the goal is gone, so no result is coming and
-            # there is nothing left for us to supervise. Releasing the slot is
-            # honest; pretending we still control that goal is not.
+            # The server that owned the goal is gone, so no result is coming
+            # and there is nothing left for us to supervise. Releasing the slot
+            # is honest; pretending we still control that goal is not.
             #
-            # But NOT before the cancel timeout has run: `_check_cancel_timeout`
-            # is what produces the ERROR log and the ERROR diagnostic SR-15 rule
-            # 9 requires, and it can only see a mission that still exists.
-            # Releasing first made the requirement's own report unreachable -
-            # found by the C-8 NAV2_UNAVAILABLE case, which is the one situation
-            # where a cancel genuinely cannot be confirmed.
-            # TWICE the timeout, not once. `_check_cancel_timeout` runs in the
-            # safety group and produces the ERROR log plus the ERROR diagnostic
-            # that SR-15 rule 9 actually requires; this release is only
-            # housekeeping. At one timeout the two became due in the same
-            # instant and the housekeeping won the race, so the requirement's
-            # own report never ran. Reporting comes first; freeing the slot can
-            # wait one more window.
+            # But NOT before the cancel timeout has run, and NOT at exactly
+            # that timeout either: `_check_cancel_timeout` is what produces the
+            # ERROR log and ERROR diagnostic SR-15 rule 9 requires, and it can
+            # only see a mission that still exists. Releasing at one timeout
+            # races that report and can win it, silently swallowing the
+            # requirement's own report - so this releases at TWICE the timeout,
+            # which keeps reporting strictly first.
             elapsed = now - (mission.cancel_requested_at_sec or now)
             if (
                 not self._nav2_available
@@ -3181,11 +3183,10 @@ class GoalGatewayNode(Node):
     def _is_armed(self) -> bool:
         """Read-time armed state on the MONOTONIC clock (SAFETY.md F-2/F-29).
 
-        Takes no time argument on purpose: it used to, and every caller had to
-        remember which of the two clocks the arming machine reasons in. One
-        caller passing a ROS-time `now` into a monotonic window would make an
-        expired window read as open for the difference between two epochs, which
-        is not a bug that announces itself.
+        Takes no time argument on purpose: a caller passing a ROS-time `now`
+        into a monotonic window would make an expired window read as open for
+        the difference between two epochs, which is not a bug that announces
+        itself.
         """
         with self._arming_lock:
             return self._arming.is_armed(self._safety_now())
@@ -3352,26 +3353,25 @@ class GoalGatewayNode(Node):
     def _link_watchdog(self, mono: float) -> None:
         """ABSENCE of `link_status` is `LINK_LOST` (C-3 / SAFETY.md F-3).
 
-        MONOTONIC, since SAFETY.md F-29. `link_lost_sec` is a statement about a
-        WebSocket over WiFi and about a node that publishes at a fixed wall-clock
-        rate; neither of them slows down when the simulation does, so measuring
-        their silence in sim time made a 5 s tolerance mean 50 wall-seconds of
-        dead link on a twin at a real-time factor of 0.1. The arrival time this
-        compares against is taken from the same clock in `_on_link_status`.
+        MONOTONIC (SAFETY.md F-29): `link_lost_sec` is a statement about a
+        WebSocket over WiFi and a node that publishes at a fixed wall-clock
+        rate, and neither slows down when the simulation does, so measuring
+        their silence in sim time would let real dead time hide behind a
+        stretched tolerance. The arrival time this compares against is taken
+        from the same clock in `_on_link_status`.
 
-        `note_link` used to be reachable only from `_on_link_status`, i.e. the
-        gateway could only learn that the link was down from the very node whose
-        job it is to report that - and `link_status` is `TRANSIENT_LOCAL`, so if
-        `octopus_link_node` crashed, was OOM-killed or was never started, the
-        last `connected: true` simply stood for ever. Health is an active
-        signal, not the absence of a bad one (SR-13), so silence is judged here
-        against `link_lost_sec`.
+        Polled here independently of `_on_link_status`, not only reactive to
+        it: `link_status` is `TRANSIENT_LOCAL`, so if `octopus_link_node`
+        crashed, was OOM-killed or was never started, the last `connected:
+        true` would otherwise stand forever. Health is an active signal, not
+        the absence of a bad one (SR-13), so silence is judged here against
+        `link_lost_sec`.
 
-        Never having seen a `link_status` counts as silence, measured from node
-        start. That is the fail-safe direction: it costs nothing while disarmed
+        Never having seen a `link_status` counts as silence, measured from
+        node start - the fail-safe direction: it costs nothing while disarmed
         (a disarm while disarmed is a no-op) and it means arming without a
-        living link node closes the gate again within `link_lost_sec` instead of
-        supervising a goal on a link that does not exist.
+        living link node closes the gate again within `link_lost_sec` instead
+        of supervising a goal on a link that does not exist.
         """
         if self._link_status_stamp_sec is None:
             silent_for = mono - self._started_mono
@@ -3401,22 +3401,20 @@ class GoalGatewayNode(Node):
         """Is the clock the SIM-TIME half of this node is measured on moving?
 
         SAFETY.md F-24. With ``use_sim_time`` true and no ``/clock`` publisher -
-        which is what the twin launch file produced, and what a paused or killed
-        Gazebo produces at any moment - the ROS clock never advances, and NOT ONE
-        ROS-clock timer in this node fires: not the in-flight re-validation, not
-        the correlation gate, not the cancel-confirm report, not the preview and
-        not the dispatch decision. Measured: 0 timer callbacks in 3 s against 14
-        on a steady clock in the same process. The node meanwhile reports itself
-        up and says nothing, which is the silent-health failure SR-13 exists to
-        forbid and the same shape as F-2 and F-3 - a safety mechanism that
-        stopped without saying so.
+        what a paused or killed Gazebo produces at any moment - the ROS clock
+        never advances, and NOT ONE ROS-clock timer in this node fires: not the
+        in-flight re-validation, not the correlation gate, not the
+        cancel-confirm report, not the preview and not the dispatch decision.
+        The node meanwhile reports itself up and says nothing, which is the
+        silent-health failure SR-13 exists to forbid and the same shape as F-2
+        and F-3 - a safety mechanism that stopped without saying so.
 
         THIS CALLBACK RUNS ON A STEADY CLOCK. That is the whole mechanism: the
         watchdog for a stopped clock cannot be scheduled by the stopped clock,
         and no parameter, config file or `/clock` publisher reaches
         ``ClockType.STEADY_TIME``.
 
-        SINCE SAFETY.md F-29 the arming expiry and the link watchdog no longer
+        Since SAFETY.md F-29 the arming expiry and the link watchdog no longer
         depend on this clock at all - they are measured monotonically, because
         they are promises in wall-clock terms (see `_safety_now`). That narrows
         what a stall costs; it does not remove it, and the response here is
@@ -3456,10 +3454,10 @@ class GoalGatewayNode(Node):
             ros = None
 
         if ros is not None and ros > self._clock_ref_ros_sec:
-            # SAFETY.md F-40, user decision 2026-08-20. A forward discontinuity
-            # used to be indistinguishable from healthy progress here, because
-            # this branch only ever asked whether the clock had advanced. It now
-            # asks HOW MUCH MORE than a continuous clock could have advanced.
+            # SAFETY.md F-40: this branch does not merely ask whether the clock
+            # advanced - it asks HOW MUCH MORE than a continuous clock at the
+            # observed rate could have advanced, which is what lets it tell a
+            # forward discontinuity apart from healthy progress.
             #
             # Measured as an EXCESS over the observed rate rather than as an
             # absolute step, and that is deliberate: an absolute threshold would
@@ -3509,13 +3507,12 @@ class GoalGatewayNode(Node):
             return
 
         # SAFETY.md F-30. A DECREASE is its own condition and must not be
-        # reported as a stall: `_clock_ref_ros_sec` used to be raised only, so a
-        # 120 s backwards jump left the reference at the old maximum and every
-        # later tick computed a growing "frozen_for" on a clock that was running
-        # perfectly - measured: still refusing to arm 30.5 s after the jump,
-        # with the clock advancing at 1.0x the whole time, and only recovering
-        # once sim time had climbed back past the old maximum, i.e. after
-        # exactly the size of the jump.
+        # reported as a stall: `_clock_ref_ros_sec` must be allowed to move
+        # backwards too, or a jump would leave the reference at the old
+        # maximum and every later tick would compute a growing "frozen_for" on
+        # a clock that is actually advancing normally, recovering only once
+        # sim time climbs back past the old maximum - i.e. after exactly the
+        # size of the jump.
         if (
             ros is not None
             and (self._clock_ref_ros_sec - ros) > self._clock_backward_eps_sec
@@ -3575,33 +3572,22 @@ class GoalGatewayNode(Node):
     def _note_clock_jumped_forward(self, ros: float, excess: float) -> None:
         """The ROS clock advanced FURTHER than it could have. SAFETY.md F-40.
 
-        DECIDED by the user on 2026-08-20, on a reproduction rather than on an
-        argument: **report it - WARN plus a `/diagnostics` value - and do NOT
-        disarm and do NOT cancel.**
+        Reports it - WARN plus a `/diagnostics` value - and does NOT disarm and
+        does NOT cancel. A forward jump satisfies the "did the clock advance?"
+        test, so it re-baselines the reference and PROVES the clock; the
+        rationale written into `_note_clock_jumped_back` - *"every age measured
+        against it refers to a timeline that no longer exists"* - applies to it
+        word for word, but is reported rather than acted on.
 
-        What the reproduction showed, and why the decision came out this way. A
-        forward jump satisfies the "did the clock advance?" test, so it
-        re-baselines the reference and PROVES the clock; the rationale written
-        into `_note_clock_jumped_back` - *"every age measured against it refers
-        to a timeline that no longer exists"* - applies to it word for word.
-        Until F-38 was fixed there was one accidental consequence left: the mode
-        age was on the ROS clock, so a jump made it large and the dispatch tick
-        sometimes cancelled the goal in flight. Measured: **4 of 8** identical
-        jumps cancelled, the other 4 did nothing, because the refusal window was
-        one 20 Hz mode period against a 2 Hz observer. After F-38 that became
-        **0 of 8**. So there is now nothing whatsoever that covers this case, and
-        an operator is told nothing at all - which is what this fixes.
+        Why NOT a disarm: on the real robot the only sources are a time-sync
+        step and a manual `date` set, and disarming on every step of a flaky
+        NAT'd time source would trade a small reporting gap for an operational
+        one - and would train the operator to expect spurious disarms, which is
+        how a safety mechanism gets switched off.
 
-        Why NOT a disarm, in the user's words: on the real robot the only sources
-        are a time-sync step and a manual `date` set, and disarming on every step
-        of a flaky NAT'd time source would trade a small reporting gap for an
-        operational one - and would train the operator to expect spurious
-        disarms, which is how a safety mechanism gets switched off.
-
-        THE GATE IS NOT TOUCHED HERE, and that is the point of the method rather
-        than an omission: no `_handle_disarm`, no `_cancel_mission`, no
-        `note_clock*` into the arming machine, no new refusal path. The arming
-        window behaves exactly as it did before this method existed. There is
+        THE GATE IS NOT TOUCHED HERE, and that is the point of the method
+        rather than an omission: no `_handle_disarm`, no `_cancel_mission`, no
+        `note_clock*` into the arming machine, no new refusal path. There is
         deliberately no tenth `ArmingState` trigger constant either - a
         constant would say a disarm can carry this reason, and it cannot.
         """
@@ -3611,7 +3597,13 @@ class GoalGatewayNode(Node):
             f"the ROS clock JUMPED FORWARD: it advanced {excess:.1f}s more than "
             f"a continuous clock at the observed rate could have, to {ros:.3f} "
             f"(use_sim_time={self._use_sim_time}, threshold "
-            f"{self._clock_forward_jump_sec:.1f}s, TO-VERIFY). This is a "
+            f"{self._clock_forward_jump_sec:.1f}s, "
+            + (
+                "measured"
+                if self._clock_forward_jump_measured_sec is not None
+                else "PROVISIONAL - clock_forward_jump_sec is TO-VERIFY"
+            )
+            + "). This is a "
             "discontinuity in the same sense a backwards jump is: every age "
             "measured against this clock - the TF pose, the in-flight "
             "re-validation, the correlation that names the target - refers to a "
@@ -3627,25 +3619,23 @@ class GoalGatewayNode(Node):
     def _note_clock_jumped_back(self, ros: float, mono: float) -> None:
         """The ROS clock went BACKWARDS. SAFETY.md F-30, SR-15 rule 7.
 
-        A `ros2 service call /reset_simulation`, a Gazebo world reset, or an NTP
-        step on wall time. The publisher is fine; what is broken is the
+        A `ros2 service call /reset_simulation`, a Gazebo world reset, or an
+        NTP step on wall time. The publisher is fine; what is broken is the
         continuity of the timeline, and that invalidates every age in flight -
         which is why this disarms exactly as a stall does.
 
-        It reports `CLOCK_JUMPED_BACK` (constant 9) and NOT `CLOCK_STALLED`
-        (constant 8). The two were one code until the user split them on
-        2026-08-19: the behaviour is identical on purpose, but the operator
+        It reports `CLOCK_JUMPED_BACK` (constant 9), NOT `CLOCK_STALLED`
+        (constant 8), even though the behaviour is identical: the operator
         response is not - a stall sends somebody to look for a dead `/clock`
         publisher, a jump sends them to whoever reset the world - and that
         difference has to survive as a number, not only as prose in the detail
-        string. The wire-format change was the accepted cost of the decision.
+        string.
 
-        The difference from a stall is the RECOVERY. The reference is re-based on
-        the new value here, so the node is healthy again on the next tick. Before
-        this it would have refused to arm until sim time climbed back past the
-        old maximum, i.e. for as long as the jump was large - an hour's twin work
-        reset means an hour of refusals, with a message sending the operator to
-        look for a clock publisher that is running perfectly.
+        The difference from a stall is the RECOVERY: the reference is re-based
+        on the new value here, so the node is healthy again on the next tick,
+        rather than refusing to arm until sim time climbs back past the old
+        maximum - which for a large jump could mean refusing for as long as
+        the jump itself.
         """
         jumped_by = self._clock_ref_ros_sec - ros
         # SAFETY.md F-37: the next rate sample must not be measured ACROSS the
@@ -3698,9 +3688,9 @@ class GoalGatewayNode(Node):
         """The ROS clock has not moved for longer than `clock_stall_sec`.
 
         Two states, one gate. SAFETY.md F-31: "never yet proven" is a startup
-        condition with a `/clock` discovery latency behind it - measured on this
-        laptop, see `clock_startup_grace_sec` in the config files - and "stopped
-        after having been proven" is a failure. They are reported at different
+        condition with a `/clock` discovery latency behind it (see
+        `clock_startup_grace_sec`), and "stopped after having been proven" is a
+        failure. They are reported at different
         severities and they REFUSE ARMING IDENTICALLY. Grading the report is
         what keeps the ERROR meaning something; grading the gate would be the
         thing F-24 was raised about.
@@ -3773,13 +3763,13 @@ class GoalGatewayNode(Node):
                 f"clock watchdog: publishing the diagnostic failed ({exc!r}); "
                 "continuing to the disarm"
             )
-        # SAFETY.md F-32. The disarm is guarded by its OWN latch, and that latch
-        # is set only after the disarm has actually returned. It used to be
-        # `_clock_stalled` itself, set three statements earlier: a raise in the
-        # disarm - the F-26 shape - made the branch unreachable on every later
-        # tick, so that cancel was lost for good. Now a raise costs a retry on
-        # the next tick, 200 ms later, and `disarm` is idempotent so a retry
-        # after a partial success is a no-op.
+        # SAFETY.md F-32. The disarm is guarded by its OWN latch, set only
+        # AFTER the disarm has actually returned - never earlier (e.g. as
+        # `_clock_stalled` itself): a raise inside the disarm would otherwise
+        # make this branch unreachable on every later tick and lose the cancel
+        # for good. As written, a raise costs only a retry on the next tick,
+        # and `disarm` is idempotent so a retry after a partial success is a
+        # no-op.
         if self._clock_disarm_done:
             return
         try:
@@ -3851,16 +3841,15 @@ class GoalGatewayNode(Node):
         clock that has merely stopped - that case is `_clock_watchdog`'s, and it
         does not prevent a cancel.
 
-        The premise this used to state - "use_sim_time is false everywhere this
-        runs" - was FALSE: the twin config sets it true (SAFETY.md F-24). So the
-        two sources are not interchangeable and this says what the value is used
-        for instead: the disarm record and `cancel_requested_at_sec`. Under sim
-        time a wall-clock value there is not comparable with the ROS-time stamps
-        `_check_cancel_timeout` uses - it makes an elapsed time come out hugely
-        negative, i.e. it can only ever suppress an escalation report during a
-        shutdown that is already reporting at ERROR, never invent one. Losing the
-        cancel would be worse than either, which is why the fallback exists at
-        all.
+        `use_sim_time` is NOT false everywhere this runs (the twin config sets
+        it true, SAFETY.md F-24), so this value and the ROS clock are not
+        interchangeable: it is used only for the disarm record and
+        `cancel_requested_at_sec`. Under sim time a wall-clock value there is
+        not comparable with the ROS-time stamps `_check_cancel_timeout` uses -
+        it makes an elapsed time come out hugely negative, which can only ever
+        suppress an escalation report during a shutdown that is already
+        reporting at ERROR, never invent one. Losing the cancel would be worse
+        than either, which is why the fallback exists at all.
         """
         try:
             return self._ros_now()
@@ -3876,13 +3865,11 @@ class GoalGatewayNode(Node):
     def prepare_shutdown(self) -> None:
         """Disarm - and, from stage 3, CANCEL - while everything is still live.
 
-        This is the whole point of the restructured `main` (SAFETY.md F-4). The
-        previous structure let `rclpy.spin` raise `ExternalShutdownException` on
-        `SIGTERM` and did the `NODE_SHUTDOWN` disarm inside `destroy_node`, by
-        which time the context was already down and the executor stopped: the
-        disarm was a log line and no cancel request could have completed. Here
-        the executor is still spinning in its own thread, so a cancel can be
-        sent and confirmed.
+        This is the whole point of the restructured `main` (SAFETY.md F-4): a
+        disarm done inside `destroy_node` runs after the context is down and
+        the executor stopped, so a cancel there is a log line and nothing more
+        - it cannot complete. Here the executor is still spinning in its own
+        thread, so a cancel can be sent and confirmed.
 
         The cancel happens here, immediately after the disarm, and the wait for
         its confirmation is the ONE bounded wait in this package: it runs on the
@@ -3901,11 +3888,9 @@ class GoalGatewayNode(Node):
         # EVERYTHING BETWEEN THE LATCH AND THE CANCEL IS GUARDED (SAFETY.md
         # F-26). The latch makes this method run at most once per process, so
         # anything that can raise between it and the unconditional cancel below
-        # costs that cancel permanently and unretryably - and the failure this
-        # codebase has actually had, twice, is a LOGGER CALL RAISING (F-22).
-        # F-17 guarded the disarm; the two log calls three lines above it were
-        # still bare. `_shutdown_log` and `_shutdown_now` are those two lines
-        # with the guard the rest of this method already has.
+        # costs that cancel permanently and unretryably - including a LOGGER
+        # CALL RAISING (F-22). `_shutdown_log` and `_shutdown_now` exist to
+        # carry that guard.
         self._shutdown_log(
             "info",
             f"shutting down ({self._shutdown_reason or 'unspecified'}); disarming. "
@@ -3915,13 +3900,9 @@ class GoalGatewayNode(Node):
         now = self._shutdown_now()
         # STEP 2, GUARDED. `_handle_disarm` already cancels when the machine WAS
         # armed, and step 3 below is the unconditional belt-and-braces call that
-        # covers a mission which outlived its arming window. Until SAFETY.md
-        # F-17 those were one unguarded sequence: an exception anywhere in the
-        # disarm - and BUG 2 raised in exactly that place - propagated out of
-        # this method, so the braces never ran and the guard one level up could
-        # only report that a goal in flight may not have been cancelled. The
-        # try/except is what turns that report into an outcome: the disarm may
-        # fail, the CANCEL STILL HAPPENS.
+        # covers a mission which outlived its arming window. The try/except is
+        # what makes that guarantee hold even if the disarm itself raises
+        # (SAFETY.md F-17): the disarm may fail, the CANCEL STILL HAPPENS.
         try:
             with self._arming_lock:
                 event = self._arming.shutdown(self._safety_now())
@@ -3960,9 +3941,8 @@ class GoalGatewayNode(Node):
     # the preview pass
     # ==================================================================
     def _preview_tick(self) -> None:
-        # The arming poll used to live here. It now runs in `_safety_tick`, in
-        # its own callback group, so nothing below this line can delay it
-        # (SAFETY.md F-2).
+        # The arming poll runs in `_safety_tick`, in its own callback group, so
+        # nothing below this line can delay it (SAFETY.md F-2).
         if self.get_parameter("grasp.verify_path").value:
             self.get_logger().error(
                 "grasp.verify_path is true but path verification is NOT "
@@ -4435,12 +4415,17 @@ class GoalGatewayNode(Node):
                         # inside the measured discovery grace, ERROR after it.
                         # The gate is identical in both - see `_on_set_arming`.
                         startup_grace=self._clock_in_startup_grace(),
-                        # SAFETY.md F-40, user decision 2026-08-20. The durable
-                        # half of the report; the WARN is the other half.
+                        # SAFETY.md F-40. The durable half of the report; the
+                        # WARN is the other half.
                         clock_publishers=self._clock_publisher_seen,
                         forward_jumps=self._clock_forward_jumps,
                         last_forward_jump_sec=self._last_forward_jump_sec,
-                        forward_jump_sec=self._clock_forward_jump_sec,
+                        # The MEASURED value, so the key reads `unset` while
+                        # nobody has measured it rather than a number that looks
+                        # like a measurement. What the detector is actually
+                        # running at is reported beside it, below - the two are
+                        # different facts and a single key cannot carry both.
+                        forward_jump_sec=self._clock_forward_jump_measured_sec,
                         # SAFETY.md F-37. Reported because it is the number
                         # `ArmingState.expires_at` is now projected with: a
                         # consumer that finds that field surprising can see what
@@ -4448,6 +4433,26 @@ class GoalGatewayNode(Node):
                         extra={
                             "ros_clock_rate": round(self._clock_rate.rate, 4),
                             "ros_clock_rate_samples": self._clock_rate.samples,
+                            # SR-15 rule 14. The thresholds the two detectors
+                            # are actually running at, next to the measured
+                            # values above: with a `TO-VERIFY` configuration
+                            # those are the provisional constants, and an
+                            # operator reading this status has to be able to see
+                            # both which number is in force and that nobody
+                            # measured it. `clock_backward_eps_sec` had no key
+                            # here at all, so the threshold that decides whether
+                            # the ninth disarm trigger ever fires was invisible.
+                            "clock_backward_eps_sec": (
+                                "unset"
+                                if self._clock_backward_eps_measured_sec is None
+                                else self._clock_backward_eps_measured_sec
+                            ),
+                            "clock_backward_eps_in_use_sec": (
+                                self._clock_backward_eps_sec
+                            ),
+                            "clock_forward_jump_in_use_sec": (
+                                self._clock_forward_jump_sec
+                            ),
                         },
                     ),
                     diag.config_status(self._unset_items()),
@@ -4521,8 +4526,6 @@ def _prepare_shutdown_guarded(node: GoalGatewayNode) -> None:
     `prepare_shutdown` is the only place a cancel can still reach Nav2, so an
     exception raised inside it is the worst possible moment for one: the process
     ends with a traceback and the goal it was supposed to cancel keeps running.
-    That is not hypothetical - it happened here, when a logging call raised and
-    the shutdown path died on it while a goal was in flight.
 
     The exception is reported rather than swallowed, and it is reported with the
     consequence spelled out, because "ending this node does not stop the robot"

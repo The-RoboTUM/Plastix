@@ -2,25 +2,20 @@
 // gripperx_control/steering_limits.py.
 //
 // SAFETY-RELEVANT: this is FR-5 / SR-6, not an optimisation (§3.1.4 (a) item 1).
-// The steering range of this robot is asymmetric AND per wheel: ~100 deg
-// OUTWARD, ~35 deg INWARD, and which SIGN of the joint angle is outward differs
-// per wheel and was MEASURED, not derived:
+// The steering range of this robot is asymmetric (outward travel far exceeds
+// inward) AND per wheel: which SIGN of the joint angle is outward differs per
+// wheel and was MEASURED, not derived:
 //
 //     steering_outward_sign = (-1, +1, +1, -1)   // FL, FR, BL, BR
 //
-// giving the robot-frame windows
-//
-//     FL [-100, +35]   FR [-35, +100]   BL [-35, +100]   BR [-100, +35]  (deg)
+// so each wheel's robot-frame window is [-outward, +inward] on FL and BR and
+// [-inward, +outward] on FR and BL. The magnitudes are deliberately NOT repeated
+// here — they have moved twice and every copy of them drifted; see the source of
+// truth below.
 //
 // Do NOT re-derive the sign from the URDF: a URDF-only reading gives
 // (+1, -1, +1, -1), is wrong on the front pair, and under it the in-place spin
 // pose (FL -58.570, FR +58.570, BL +58.570, BR -58.570 deg) would be unreachable.
-//
-// CORRECTED 2026-08-21: this line read +-50.7 deg. That number belongs to the
-// RETIRED b = 0.16556 geometry; with the active a = 0.180 / b = 0.110 the spin
-// pose is atan2(a, b) = 58.570 deg. It matters because it is the number a reader
-// uses to compute the remaining steering margin against the 100 deg outward
-// stop — 41.4 deg, not 49.3 deg.
 //
 // SOURCE OF TRUTH for the numbers is gripperx_control/config/steer_servo.yaml,
 // whose clamp inside steer_servo_node is the last line of defence and stays so.
@@ -28,10 +23,10 @@
 // silently clamps a wheel, the pose no longer matches any single instantaneous
 // centre of rotation, and the wheels scrub against each other.
 //
-// The defaults below mirror that file (inward 35.0, raised from 30.0 in commit
-// a29e181; the 35 deg value itself is still TO-VERIFY — the tightest measured
-// inward stop is BL at 35.60 deg, so it leaves only ~0.6 deg of margin).
-// Runtime values always come from parameters so the two files can be aligned
+// The defaults below mirror that file; the inward limit is still `TO-VERIFY`.
+// For the measured travel and the margin the inward limit actually sits on, read
+// gripperx_control/steering_limits.py — do not infer either from here.
+// Runtime values always come from parameters so both files can be aligned
 // without a rebuild.
 //
 // This header intentionally depends on nothing from rclcpp, so the whole
@@ -61,7 +56,17 @@ inline constexpr std::array<std::size_t, kNumWheels> kModelToJointIndex = {0, 2,
 /// Index of each joint-order wheel inside a model-order array (inverse of the above).
 inline constexpr std::array<std::size_t, kNumWheels> kJointToModelIndex = {0, 3, 1, 2};
 
-inline constexpr double kDefaultOutwardLimitDeg = 100.0;
+/// The outward limit is a CHOSEN WORKING MARGIN, not a derived constraint
+/// (user, 2026-09-23): a comfortable distance from the mechanical stop
+/// (measured 193.6-196.4 deg, so ~70 deg of margin), and keeping the left and
+/// right wheel clear of each other — unreachable at 125 deg, possible at a
+/// markedly larger angle with an unfavourable combination of per-wheel angles.
+/// Corrected 2026-09-23: this used to say the limit was bound by FL's raw-count
+/// wrap. It is not, and FL is not the tightest wheel either — see the long note
+/// in gripperx_control/src/gripperx_control/steering_limits.py.
+/// Mirrors gripperx_control/config/steer_servo.yaml, the source of truth.
+/// Defaults only — the runtime values arrive as parameters.
+inline constexpr double kDefaultOutwardLimitDeg = 125.0;
 inline constexpr double kDefaultInwardLimitDeg = 35.0;
 inline constexpr std::array<int, kNumWheels> kDefaultOutwardSign = {-1, 1, 1, -1};
 
@@ -174,7 +179,7 @@ std::vector<LimitViolation> find_violations(
 
 /// Make a requested body twist reachable by reducing |omega| only.
 ///
-/// Three options existed for a pose that violates a limit (decision 2026-08-13):
+/// Three options exist for a pose that violates a limit:
 ///  * clamp per wheel — the four wheels stop sharing one instantaneous centre of
 ///    rotation, so they fight each other and scrub;
 ///  * scale the whole twist — provably useless, delta_i = atan2(vy_i, vx_i) is

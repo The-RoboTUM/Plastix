@@ -42,7 +42,7 @@ const Wheels kDriving{4.0, 4.0, 4.0, 4.0};
 const Wheels kStraight{0.0, 0.0, 0.0, 0.0};
 
 /// The crab pose as resolved through the +-180 deg fold, joint order FL, FR, BL,
-/// BR — the real one, taken from the 16 twin runs recorded in nav2.yaml.
+/// BR (see nav2.yaml).
 const Wheels kCrab{-90.0 * kDeg, 90.0 * kDeg, 90.0 * kDeg, -90.0 * kDeg};
 
 AlignmentGateConfig enabled_config()
@@ -132,7 +132,7 @@ TEST(AlignmentGate, CrabEntryWithholdsDriveUntilTheModulesArrive)
   EXPECT_FALSE(result.state_changed);
 
   // Arrived, inside tolerance but not exactly on target — this is what the twin
-  // actually reports (FL -89.95..-89.99 deg over 16 runs).
+  // actually reports (nav2.yaml).
   const Wheels arrived{-89.95 * kDeg, 89.97 * kDeg, 89.96 * kDeg, -89.99 * kDeg};
   result = gate.update(0.6, kDriving, kCrab, arrived, true);
   EXPECT_EQ(result.status, kAlignPassing);
@@ -278,4 +278,65 @@ TEST(AlignmentGate, ReturningFromCrabToStraightIsGuardedToo)
   const auto result = gate.update(0.01, kDriving, kStraight, kCrab, true);
   EXPECT_EQ(result.status, kAlignSlewing);
   EXPECT_EQ(result.commands, kStraight);
+}
+
+// ── what the gate reports to HWR-30a (P5a) ─────────────────────────────────
+
+TEST(AlignmentGate, WithheldIsTrueOnExactlyTheCyclesTheDriveWasZeroed)
+{
+  // HWR-30a's tier-1 detector disarms while this flag is true, so the flag has
+  // to mean precisely "the commands returned above were replaced with 0.0 by
+  // THIS class on THIS cycle" — no more and no less.
+  AlignmentGate gate{enabled_config()};
+
+  auto result = gate.update(0.0, kDriving, kStraight, kStraight, true);
+  EXPECT_FALSE(result.withheld);
+
+  result = gate.update(0.01, kDriving, kCrab, kStraight, true);
+  ASSERT_EQ(result.status, kAlignSlewing);
+  EXPECT_TRUE(result.withheld);
+  EXPECT_EQ(result.commands, kStraight);
+
+  const Wheels arrived{-89.95 * kDeg, 89.97 * kDeg, 89.96 * kDeg, -89.99 * kDeg};
+  result = gate.update(0.6, kDriving, kCrab, arrived, true);
+  ASSERT_EQ(result.status, kAlignPassing);
+  EXPECT_FALSE(result.withheld);
+  EXPECT_EQ(result.commands, kDriving);
+}
+
+TEST(AlignmentGate, WithheldIsFalseWhenTheGateIsDisabledOrHasTimedOut)
+{
+  AlignmentGateConfig off;  // ships disabled
+  AlignmentGate disabled{off};
+  EXPECT_FALSE(disabled.update(0.0, kDriving, kCrab, kStraight, true).withheld);
+
+  // A timeout release lets the drive flow again even though the pose was never
+  // confirmed — the drive is NOT being withheld there, and the detector must
+  // stay armed, because a module still far out of pose means the motor is
+  // energised against a scrubbing tyre.
+  AlignmentGate gate{enabled_config()};
+  gate.update(0.0, kDriving, kStraight, kStraight, true);
+  gate.update(0.01, kDriving, kCrab, kStraight, true);
+  const auto timed_out =
+    gate.update(0.01 + enabled_config().timeout_sec, kDriving, kCrab, kStraight, true);
+  ASSERT_EQ(timed_out.status, kAlignTimedOut);
+  EXPECT_FALSE(timed_out.withheld);
+  EXPECT_EQ(timed_out.commands, kDriving);
+}
+
+TEST(AlignmentGate, WithheldIsFalseOnAHeldSteeringCycleEvenWhileStatusSaysSlewing)
+{
+  // THE REASON `withheld` IS A FIELD AND NOT SOMETHING THE CALLER DERIVES. With
+  // no steering write the gate keeps its status and passes the command
+  // through, so kAlignSlewing is reported on a cycle that withheld nothing. A
+  // caller reconstructing the fact as `status == kAlignSlewing` would disarm
+  // HWR-30a on a cycle where the drive was flowing.
+  AlignmentGate gate{enabled_config()};
+  gate.update(0.0, kDriving, kStraight, kStraight, true);
+  ASSERT_EQ(gate.update(0.01, kDriving, kCrab, kStraight, true).status, kAlignSlewing);
+
+  const auto held = gate.update(0.02, kDriving, kCrab, kStraight, false);
+  EXPECT_EQ(held.status, kAlignSlewing);
+  EXPECT_FALSE(held.withheld);
+  EXPECT_EQ(held.commands, kDriving);
 }

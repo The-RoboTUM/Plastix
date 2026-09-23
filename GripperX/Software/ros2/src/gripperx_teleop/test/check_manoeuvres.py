@@ -13,10 +13,10 @@ window. Part 2 exercises the transition guard, including the case this feature
 exists for: a mode switch requested while drive is active must not produce a
 drive command before the steering pose is reached.
 
-Reference data (see gripperx_control/config/steer_servo.yaml): 100 deg outward
-(measured on the machine 2026-08-13) / 35 deg inward (raised from 30 deg
-2026-08-17, user estimate, TO-VERIFY, not a measurement), outward sign
-[-1, +1, +1, -1] for FL, FR, BL, BR.
+Reference data (see gripperx_control/config/steer_servo.yaml, source of
+truth): outward limit measured on the machine; inward limit is a user
+estimate, TO-VERIFY, not a measurement. Outward sign [-1, +1, +1, -1] for
+FL, FR, BL, BR.
 """
 
 from __future__ import annotations

@@ -190,12 +190,12 @@ controller_interface::CallbackReturn SwerveController::on_init()
     enforce_front_forward_ = auto_declare<bool>("enforce_front_forward", enforce_front_forward_);
     allow_reverse_ = auto_declare<bool>("allow_reverse", allow_reverse_);
 
-    // Task #21 steering differential. Node default stays FALSE exactly as in
-    // swerve_cmd_node; swerve_cmd.yaml turns it ON (a29e181, "a/d wheel
-    // differential on") and the ported config does the same. It is NOT on
-    // §3.1.4 (a)'s carry-over list — that list is not exhaustive, see the
-    // findings in this change's report — but it is ACTIVE today, so dropping it
-    // would be a functional regression against NFR-10 acceptance 1.
+    // Steering differential (Task #21). Node default stays FALSE exactly as in
+    // swerve_cmd_node; swerve_cmd.yaml turns it ON ("a/d wheel differential
+    // on") and the ported config does the same. It is NOT on §3.1.4 (a)'s
+    // carry-over list — that list is not exhaustive — but it is ACTIVE today,
+    // so dropping it would be a functional regression against NFR-10
+    // acceptance 1.
     enable_steer_feedback_differential_ =
       auto_declare<bool>("enable_steer_feedback_differential", enable_steer_feedback_differential_);
     steer_diff_omega_gate_ = auto_declare<double>("steer_diff_omega_gate", steer_diff_omega_gate_);
@@ -457,10 +457,10 @@ controller_interface::CallbackReturn SwerveController::on_configure(
     kStallProvenanceUnknown};
   wheel_provenance_buffer_.writeFromNonRT(unknown_provenance);
 
-  // Explicit QoS on every chain input. SystemDefaultsQoS() resolved to
-  // BEST_EFFORT on this stack once and cost the watchdog 14 minutes of blindness
-  // (gripperx_interface.cpp L388-389, SR-11 (4)) — a defaulted QoS on a command
-  // topic repeats that bug exactly.
+  // Explicit QoS on every chain input: SystemDefaultsQoS() has resolved to
+  // BEST_EFFORT on this stack before, causing prolonged watchdog blindness
+  // (gripperx_interface.cpp, SR-11 (4)) — a defaulted QoS on a command topic
+  // repeats that bug.
   rclcpp::QoS command_qos(rclcpp::KeepLast(10));
   command_qos.reliable();
 
@@ -527,8 +527,8 @@ controller_interface::CallbackReturn SwerveController::on_configure(
   stall_state_pub_ = get_node()->create_publisher<gripperx_control_msgs::msg::WheelStallState>(
     stall_state_topic_, stall_qos);
 
-  // RUNTIME SWITCH (user decision 2026-08-20). Validation refuses what cannot
-  // work; the post-set callback only publishes the accepted value into an atomic.
+  // RUNTIME SWITCH. Validation refuses what cannot work; the post-set
+  // callback only publishes the accepted value into an atomic.
   on_set_parameters_handle_ = get_node()->add_on_set_parameters_callback(
     [this](const std::vector<rclcpp::Parameter> & parameters) {
       return this->validate_parameter_update(parameters);
@@ -577,16 +577,12 @@ controller_interface::CallbackReturn SwerveController::on_configure(
     wheel_command_multipliers_[0], wheel_command_multipliers_[1], wheel_command_multipliers_[2],
     wheel_command_multipliers_[3]);
   if (regulator_config_.enabled) {
-    // WARN, not ERROR — downgraded 2026-08-21, OP-36(b). It was ERROR because an
-    // enabled regulator contradicted FR-11 item 2 and NFR-10 acceptance 10 "as
-    // written". The user has since DECIDED to enable it permanently (2026-08-20),
-    // so it no longer contradicts anything; it is the intended configuration.
-    // Leaving it at ERROR cost more than it bought: SR-13 item 2 requires ERROR to
-    // mean "commands no longer reach the hardware", and an ERROR on every single
-    // boot of a healthy machine devalues the level for the case it is reserved for.
-    // It stays a WARN and not an INFO because it IS a standing condition worth
-    // seeing: the machine runs closed-loop from boot, and that must not be
-    // discoverable only by reading a config file.
+    // WARN, not ERROR (OP-36(b)): an enabled regulator is the intended
+    // configuration, not a fault, so SR-13 item 2's ERROR ("commands no
+    // longer reach the hardware") must not fire on every healthy boot. Not
+    // INFO either: it IS a standing condition worth seeing — the machine runs
+    // closed-loop from boot, and that must not be discoverable only by
+    // reading a config file.
     RCLCPP_WARN(
       get_node()->get_logger(),
       "WHEEL VELOCITY REGULATOR IS ENABLED (user decision 2026-08-20; this is the intended "
@@ -686,8 +682,8 @@ controller_interface::CallbackReturn SwerveController::on_activate(
   // the servos' MEASURED position and the wheels are zero. That is already true
   // when this runs: GripperXInterface::on_activate() waits for one fresh, finite
   // /hw/steer_states sample and seeds it into both the position state AND the
-  // position command interfaces, with the wheel commands zeroed (0ed3f56,
-  // 17cb6d8). Measured on the bench for JointGroupPositionController: a
+  // position command interfaces, with the wheel commands zeroed. Measured on
+  // the bench for JointGroupPositionController: a
   // controller that merely activates does not overwrite the command interface.
   // A redundant hold here would be untested code on a safety path, and it would
   // move the guarantee into the layer that varies between real and sim — the
@@ -980,6 +976,13 @@ void SwerveController::write_wheel_commands(
   //      Because it runs after the regulator, no correction can ever stand
   //      between a latched wheel and its zero, and the exactness of that zero is
   //      unaffected by whether the regulator ran.
+  //      IT IS TOLD WHETHER STAGE 2 WITHHELD THE DRIVE ON THIS CYCLE (P5a).
+  //      While stage 2 holds, the actuator gets exactly 0.0 and the
+  //      wheel therefore CANNOT turn, so a wheel that does not turn is obeying
+  //      the gate rather than stalling; stage 3 disarms for the duration exactly
+  //      as it does below its arming threshold. Rationale at arming gate (d) in
+  //      stall_detector.cpp. Stage order is unchanged and so is stage 3's
+  //      authority: exactly 0.0, nothing else.
   //
   // THE TWO STAGES SHARE ONE THRESHOLD, AND IT IS A SAFETY COUPLING RATHER THAN
   // A SHORTCUT: stage 1's slow-end floor (FR-14 item 12) IS stall_min_command_rad_s,
@@ -1001,6 +1004,12 @@ void SwerveController::write_wheel_commands(
   // `result.commands` — which is what this function did before the regulator
   // existed.
   //
+  // THE ONE THING THE REQUESTED COMMAND DOES NOT CARRY is whether stage 2 let it
+  // through, and nothing in the command itself can say. So that bit is passed to
+  // stage 3 SEPARATELY rather than by handing it the gated command — which would
+  // have cured the gate case by re-opening the regulator case the paragraph
+  // above rules out.
+  //
   // WHAT NEITHER STAGE TOUCHES, deliberately:
   //  * the other three wheels -- tier 1 is a SINGLE-motor response and is
   //    explicitly NOT a hard stop of the machine (HWR-30);
@@ -1020,8 +1029,8 @@ void SwerveController::write_wheel_commands(
   last_wheel_regulator_status_.fill(kRegulatorDisabled);
 
   // ------------------------------------------- RUNTIME ENABLE/DISABLE EDGE
-  // USER DECISION 2026-08-20: the switch takes effect on the NEXT update()
-  // cycle, on a live driving robot, in both directions.
+  // The switch takes effect on the NEXT update() cycle, on a live driving
+  // robot, in both directions.
   //
   // BOTH EDGES RESET. configure() clears every integrator and forgets the last
   // feedback sample, so:
@@ -1119,6 +1128,10 @@ void SwerveController::write_wheel_commands(
   // (OP-24/S1 hold, the no-feedback branch, on_deactivate). Those branches have
   // already zeroed the wheels for their own reasons, so there is nothing for the
   // gate to withhold and no new target to align to.
+  //
+  // `drive_withheld` is read by stage 3. Taken from the gate's own report of what it did on this
+  // cycle, never re-derived from its status — see AlignmentGateResult::withheld.
+  bool drive_withheld = false;
   {
     const std::array<double, kNumWheels> no_angles{0.0, 0.0, 0.0, 0.0};
     const bool target_written = (steer_target != nullptr) && (steer_measured != nullptr);
@@ -1126,6 +1139,7 @@ void SwerveController::write_wheel_commands(
       time.seconds(), effective, target_written ? *steer_target : no_angles,
       target_written ? *steer_measured : no_angles, target_written);
     effective = result.commands;
+    drive_withheld = result.withheld;
     last_alignment_status_ = result.status;
     last_alignment_error_rad_ = result.max_error_rad;
 
@@ -1169,7 +1183,7 @@ void SwerveController::write_wheel_commands(
   if (stall_config_.enabled && interfaces_resolved_) {
     stall_detector_.set_provenance(provenance);
     const auto result = stall_detector_.update(
-      time.seconds(), joint_order_rad_s, wheel_position, wheel_position_valid);
+      time.seconds(), joint_order_rad_s, wheel_position, wheel_position_valid, drive_withheld);
     for (std::size_t i = 0; i < kNumWheels; ++i) {
       if (stall_detector_.latched(i)) {
         effective[i] = 0.0;
@@ -1398,14 +1412,11 @@ std::array<double, kNumWheels> SwerveController::apply_steer_feedback_differenti
     sum += speed;
   }
   const double nominal_linear = wheel_radius_ * (sum / static_cast<double>(kNumWheels));
-  // COUPLED TO THE BRAKING REFERENCE, and it is the only place the two 2026-08-19
-  // decisions touch. The speeds arriving here are POST-scale, so this gate sees
-  // scale * commanded speed. With the old IK reference, keyboard cornering was
-  // pinned at scale 0.45 and this gate opened above 0.0667 m/s commanded; with
-  // the commanded reference the settled scale is 1.0 and it opens above
-  // 0.030 m/s. In the band between, the differential now engages where it
-  // previously did not. Unreachable from the keyboard (linear_vel_m_s is fixed
-  // at 0.5 m/s), reachable from Nav2 — measure it there, do not pre-tune it.
+  // COUPLED TO THE BRAKING REFERENCE (steer_alignment_scale): the speeds
+  // arriving here are POST-scale, so this gate's engagement speed shifts
+  // whenever that reference does — currently opens above ~0.030 m/s commanded.
+  // Unreachable from the keyboard (linear_vel_m_s fixed at 0.5 m/s), reachable
+  // from Nav2 — measure the coupling there, do not pre-tune it.
   if (std::fabs(nominal_linear) < steer_diff_min_speed_mps_) {
     steer_diff_omega_filtered_ = 0.0;
     return wheel_angular_speeds_model;
@@ -1583,11 +1594,11 @@ controller_interface::return_type SwerveController::update(
   // last written to them, and on the very first cycle that is the measured
   // position the hardware component seeded at activation (SR-14).
   //
-  // The zero test is EXACT — vx == vy == omega == 0.0 on the RECEIVED Twist
-  // (user decision 2026-08-19). No tolerance, no epsilon, no new parameter.
-  // Recorded re-open trigger: Nav2 / DWB emits near-zero-but-not-zero twists,
-  // so the epsilon gets MEASURED when the autonomous path is first driven. Do
-  // not introduce one before then.
+  // The zero test is EXACT — vx == vy == omega == 0.0 on the RECEIVED Twist.
+  // No tolerance, no epsilon, no new parameter. Recorded re-open trigger:
+  // Nav2 / DWB emits near-zero-but-not-zero twists, so the epsilon gets
+  // MEASURED when the autonomous path is first driven. Do not introduce one
+  // before then.
   const double cmd_age =
     consumed.valid ? (time - consumed.stamp).seconds() : std::numeric_limits<double>::infinity();
   const bool cmd_stale = !consumed.valid || cmd_age > cmd_vel_timeout_sec_;
@@ -1681,10 +1692,9 @@ controller_interface::return_type SwerveController::update(
   // path (_compute_point_turn) is therefore NOT ported — stated here rather
   // than silently omitted (NFR-11). Pure rotation uses the SWERVE spin, whose
   // pose (+-58.570 deg outward on every wheel, = atan2(a, b)) sits inside the
-  // 100 deg outward window and is reached through the ordinary IK below. The
-  // +-50.7 this line carried until 2026-08-21 is the RETIRED b = 0.16556
-  // geometry and overstates the remaining steering margin by 8 deg. The Python
-  // tracking-controller path (use_direct_ik: false) is likewise not ported.
+  // outward steering window (gripperx_control/config/steer_servo.yaml) and is
+  // reached through the ordinary IK below. The Python tracking-controller path
+  // (use_direct_ik: false) is likewise not ported.
 
   const auto limited =
     limit_twist_to_steering_range(*model_, desired, current_steering_model, model_steering_limits_);
@@ -1721,31 +1731,24 @@ controller_interface::return_type SwerveController::update(
     // braking and the wheel speed saturation.
     //
     // THE BRAKING REFERENCE IS THE POST-ARBITRATION TARGET, i.e. the angle this
-    // cycle actually commands, not the IK-derived one (user decision
-    // 2026-08-19). This is a DELIBERATE DEPARTURE from strict functional
-    // equivalence with swerve_cmd_node and therefore from NFR-10 acceptance 1;
-    // it is recorded as such rather than left to look like a porting slip.
-    //
-    // Why: swerve_cmd_node cannot see arbitration point A2 at all — the
-    // /teleop/direct_steer override lived in steer_servo_node, a different
-    // process. Braking against the IK target was not a decision there, it was
-    // the only thing reachable. In keyboard mode teleop_mux zeroes angular.z
-    // and vy, so the IK target is straight ahead while the wheels are really at
-    // the A/D angle: the error never shrinks, and cornering runs permanently at
-    // the floor scale (0.45 at 35 deg of steering) as an artefact of the split
-    // chain. With A2 inside this controller the commanded target is knowable,
-    // so the brake now measures what it was always meant to measure: how far
-    // the modules still are from where they are being told to go.
+    // cycle actually commands, not the IK-derived one. This is a DELIBERATE
+    // DEPARTURE from strict functional equivalence with swerve_cmd_node and
+    // therefore from NFR-10 acceptance 1, recorded as such rather than left to
+    // look like a porting slip: swerve_cmd_node could not see arbitration
+    // point A2 (the /teleop/direct_steer override lived in a different
+    // process), so it could only brake against the IK target. With A2 inside
+    // this controller the commanded target is knowable, so the brake now
+    // measures what it was always meant to: how far the modules still are
+    // from where they are being told to go.
     //
     // Constants are UNCHANGED (min_scale 0.45, deadband 0.12 rad, reference
-    // 1.0472 rad). This is a change of reference, not of tuning.
+    // 1.0472 rad) — a change of reference, not of tuning.
     //
-    // No held target can reach this line. `write_steering == false` here means
-    // no override is fresh, so the reference is the IK target being written on
-    // this same cycle; the OP-24/S1 hold branches (stale twist, exact-zero
-    // twist) and the kRejected branch all return above with the wheels already
-    // zeroed, so a steering angle that is merely being HELD never scales a
-    // drive command.
+    // No held target can reach this line: `write_steering == false` means no
+    // override is fresh, so the reference is the IK target written this same
+    // cycle; the OP-24/S1 hold branches and the kRejected branch all return
+    // above with the wheels already zeroed, so a merely-HELD steering angle
+    // never scales a drive command.
     const double scale_reference_angle =
       direct_fresh ? steering_joint_order[kModelToJointIndex[i]] : targets[i].angle;
     const double scale = steer_alignment_scale(scale_reference_angle, current_steering_model[i]);

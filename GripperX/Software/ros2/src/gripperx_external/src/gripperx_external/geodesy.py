@@ -116,16 +116,11 @@ def latlon_to_map(
 ) -> Tuple[float, float]:
     """WGS84 -> map metres. Returns ``(x, y)``.
 
-    ``+y`` is north and ``+x`` is east *by this arithmetic*. That question is
-    now ANSWERED, and the answer is that the labels are wrong.
-
-    ANSWERED 2026-08-21 BY THE OCTOPUS TEAM: **Q1 is option B.** Their map
-    ``+y`` is the DRONE'S HEADING AT STARTUP, not north. Their
-    ``octopus_to_robot_interface.md`` said ``x = Ost, y = Nord`` and was simply
-    wrong; ``Octopus/README.md`` was right, and they are correcting the
-    document rather than the behaviour. In the run they measured,
-    ``align_angle = map_yaw_offset - yaw_zero = 1.57080 - (-3.06995)
-    = 4.6408 rad = 265.9 deg``.
+    ``+y`` is north and ``+x`` is east *by this arithmetic*, but the labels are
+    wrong: their map ``+y`` is the DRONE'S HEADING AT STARTUP, not north (Q1 =
+    option B, per the Octopus team). Their ``octopus_to_robot_interface.md``
+    said ``x = Ost, y = Nord``; that document is wrong, ``Octopus/README.md``
+    is right, and it is the document being corrected, not their behaviour.
 
     **WHY THIS FUNCTION STILL DOES NOT ROTATE, AND MUST NOT.** It is the exact
     inverse of their publisher's arithmetic, so it recovers THEIR map ``(x, y)``
@@ -151,9 +146,6 @@ def latlon_to_map(
     otherwise detect. ``indoor_static_yaw_zero_rad`` is ``null`` and ``state``
     is not ``"ready"`` until the lock exists; both must be checked before any
     value from it is trusted.
-
-    We do not subscribe to that topic yet. It is a fifth ingress topic and it is
-    owed.
     """
     if not is_finite_latlon(latitude_deg, longitude_deg):
         raise GeodesyError("LATLON_NOT_FINITE", f"lat={latitude_deg} lon={longitude_deg}")

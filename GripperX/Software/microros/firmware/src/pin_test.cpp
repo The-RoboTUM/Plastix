@@ -28,17 +28,9 @@
  *   Drive:    FL 4/5, FR 6/7, BL 15/16, BR 17/18  (PWM/DIR pairs)
  *   Encoder:  FL 8/9, FR 10/11, BL 12/13, BR 14/21 (PCNT A/B pairs)
  *
- * PCNT logic ported from Hardware_Test/bench_tests/encoder_test/encoder_test.ino
- * (originally ESP32-WROOM-32). Port notes:
- *   - That sketch picked GPIO34/35 because they are input-only on the classic
- *     ESP32, "ideal for encoder inputs". The S3 has no input-only pins at all
- *     and PCNT is routed through the GPIO matrix to any GPIO, so the
- *     input-only rationale simply does not apply here — plain INPUT works.
- *   - The classic ESP32 exposes 8 PCNT units (0-7); the S3 exposes 4 (0-3).
- *     We need exactly 4 (one per wheel), so each encoder gets its own unit,
- *     same as the original used unit 0 for its single encoder.
- *   - Channel setup (A on channel 0 controlled by B, B on channel 1
- *     controlled by A, x4 quadrature decoding) is unchanged.
+ * PCNT reaches any GPIO through the GPIO matrix on the S3 — encoder pins are
+ * not restricted to input-only pins. One PCNT unit per wheel (S3 exposes 4:
+ * PCNT_UNIT_0..3).
  *
  * Serial command syntax @115200:
  *   l | list                    - print the drive-pin/wheel table with indices

@@ -40,33 +40,27 @@ namespace gripperx_behaviors
  * WHY EXACTLY 90 deg AND NOT "SOMEWHERE SIDEWAYS". For a pure translation every
  * point of the body moves in the same direction, so every wheel must stand
  * perpendicular to it; the lateral lever arm between king pin and tyre changes
- * nothing about that. 90 deg is the only solution, not a choice. Each wheel
- * reaches it through the +-180 deg module equivalence (a wheel at -90 deg spun
- * backwards is the same motion as +90 deg spun forwards), which leaves 10 deg
- * to the 100 deg outward stop and nothing at all towards the 35 deg inward stop
- * (gripperx_control/config/steer_servo.yaml, FL [-100,+35] FR [-35,+100]
- * BL [-35,+100] BR [-100,+35] deg). Any vx or wz mixed in moves the required
- * angle off 90 deg and eats into that 10 deg, so this behavior commands vy
- * alone. Measured on the twin over 16 runs: the joints settle at -+89.95..89.99
- * deg, outward on all four.
+ * nothing about that. 90 deg is the only solution, not a choice, reached
+ * through the +-180 deg module equivalence (a wheel at -90 deg spun backwards
+ * is the same motion as +90 deg spun forwards). This leaves margin against both
+ * steering stops (current values: gripperx_control/config/steer_servo.yaml);
+ * any vx or wz mixed in moves the required angle off 90 deg and eats into that
+ * margin, so this behavior commands vy alone. Measured on the twin over 16
+ * runs: the joints settle at -+89.95..89.99 deg, outward on all four.
  *
  * THE COLLISION GUARD IS STRONGER HERE THAN FOR THE REVERSE. Sideways the LD06
  * sees live (its blind wedge is +-20 deg around -x, at the rear), so costmap
- * memory is a second line rather than the only one. Demonstrated at a pose the
- * robot had just been teleported to: nav2_behaviors::BackUp refused with
- * COLLISION_AHEAD because the ground behind was never observed, while this
- * behavior executed 0.21 m in the same instant.
+ * memory is a second line rather than the only one — unlike BackUp, which has
+ * no live view behind it and depends on costmap memory alone.
  *
  * WHAT IS WEAKER IS THE STATE ESTIMATE, and it is small but real. A crab leaves
  * a heading error the wheel odometry cannot observe at all, because the pure
- * lateral IK solution has omega = 0 by construction — /wheel/odom reported
- * exactly 0.0 deg of yaw change in every measured run. Ground truth over 16 runs
- * of the configured 0.20 m at 0.10 m/s: -0.0062 rad mean leftward, +0.0089 rad
- * mean rightward, 0.0138 rad worst case. It follows the direction of travel, so
- * it is a bias and it accumulates over repeated same-side recoveries. Nearly all
- * of it is produced by the two steering transients rather than by the lateral
- * roll itself, which is why the distance limit is NOT derived from it — the full
- * argument and the numbers are in config/nav2.yaml at behavior_server.
+ * lateral IK solution has omega = 0 by construction — /wheel/odom reports
+ * exactly 0.0 deg of yaw change every run. It is a bias in the direction of
+ * travel and accumulates over repeated same-side recoveries, produced mostly by
+ * the two steering transients rather than the lateral roll itself — full
+ * numbers and why the distance limit is NOT derived from it are in
+ * config/nav2.yaml at behavior_server.
  *
  * The action type is nav2_msgs/action/DriveOnHeading, deliberately reused
  * instead of defining a new one, so that the stock nav2_behavior_tree
@@ -144,24 +138,13 @@ protected:
 
   // --- alignment grace (the steering transient) -----------------------------
   // The controller may WITHHOLD DRIVE while the four modules swing into the
-  // +-90 deg crab pose (swerve_controller's alignment gate). During that time
-  // the robot correctly does not move, and without this the clock the goal is
-  // judged against would be spent standing still: 0.17 m at 0.10 m/s is 1.70 s
-  // of travel against a 2.8 s allowance, so a worst-case 1.5 s alignment would
-  // make a CORRECT crab fail with TIMEOUT.
-  //
-  // WHY A SECOND CLOCK RATHER THAN A BIGGER time_allowance, and this is the
-  // whole point: time_allowance is also a DISTANCE BOUND. The BT comment calls
-  // it bound (c) of three -- speed x time, 0.10 x 2.8 = 0.28 m -- the backstop
-  // that holds if max_distance and dist_to_travel are both wrong. Simply raising
-  // it to 4.3 s would quietly relax that bound to 0.43 m, a 54 % loosening of a
-  // documented safety property, to pay for time in which the robot is standing
-  // still by construction.
-  //
-  // So the allowance is spent only once the robot is MEASURABLY MOVING. The
-  // pre-motion phase gets its own bound, and bound (c) survives at
-  //     0.10 x 2.8 + one cycle of travel = 0.28 + 0.01 = 0.29 m,
-  // a 3.5 % loosening instead of 54 %.
+  // +-90 deg crab pose (swerve_controller's alignment gate); without a
+  // separate clock that stand-still time would eat into time_allowance, which
+  // is also a DISTANCE BOUND (speed x time — the backstop that holds if
+  // max_distance and dist_to_travel are both wrong). So end_time_ is not what
+  // limits the pre-motion phase; grace_deadline_ does, and it is spent only
+  // once the robot is MEASURABLY MOVING, so raising it never quietly loosens
+  // that distance bound.
   double alignment_grace_sec_{0.0};
   /// Whether the robot has covered at least one cycle's worth of travel. Not a
   /// tuned threshold: it is `|speed| / cycle_frequency_`, i.e. the smallest

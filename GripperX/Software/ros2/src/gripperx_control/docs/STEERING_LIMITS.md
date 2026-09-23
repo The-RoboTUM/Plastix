@@ -193,7 +193,9 @@ number cannot express this range.)
 ## Update 2026-08-13 — per-direction limits (outward / inward)
 
 The measured mechanical range is **asymmetric**: every wheel swings
-**100° outward** (away from the chassis) and only **30° inward**
+**100° outward** (away from the chassis; raised to **125° outward** on
+2026-09-18 as part of the post-rework recalibration — superseded, see
+`steer_servo.yaml` for the current value) and only **30° inward**
 (user measurement 2026-08-13; raised to **35° inward** 2026-08-17 — a user
 estimate, TO-VERIFY, not a new measurement, see `steer_servo.yaml` for the
 honesty caveat). Everything above this section describes the
@@ -207,7 +209,7 @@ older **symmetric** model, which cannot express that: a single
 |---|---|
 | `counts_outward_limit` | raw counts recorded while wheel *i* was held at its outward limit (joint order FL, FR, BL, BR) |
 | `counts_inward_limit` | ditto for the inward limit |
-| `steering_outward_limit_deg` | angle those outward counts belong to (100.0) |
+| `steering_outward_limit_deg` | angle those outward counts belong to (100.0 at this update; raised to 125.0 on 2026-09-18, see `steer_servo.yaml`) |
 | `steering_inward_limit_deg` | angle those inward counts belong to (35.0, raised from 30.0 on 2026-08-17) |
 | `steering_outward_sign` | per wheel: which **sign of the joint angle** is physically outward (+1/−1) |
 
@@ -249,12 +251,14 @@ in-place spin — exactly the pattern the kinematics produces for pure rotation
 (FL −58.6, FR +58.6, BL +58.6, BR −58.6, each wheel line normalised mod 180).
 The magnitude read 50.7 until 2026-08-21; that came from the retired
 `b = 0.16556` geometry and understated the pose by about 8°. Measured 58.57 in
-the twin, and `atan2(a, b)` on the active `a = 0.180 / b = 0.110` gives the same.
+the twin, and `atan2(a, b)` on `a = 0.1809 / b = 0.1087` (`gripperx_geometry`'s
+`geometry.yaml`, the source of truth) gives the same.
 Outward and the spin pose share the pattern (−, +, +, −), so a spin turns every
-wheel **outward** and uses 58.6° of the 100° available.
+wheel **outward**; at this measurement that used 58.6° of the 100° then
+available — the outward limit is now 125° (`steer_servo.yaml`).
 
 Why the URDF reading misleads: the wheel hangs on a purely lateral lever arm
-off the king pin (`*_wheel_offset_xyz`, y = ±0.072 m), so turning the joint
+off the king pin (`*_wheel_offset_xyz`, y = ±0.0556 m), so turning the joint
 swings the wheel fore/aft around the pin rather than in/out. "Outward" is about
 where the wheel body ends up, not about toe. The two readings agree on the rear
 pair and contradict each other on the front pair.
@@ -369,19 +373,19 @@ Measured by `check_steering_limits.py` (geometry a = 0.203, b = 0.16556):
 | manoeuvre | requested per wheel | outcome |
 |---|---|---|
 | pure forward / reverse | 0° | untouched |
-| in-place spin | FL −50.8, BL +50.8, BR −50.8, FR +50.8 | **untouched**, outward on all four, 49° of margin |
+| in-place spin | FL −50.8, BL +50.8, BR −50.8, FR +50.8 | **untouched**, outward on all four |
 | crab left (`vy` only) | ±90° | reachable via the module flip, outward on all four |
 | corner, vx 0.30, ω 0.40 | max 19.2° | untouched |
 | corner, vx 0.30, ω 1.00 | max 56.5° (would be clamped to 30° on two wheels) | ω → 0.58 rad/s, radius 0.52 m instead of 0.30 m, all four inside |
 | diagonal 45° | 45° on all four | rejected (unreachable direction of travel) |
 
-The binding constraint in ordinary cornering is the 30° inward limit on the two
-wheels that steer into the turn, which caps curvature at roughly
-ω ≤ vx·tan30° / (a + b·tan30°) ≈ 1.93 · vx rad/s (minimum radius ≈ 0.52 m).
-The 100° outward travel is what makes the tangential in-place spin and crab
+The binding constraint in ordinary cornering is the inward limit on the two
+wheels that steer into the turn (see `config/steer_servo.yaml` for the
+current value), which caps the achievable curvature accordingly.
+The outward travel is what makes the tangential in-place spin and crab
 possible; it is real travel, but only on the wheels whose outward side a given
-pose uses. Raising a single symmetric limit to 100 would be wrong in exactly
-the way the old symmetric model was.
+pose uses. Raising a single symmetric limit to the outward value would be
+wrong in exactly the way the old symmetric model was.
 
 ### Keyboard teleop
 

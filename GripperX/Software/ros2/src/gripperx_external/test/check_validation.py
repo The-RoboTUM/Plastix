@@ -763,11 +763,9 @@ def part3_arming() -> None:
     check(raised, "an unknown disarm trigger is a programming error, not a silent pass")
 
     # -- SAFETY.md F-2 / condition C-2 -------------------------------------
-    # The armed state must be bounded by the CLOCK, not by a timer having run.
-    # Before the fix, `armed` was a stored flag: a machine armed for 120 s still
-    # read True at t+4000 as long as nothing called poll(), while
-    # seconds_remaining() already said 0.0. The two disagreed, and the one a
-    # dispatch would have consulted was the wrong one.
+    # The armed state must be bounded by the CLOCK, not by a stored flag: a
+    # timer-based flag can read True after seconds_remaining() already says
+    # 0.0, and a dispatch would consult the wrong one.
     machine = arm_mod.ArmingMachine(allow_arm=True, max_duration_sec=600.0)
     machine.arm(120.0, "tester", 1000.0)
     check(machine.is_armed(1119.9), "armed inside the window")
@@ -1364,9 +1362,7 @@ def part6_package_e() -> None:
         "even if a caller passes the grace flag: the grace is a startup state",
     )
     check(
-        # BY KEY, not by position. This read `.values[-1]` until F-40 added
-        # three keys after `startup_grace` and it started asserting about a
-        # different value entirely - a check anchored to the END of a list
+        # BY KEY, not by position: a check anchored to the END of a list
         # silently changes what it checks every time the list grows.
         {
             kv.key: kv.value for kv in diag_mod.clock_status(
@@ -1386,17 +1382,13 @@ def part6_package_e() -> None:
         if isinstance(node, ast.FunctionDef):
             functions[node.name] = node
 
-    # Every way a ROS-clock instant is reachable in this file. The list is
-    # deliberately of NAMES rather than of call shapes: the mistake this catches
-    # was `self._arming.note_clock(False, self._clock_ref_ros_sec, ...)`, an
-    # attribute and not a call, which reads perfectly and reports TIMEOUT for a
-    # clock stall because `disarm` then compares two different epochs.
-    # `_teleop_mode_stamp_sec` was in this list until SAFETY.md F-38 moved the
-    # mode age to the monotonic clock and renamed the field
-    # `_teleop_mode_mono_sec`. Leaving the old name here would be worse than
-    # useless: it would keep asserting something about an identifier that no
-    # longer exists, and pass for that reason. Part 7 asserts the new field's
-    # epoch instead.
+    # Every way a ROS-clock instant is reachable in this file, by NAME rather
+    # than by call shape - an attribute reference (not a call) reads perfectly
+    # here and reports TIMEOUT for a clock stall, because `disarm` then
+    # compares two different epochs. A name no longer present in the source
+    # must not stay in this list: it would keep asserting nothing and pass
+    # for that reason. Part 7 covers the current field,
+    # `_teleop_mode_mono_sec`, on the monotonic clock.
     _ROS_TIME_NAMES = ("_ros_now", "_shutdown_now", "_clock_ref_ros_sec",
                        "_started_at_sec", "_odom_stamp_sec")
 
@@ -1894,8 +1886,26 @@ def part8_f40() -> None:
     }
 
     # -- 1. the parameter: named, startup-only, not derived (SR-15 rule 14) ----
+    def _declaration(name):
+        """The `declare_parameter` call for `name`, or None.
+
+        By AST rather than by substring: since the threshold moved onto the
+        `TO-VERIFY` sentinel the declaration is a multi-line call, and a
+        substring check for `declare_parameter("<name>"` would report that as a
+        MISSING PARAMETER - a false alarm on the loudest check in this part.
+        """
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "declare_parameter"
+                    and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and node.args[0].value == name):
+                return node
+        return None
+
     check(
-        'declare_parameter("clock_forward_jump_sec"' in source,
+        _declaration("clock_forward_jump_sec") is not None,
         "F-40/rule 14: the threshold is its OWN named parameter, "
         "`clock_forward_jump_sec` - the decision's enabling threshold has to be "
         "visible to be reviewable",
@@ -2127,6 +2137,11 @@ def part8_f40() -> None:
         fake._clock_stall_sec = 2.0
         fake._clock_backward_eps_sec = 0.1
         fake._clock_forward_jump_sec = 1.0
+        # `None` = NOBODY MEASURED IT, which is what both shipped configs say.
+        # The threshold in force is the pair above; these two carry whether it
+        # came from a measurement, and the forward report reads them to say so.
+        fake._clock_backward_eps_measured_sec = None
+        fake._clock_forward_jump_measured_sec = None
         fake._clock_stall_severity_logged = ""
         fake._clock_disarm_done = False
         fake._clock_forward_jumps = 0
@@ -2159,8 +2174,16 @@ def part8_f40() -> None:
         def monotonic(self):
             return self.value
 
-    def _drive(fake, steps, rate=1.0, period=0.1, jump_at=None, jump=0.0):
-        """Tick the REAL `_clock_watchdog` with a fully controlled clock pair."""
+    def _drive(fake, steps, rate=1.0, period=0.1, jump_at=None, jump=0.0,
+               measured=None):
+        """Tick the REAL `_clock_watchdog` with a fully controlled clock pair.
+
+        `measured` is the value a configuration would have MEASURED for the
+        forward threshold - `None` means nobody did, which is what both shipped
+        configs say. It never changes the threshold in force, only what the
+        report says about where it came from.
+        """
+        fake._clock_forward_jump_measured_sec = measured
         clock = _FakeTime()
         real_time = gw_mod.time
         gw_mod.time = clock
@@ -2202,6 +2225,26 @@ def part8_f40() -> None:
         "is report-only - a jump is an event, and a per-tick repeat would be the "
         "cry-wolf failure rule 12 names",
         f"{len(jumped._logger.warns)} WARN(s)",
+    )
+    check(
+        "PROVISIONAL" in jumped._logger.warns[0]
+        and "clock_forward_jump_sec is TO-VERIFY" in jumped._logger.warns[0],
+        "  ... and, while nobody has measured the threshold, the line SAYS the "
+        "number it just judged against is provisional. It used to print a bare "
+        "`TO-VERIFY` unconditionally, which was a claim about the value that "
+        "nothing in the code could make true or false",
+        jumped._logger.warns[0][:120],
+    )
+    measured = _drive(
+        _fake(), steps=25, rate=1.0, jump_at=12, jump=120.0, measured=1.0
+    )
+    check(
+        "PROVISIONAL" not in measured._logger.warns[0]
+        and "measured" in measured._logger.warns[0],
+        "  ... and says `measured` once the value comes from a measurement. "
+        "Without this the check above passes on a build that prints the word "
+        "unconditionally, i.e. on the defect it replaces",
+        measured._logger.warns[0][:120],
     )
     check(
         jumped._last_forward_jump_sec > 100.0,
@@ -2300,8 +2343,23 @@ def part9_f36() -> None:
     }
 
     # -- the parameter itself -------------------------------------------------
+    def _declaration(name):
+        """The `declare_parameter` call for `name`, or None. By AST, because
+        the call is multi-line since the value moved onto the `TO-VERIFY`
+        sentinel and a substring check would read that as a missing parameter.
+        """
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr == "declare_parameter"
+                    and node.args
+                    and isinstance(node.args[0], ast.Constant)
+                    and node.args[0].value == name):
+                return node
+        return None
+
     check(
-        'declare_parameter("clock_backward_eps_sec"' in source,
+        _declaration("clock_backward_eps_sec") is not None,
         "F-36/rule 14: the backwards tolerance is its OWN named parameter. It "
         "alone decides whether CLOCK_JUMPED_BACK - the ninth trigger, split out "
         "by an explicit user decision - ever fires, and it was a derived local "
@@ -2372,18 +2430,23 @@ def part9_f36() -> None:
                 return node.args[1].value
         return None
 
-    eps_default = _default("clock_backward_eps_sec")
+    # The DECLARED default is the `TO-VERIFY` sentinel now, so the number the
+    # detector actually runs at while nobody has measured it lives in
+    # `_PROVISIONAL_CLOCK_BACKWARD_EPS_SEC`. That is the value this check is
+    # about: it was 0.2 before the sentinel and it is 0.2 after it.
+    eps_default = gw_mod._PROVISIONAL_CLOCK_BACKWARD_EPS_SEC
     rate_default = _default("safety_rate_hz")
     check(
         eps_default is not None and rate_default is not None
         and eps_default == 1.0 / max(2.0, rate_default),
-        "F-36: PARAMETERISATION, NOT BEHAVIOUR CHANGE - the new default is "
-        "EXACTLY what the old derivation produced at the configured rate, so the "
-        "threshold this build runs is numerically identical to the one the "
+        "F-36: PARAMETERISATION, NOT BEHAVIOUR CHANGE - the threshold in force "
+        "is EXACTLY what the old derivation produced at the configured rate, so "
+        "the threshold this build runs is numerically identical to the one the "
         "previous build ran. Nothing measured it then and nothing measures it "
-        "now; it is `TO-VERIFY` either way. What changed is that it is visible "
-        "and cannot be moved by editing something else",
-        f"default {eps_default} == 1.0/max(2.0, safety_rate_hz={rate_default})",
+        "now; it is `TO-VERIFY` either way, and since 2026-09-23 it is the "
+        "sentinel that says so rather than a comment. What changed is that it "
+        "is visible and cannot be moved by editing something else",
+        f"provisional {eps_default} == 1.0/max(2.0, safety_rate_hz={rate_default})",
     )
 
     # -- visibility: the configs and the startup line -------------------------
@@ -2398,10 +2461,9 @@ def part9_f36() -> None:
             "is invisible is a decision that cannot be reviewed",
         )
         # Anchored to the KEY's own comment block, not to "somewhere in the
-        # last 1200 characters". The loose version passed on a config that did
-        # not contain the key at all - `split` returned the whole file and some
-        # other TO-VERIFY satisfied it. Caught by running it against the pre-fix
-        # build, which is the only way that shape ever gets caught.
+        # file". A looser anchor can pass on a config missing the key
+        # entirely - `split` returns the whole file and an unrelated
+        # TO-VERIFY satisfies it.
         lines = text.splitlines()
         index = next(
             (i for i, line in enumerate(lines)
@@ -2415,11 +2477,116 @@ def part9_f36() -> None:
             "because nothing measured either of them",
             "key absent" if index is None else "labelled",
         )
+        for key in ("clock_backward_eps_sec", "clock_forward_jump_sec"):
+            value = next(
+                (line.split(":", 1)[1].strip()
+                 for line in lines if line.strip().startswith(key + ":")),
+                None,
+            )
+            check(
+                value is not None and value.strip("\"'") == "TO-VERIFY",
+                f"  ... and {key} IS the sentinel in {name}, not a number with "
+                "a comment calling it unmeasured. That was the defect: the "
+                "label lived in prose, so the value could stay unmeasured "
+                "forever and nothing would ever say so again",
+                f"{key}: {value}",
+            )
     check(
         "clock_backward_eps_sec=" in source,
         "  ... and the gateway names it in its own startup line, so the value in "
         "force is in the log rather than only in a config file that may or may "
         "not have been the one loaded",
+    )
+
+    # -- the sentinel gate: both thresholds, and what unmeasured DOES ---------
+    for name in ("clock_backward_eps_sec", "clock_forward_jump_sec"):
+        declaration = _declaration(name)
+        check(
+            declaration is not None
+            and len(declaration.args) > 1
+            and isinstance(declaration.args[1], ast.Name)
+            and declaration.args[1].id == "_TO_VERIFY",
+            f"rule 14: `{name}` is declared through the SAME sentinel as the "
+            "geofence, the grasp offsets and `datum_jump_warn_m`. It was a bare "
+            "float literal that only a comment - and a runtime log line - "
+            "called `TO-VERIFY`",
+        )
+
+    # What unmeasured does here is REPORT, not refuse, and that asymmetry with
+    # the geofence is the decision this part records. An unmeasured geofence
+    # refuses goals, and refusing means nothing moves; an unmeasured clock
+    # threshold that refused would take away the DETECTOR instead - a clock
+    # discontinuity nobody is told about, which is the failure the detector
+    # exists for. So the two `_measured_sec` attributes may be read by reporting
+    # paths ONLY, and this check is what keeps that true.
+    readers = sorted({
+        fn.name for fn in ast.walk(tree) if isinstance(fn, ast.FunctionDef)
+        and any(isinstance(node, ast.Attribute)
+                and node.attr in ("_clock_backward_eps_measured_sec",
+                                  "_clock_forward_jump_measured_sec")
+                for node in ast.walk(fn))
+    })
+    check(
+        readers == ["__init__", "_note_clock_jumped_forward",
+                    "_publish_diagnostics", "_unmeasured_clock_thresholds"],
+        "rule 14 / F-40: whether the thresholds were MEASURED is read by "
+        "reporting paths only - no validation, no dispatch gate and no arming "
+        "refusal consults it. An unmeasured value must not be able to close a "
+        "gate here: that would be a clock event nobody is told about, dressed "
+        "up as caution",
+        f"read in: {readers}",
+    )
+    check(
+        any(isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+            and node.func.attr == "_unmeasured_clock_thresholds"
+            for node in ast.walk(functions["_unset_items"])),
+        "  ... and the DURABLE half of the report is `_unset_items`, i.e. the "
+        "`external/config` WARN on /diagnostics, which repeats it for as long "
+        "as it is true. A startup line alone is a reminder that scrolls away",
+    )
+
+    # -- the resolution itself, run rather than read --------------------------
+    floor = gw_mod._CLOCK_THRESHOLD_FLOOR_SEC
+    provisional = gw_mod._PROVISIONAL_CLOCK_FORWARD_JUMP_SEC
+    check(
+        gw_mod._clock_threshold_sec("TO-VERIFY", provisional) == provisional
+        and gw_mod._clock_threshold_sec(None, provisional) == provisional,
+        "the sentinel resolves to the PROVISIONAL value, so an unmeasured "
+        "threshold leaves the detector exactly as sensitive as it was. The "
+        "alternative - refusing, or falling back to zero - would change what is "
+        "DETECTED because of something nobody has measured",
+        f"provisional={provisional}",
+    )
+    check(
+        gw_mod._clock_threshold_sec(0.75, provisional) == 0.75
+        and gw_mod._clock_threshold_sec("0.75", provisional) == 0.75,
+        "  ... a measured value wins over it, as a number or as the string a "
+        "YAML may carry it as",
+    )
+    check(
+        gw_mod._clock_threshold_sec(0.001, provisional) == floor
+        and gw_mod._clock_threshold_sec(float("nan"), provisional) == provisional,
+        "  ... the floor still applies to a measured value, and a non-finite "
+        "one is unmeasured rather than a silent zero - a threshold of zero "
+        "reports every tick, which is the cry-wolf failure rule 12 names",
+        f"floor={floor}",
+    )
+
+    thresholds = type("_FakeGateway", (), {})()
+    thresholds._clock_backward_eps_measured_sec = None
+    thresholds._clock_forward_jump_measured_sec = None
+    check(
+        GoalGatewayNode._unmeasured_clock_thresholds(thresholds)
+        == ["clock_backward_eps_sec", "clock_forward_jump_sec"],
+        "both unmeasured thresholds are NAMED in the report, not counted: the "
+        "operator has to know WHICH one to measure",
+    )
+    thresholds._clock_backward_eps_measured_sec = 0.2
+    check(
+        GoalGatewayNode._unmeasured_clock_thresholds(thresholds)
+        == ["clock_forward_jump_sec"],
+        "  ... and a measured one drops out of it, so the reminder stops when "
+        "the measurement lands rather than becoming background noise",
     )
 
     # -- NON-FALSIFYING: the backwards branch still disarms and cancels -------
@@ -2461,6 +2628,10 @@ def part9_f36() -> None:
         fake._clock_stall_sec = 2.0
         fake._clock_backward_eps_sec = eps
         fake._clock_forward_jump_sec = 1.0
+        # Both `None`: nobody measured either threshold, which is what the two
+        # shipped configs say. The value in force is the pair above.
+        fake._clock_backward_eps_measured_sec = None
+        fake._clock_forward_jump_measured_sec = None
         fake._clock_stall_severity_logged = ""
         fake._clock_disarm_done = False
         fake._clock_forward_jumps = 0
@@ -2665,12 +2836,10 @@ def part10_f35() -> None:
         "this direction is a working clock measuring against the wrong epoch, "
         "which is a mismatch to report",
     )
-    # BY AST, not by substring. The first version of both of these searched the
-    # SOURCE TEXT and failed on the function's own prose - its message says
-    # "nothing is disarmed, nothing is cancelled" and its docstring says
-    # "rclpy-free". A check that greps for a word it also explains is a check
-    # measuring its own comments: the same shape as the positional-index class
-    # part 9 lints for, caught the same way, by running it.
+    # BY AST, not by substring: a check that greps for a word the function's
+    # own message or docstring also uses measures its own prose, not its
+    # behaviour - the same shape of trap as the positional-index class part 9
+    # lints for.
     dom_tree = ast.parse(inspect.getsource(dom))
     warn_fn = next(
         (node for node in ast.walk(dom_tree)

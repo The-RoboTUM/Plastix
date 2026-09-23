@@ -89,7 +89,7 @@ void StallDetector::restart_window(std::size_t wheel, double now_sec, double pos
 StallDetectorResult StallDetector::update(
   double now_sec, const std::array<double, kNumWheels> & requested,
   const std::array<double, kNumWheels> & position,
-  const std::array<bool, kNumWheels> & position_valid)
+  const std::array<bool, kNumWheels> & position_valid, bool drive_withheld)
 {
   StallDetectorResult result;
   result.commands = requested;
@@ -104,33 +104,22 @@ StallDetectorResult StallDetector::update(
   for (std::size_t i = 0; i < kNumWheels; ++i) {
     const double command_magnitude = std::isfinite(requested[i]) ? std::fabs(requested[i]) : 0.0;
 
-    // ------------------------------------------------------------ OP-25
-    // WHAT COUNTS AS A "FRESH COMMAND" — PROPOSAL, PENDING USER CONFIRMATION.
-    // OP-25 is recorded `open` in the internal REQUIREMENTS; this is option F2 narrowed to
-    // its magnitude half, implemented so the question has a concrete referent.
+    // OP-25 (open decision — option F2's magnitude half): a latched wheel
+    // releases only once its own commanded magnitude has FALLEN to or below
+    // release_command_rad_s and then RISEN back above min_command_rad_s —
+    // two edges, in that order, on the REQUESTED command, never the gated
+    // one, which is zero by construction while latched. Not "the next
+    // command received" (F1): /cmd_vel repeats a held command at 30 Hz, so
+    // F1 would re-energise, re-stall and chatter on/off with inrush current
+    // on every cycle — worse than staying off.
     //
-    // THE RULE: a latched wheel stays off until its own commanded magnitude has
-    // FALLEN to or below release_command_rad_s and then RISEN back above
-    // min_command_rad_s. Two edges, in that order, on the REQUESTED command —
-    // never on the gated one, which is zero by construction while latched and
-    // would otherwise release the latch on the very next cycle.
-    //
-    // WHY IT IS NOT "the next command received" (option F1, rejected): /cmd_vel
-    // runs at 30 Hz whether or not anything changed — a held key in teleop, Nav2
-    // still pushing the same twist. F1 re-energises ~33 ms after the cut-off,
-    // re-stalls, and produces on/off chatter with motor inrush current on EVERY
-    // cycle, which is worse for the thin motor lead than either staying off or
-    // staying on. THE SAME HELD NON-ZERO COMMAND CAN NEVER RELEASE THIS LATCH.
-    //
-    // NOT IMPLEMENTED, and named rather than glossed: F2's other half (release
-    // on a DIRECTION change without passing through the release band) and the
-    // bounded hold-off that OP-25 offers as the cure for its own autonomous
-    // deadlock. Both need a user decision; the hold-off additionally needs a
-    // TO-VERIFY value that nobody has measured. The deadlock therefore SURVIVES
-    // here: in autonomous operation the other three wheels keep the robot
-    // moving, Nav2 sees progress, never reverses, and the latched wheel stays
-    // off — visibly (the stall-state topic and the ERROR log, SR-13) but
-    // indefinitely.
+    // NOT IMPLEMENTED: release on a DIRECTION change without passing through
+    // the release band, and a bounded hold-off (needs a TO-VERIFY value
+    // nobody has measured). Both need a user decision; until then the
+    // autonomous deadlock SURVIVES here — the other three wheels keep the
+    // robot moving, Nav2 sees progress and never reverses, and the latched
+    // wheel stays off indefinitely, visibly (stall-state topic, ERROR log,
+    // SR-13).
     if (latched_[i]) {
       if (command_magnitude <= config_.release_command_rad_s) {
         release_armed_[i] = true;
@@ -156,28 +145,49 @@ StallDetectorResult StallDetector::update(
       continue;
     }
 
-    // -------------------------------------------------- the three arming gates
-    // (a) commanded to move,
-    // (b) the encoder is genuinely LIVE,
-    // (c) a readable, finite accumulated position to compare against.
+    // Four arming gates: (a) commanded to move, (b) encoder genuinely LIVE,
+    // (c) a readable, finite accumulated position to compare against,
+    // (d) the command is actually reaching the motor.
     //
-    // (b) IS BINDING AND IT IS THE POINT OF HWR-30a: the detection keys off the
-    // ENCODER-VALID condition, never off the reported velocity. A dead encoder
-    // reporting a plausible 0.0 is bit-identical to a healthy stationary wheel
-    // (FR-11's superseded provenance criterion records exactly this), so the
-    // reported velocity cannot separate them and is not consulted here at all.
+    // (b) is BINDING: detection keys off the ENCODER-VALID condition, never
+    // off the reported velocity — a dead encoder reporting a plausible 0.0 is
+    // bit-identical to a healthy stationary wheel, so velocity cannot
+    // separate them. The test is `>= kStallProvenanceLive`, STRICTER than
+    // FR-11's `>= LIVE_UNCONFIRMED`: UNCONFIRMED means "begin() succeeded, no
+    // count change seen yet", indistinguishable from the fault this detector
+    // looks for.
     //
-    // The test is `>= kStallProvenanceLive`, i.e. LIVE only — STRICTER than
-    // FR-11's `>= LIVE_UNCONFIRMED` measurement test. LIVE_UNCONFIRMED means
-    // "begin() succeeded and no count change has been seen yet", which is
-    // indistinguishable from the very fault this detector looks for. Arming on
-    // it would make the detector trip on its own uncertainty.
+    // (d) is the premise this class rests on: it judges the REQUESTED
+    // command (rationale in SwerveController::write_wheel_commands, about
+    // the regulator shifting a safety threshold), which presumes the request
+    // reaches the motor. The steering alignment gate (stage 2) can replace
+    // all four commands with exactly 0.0 until the modules arrive or its
+    // timeout expires; under a request above min_command_rad_s the wheel
+    // cannot move while such a hold is in effect, so any hold latched a
+    // motor off — mirroring the OP-25 rule above, which already refuses to
+    // judge the release edge on the gated (zero) command.
+    //
+    // Disarm, not pause: a fourth arming gate clears window_open_ for its
+    // duration, so the first cycle after release RESTARTS the window — the
+    // same treatment a command rising from rest already gets, so no new
+    // number enters this file (no hold-off constant, no grace period,
+    // nothing TO-VERIFY). A resumed pre-hold dwell would judge the wheel
+    // against a baseline taken before the drive was removed and could trip
+    // within one cycle of its return.
+    //
+    // It does NOT disarm while the drive is flowing — in particular not
+    // after a kAlignTimedOut release with the modules still out of pose,
+    // where the motor really is energised against a scrubbing tyre, the load
+    // HWR-30a exists to cut.
+    //
+    // NOT per-wheel: the gate zeroes all four or none, so a per-wheel array
+    // here would advertise a withholding no stage performs.
     const bool provenance_live =
       config_.assume_live_provenance || provenance_[i] >= kStallProvenanceLive;
     const bool commanded = command_magnitude > config_.min_command_rad_s;
     const bool feedback_usable = position_valid[i] && std::isfinite(position[i]);
 
-    armed_[i] = commanded && provenance_live && feedback_usable;
+    armed_[i] = commanded && !drive_withheld && provenance_live && feedback_usable;
 
     if (!armed_[i]) {
       window_open_[i] = false;

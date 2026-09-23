@@ -152,15 +152,12 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "use_sim_time",
-                # DERIVED FROM `env`, not a fixed default (SAFETY.md F-24). It
-                # used to default to "true" for both envs, and these overrides
-                # are applied AFTER the config file, so `env:=real` silently
-                # overrode `octopus_link_real.yaml`'s `use_sim_time: false` and
-                # put the REAL ROBOT - where there is no /clock at all - on a
-                # clock that never advances, with the arming expiry, the link
-                # watchdog and every in-flight re-check measured on it. The
-                # gateway now refuses to start in that combination; this makes
-                # the combination stop happening by default as well.
+                # DERIVED FROM `env`, not a fixed default (SAFETY.md F-24). A
+                # fixed default here can put the REAL ROBOT - where there is no
+                # /clock at all - on a clock that never advances, with the
+                # arming expiry, the link watchdog and every in-flight re-check
+                # measured on it. The gateway also refuses to start in that
+                # combination as a second layer of defence.
                 default_value=PythonExpression(
                     ["'true' if '", env, "' == 'twin' else 'false'"]
                 ),

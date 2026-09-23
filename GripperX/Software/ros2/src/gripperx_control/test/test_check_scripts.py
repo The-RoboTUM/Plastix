@@ -27,6 +27,13 @@ _HERE = Path(__file__).parent
 
 CHECKS = [
     "check_steering_limits.py",
+    # Cross-package config invariant: crab_walk's alignment_grace_sec in
+    # gripperx_planning must outlast swerve_controller's alignment_timeout_sec
+    # here. Pure file reading, no ROS, no motion. It lives in THIS package
+    # because gripperx_planning has no test suite to run it from, and because
+    # raising the timeout -- the edit that broke the invariant once already --
+    # is an edit to this package's config.
+    "check_alignment_timing.py",
 ]
 
 

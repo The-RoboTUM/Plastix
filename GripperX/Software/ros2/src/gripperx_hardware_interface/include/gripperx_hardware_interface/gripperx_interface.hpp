@@ -28,18 +28,16 @@ namespace gripperx_hardware_interface
 {
 using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
-// Provenance of the per-wheel velocity/position feedback (FR-11 items 5/6, deviation
-// D14). Mirrors EncoderStatus in the ESP32 firmware's motor_controller.hpp for codes
-// 0..3 — change both or neither.
+// Provenance of the per-wheel velocity/position feedback (FR-11 items 5/6,
+// deviation D14). Mirrors EncoderStatus in the ESP32 firmware's
+// motor_controller.hpp for codes 0..3 — change both or neither.
 //
-// MONOTONE IN CONFIDENCE: `>= kLiveUnconfirmed` is the measurement test, everything
-// below it means the value is an echo of the command or simply unknown. Do not
-// renumber.
+// MONOTONE IN CONFIDENCE: `>= kLiveUnconfirmed` is the measurement test;
+// below it the value is an echo of the command or unknown. Do not renumber.
 //
-// kUnknown is a Pi-side value the firmware never sends: it is what a message too short
-// to carry the provenance block decodes to. It is NEGATIVE on purpose, so that a
-// message which says nothing sorts below the weakest thing the firmware can claim and
-// can never satisfy the measurement test.
+// kUnknown is NEGATIVE on purpose: a too-short message decodes to it (the
+// firmware never sends it), and it must sort below the weakest firmware code
+// so it can never satisfy the measurement test.
 enum WheelFeedbackProvenance : int
 {
   kProvenanceUnknown = -1,
@@ -73,23 +71,15 @@ private:
   static constexpr size_t kNumWheelJoints = 4;
   static constexpr size_t kNumJoints = kNumSteerJoints + kNumWheelJoints;
 
-  // Default activation window for the SR-14 gate.
+  // Default activation window for the SR-14 gate. 120.0 s is a USER-SET value,
+  // PENDING COLD-BOOT VERIFICATION: it replaces a warm-bringup-derived default
+  // because cold starts take longer, but the time a cold boot needs has not
+  // been measured.
   //
-  // 120.0 s is a USER-SET value (2026-08-18), PENDING COLD-BOOT VERIFICATION. The user set
-  // it on the grounds that cold starts have taken considerably longer than the warm figure
-  // measured below; the measurement that a cold boot actually needs has not been taken yet.
-  //
-  // The measured derivation it replaces is kept, so the reasoning is not lost: on a clean
-  // WARM bringup (2026-08-18) the first /hw/steer_states arrived 5.885 s after 'activate'
-  // began, and a single steer_servo_node respawn cycle costs a further 11.6 s
-  // (respawn_delay 5.0 + node start 2.2 + servo-bus scan 4.4) -> 17.5 s worst case, which
-  // is where the previous default of 20.0 s came from. That figure is a lower bound on what
-  // is needed, not an upper bound: it says nothing about a cold boot.
-  //
-  // Ceiling: the spawners' --controller-manager-timeout in real_robot.launch.py MUST stay
-  // above this value, otherwise the spawners die while the gate is still legitimately
-  // waiting and the gate never gets to report anything. It was raised 30 -> 150 s with this
-  // change. Keep the two in step.
+  // Ceiling: --controller-manager-timeout in real_robot.launch.py's spawners
+  // MUST stay above this value, or they die while the gate is still
+  // legitimately waiting and never get to report anything. Keep the two in
+  // step.
   static constexpr double kDefaultSteerStatesActivationTimeoutSec = 120.0;
 
   void joint_states_callback(const std_msgs::msg::Float64MultiArray::SharedPtr msg);
@@ -114,9 +104,9 @@ private:
   std::string joint_states_topic_{"/hw/joint_states"};
   double state_timeout_sec_{1.0};
 
-  // FR-10: the ESP32 has no steering sensor and never writes state indices 0-3, so the
-  // steering position state interface would read a constant 0.0 on the real robot while
-  // being truthful in Gazebo. The measurement comes from steer_servo_node, which reads the
+  // FR-10: the ESP32 has no steering sensor and never writes state indices
+  // 0-3, so that state would be truthful in Gazebo but a constant 0.0 (false)
+  // on the real robot. Measured instead by steer_servo_node, which reads the
   // Feetech servos on the Pi's own USB bus and publishes them here.
   std::string steer_states_topic_{"/hw/steer_states"};
   double steer_states_timeout_sec_{0.5};
@@ -127,63 +117,45 @@ private:
   // freshness window (FR-10) — one is a startup budget, the other a staleness rule.
   double steer_states_activation_timeout_sec_{kDefaultSteerStatesActivationTimeoutSec};
 
-  // FR-11 items 5/6: whether the per-wheel velocity in /hw/joint_states[4-7] is a
-  // measurement or the command echoed back. Published as a latched per-wheel code
-  // rather than exported as a state interface ON PURPOSE: GazeboSimSystem does not
-  // export such an interface, so a controller claiming it would fail to activate in
-  // sim and fork real from sim (§3.1.6 / SR-14 item 4).
+  // FR-11 items 5/6: whether the per-wheel velocity in /hw/joint_states[4-7]
+  // is a measurement or the command echoed back. A latched per-wheel code,
+  // not a state interface, because GazeboSimSystem exports no such interface
+  // — a controller claiming it would fail to activate in sim and fork real
+  // from sim (§3.1.6 / SR-14 item 4).
   std::string wheel_feedback_valid_topic_{"/hw/wheel_feedback_valid"};
 
   // Command watchdog behind the ros2_control layer. Detects a wedged
-  // controller_manager that keeps republishing a stale (frozen) command while
-  // fresh controller inputs are still arriving, and a dead upstream command
-  // source. Runs in its own node + executor + thread, independent of both the
-  // read/update/write cycle AND the controller_manager executor (which is the
-  // failure candidate, see incident 2026-07-06 #5 / Task #14).
+  // controller_manager that republishes a stale command while fresh inputs
+  // still arrive, or a dead upstream command source. Runs in its own node +
+  // executor + thread, independent of both the read/update/write cycle and
+  // the controller_manager executor, which is the failure candidate.
   bool command_watchdog_enabled_{true};
   double command_timeout_sec_{0.5};
   double command_watchdog_rate_hz_{50.0};
   double command_divergence_eps_{1e-3};
   std::string wheel_command_topic_{"/wheel_velocity_controller/commands"};
 
-  // Which reference input the watchdog polices against (OP-18a). DEFAULT IS THE
-  // OLD ONE ON PURPOSE: /wheel_velocity_controller/commands only disappears when
-  // the NFR-10 rebuild takes over the active path, and until then the running
-  // robot must keep the watchdog it has. Switching to W2 is then a one-word
-  // change in gripperx_v1.ros2_control.xacro, not a code change, and both
-  // reference inputs can exist side by side while the switch-over is staged.
+  // Which reference input the watchdog polices against (OP-18a). Defaults to
+  // the OLD one: /wheel_velocity_controller/commands only disappears when the
+  // NFR-10 rebuild takes over the active path. Switching to W2 is then a
+  // one-word change in gripperx_v1.ros2_control.xacro, not a code change.
   WatchdogReference watchdog_reference_{WatchdogReference::kWheelCommands};
   std::string cmd_vel_topic_{"/cmd_vel"};
   std::string intent_echo_topic_{"/swerve_controller/intent_echo"};
 
-  // TWIST DIVERGENCE TOLERANCE — A NEW QUANTITY, AND `TO-VERIFY` (OP-18a item 5).
+  // TWIST DIVERGENCE TOLERANCE — a distinct quantity, `TO-VERIFY` (OP-18a item 5).
+  // NOT command_divergence_eps (0.001, rad/s of WHEEL angular velocity):
+  // these are m/s / rad/s of the BODY twist, and reusing it would compare
+  // chassis yaw rate against wheel spin rate as the same number.
   //
-  // It is NOT command_divergence_eps (0.001). That value is rad/s of WHEEL
-  // angular velocity; these are m/s and rad/s of the BODY twist. Reusing it
-  // would compare chassis yaw rate against wheel spin rate as if they were the
-  // same number.
+  // Must stay well below the finest real /cmd_vel step any source here can
+  // emit (~0.005 m/s / 0.012 rad/s, keyboard_teleop_node's manoeuvre slew),
+  // and SMALL rather than half that step: too large silently disables
+  // divergence detection, too small only sets an inert "changed" flag.
   //
-  // Derived from what the tree can actually command. The finest non-zero
-  // /cmd_vel component any source in this repository emits is a manoeuvre-slew
-  // twist from keyboard_teleop_node: crab_speed_m_s 0.25 x manoeuvre_pose_scale
-  // 0.02 = 0.005 m/s, and spin_speed_rad_s 0.60 x 0.02 = 0.012 rad/s. Nothing
-  // between there and zero exists, and teleop_mux copies the values through
-  // unmodified, so a genuine command change is never smaller than that.
-  //
-  // 1.0e-4 sits 50x / 120x below the finest real step, with room for a future
-  // finer source, and ~1e12 above the float64 representation floor at these
-  // magnitudes — so no rounding can fabricate a change.
-  //
-  // Chosen SMALL rather than "half the finest step" because the two errors are
-  // not symmetric: too large silently deletes divergence detection (the check
-  // the 2026-07-06 incident exists for), while too small can only set a
-  // "changed" flag that is inert unless the echo sequence is ALREADY frozen —
-  // i.e. unless the fault is genuinely present.
-  //
-  // NOT derived from the autonomous path: Nav2/DWB emits continuous twists with
-  // no quantisation floor and has never been driven, so no measurement exists.
-  // That is the same gap OP-24/S1 stage 2 records for its exact-zero test, and
-  // it gets measured at the same time.
+  // NOT derived from the autonomous path: Nav2/DWB emits continuous twists
+  // with no quantisation floor and has never been driven (same gap as
+  // OP-24/S1 stage 2's exact-zero test).
   TwistTolerance twist_tolerance_{};
 
   std::vector<double> hw_positions_;
@@ -237,20 +209,22 @@ private:
   std::chrono::steady_clock::time_point last_wheel_command_time_;
   bool wheel_command_received_{false};
 
-  // Timestamp when output/input divergence started; nullopt/unset while aligned.
+  // Timestamp tied to the current divergence episode. Plain time_point, not
+  // optional: there is no sentinel for "unset" here, and this value must not
+  // be read unless divergence_active_ is true — that flag, not this member,
+  // is what tracks whether a divergence is currently open.
   bool divergence_active_{false};
   std::chrono::steady_clock::time_point divergence_since_;
 
-  // W2 reference input (OP-18a). Both subscriptions live on watchdog_node_ and
-  // are therefore serviced by the watchdog's OWN executor and thread — the
-  // property the whole design turns on, since the controller_manager executor
-  // is the failure candidate. Both carry KeepLast(10) + RELIABLE explicitly.
+  // W2 reference input (OP-18a). Both subscriptions live on watchdog_node_,
+  // serviced by the watchdog's OWN executor and thread — the property the
+  // whole design turns on. Both carry KeepLast(10) + RELIABLE explicitly.
   rclcpp::Subscription<geometry_msgs::msg::Twist>::SharedPtr cmd_vel_sub_;
   rclcpp::Subscription<gripperx_control_msgs::msg::SwerveIntentEcho>::SharedPtr intent_echo_sub_;
-  // The two callbacks and the timer all run on that single executor thread, so
-  // this mutex guards against nothing today. It is kept because the state is
-  // safety state and a future multi-threaded executor here must not turn a
-  // correctness question into an archaeology question.
+  // The two callbacks and the timer run on that one executor thread, so this
+  // mutex guards against nothing today. Kept because the state is safety
+  // state, and a future multi-threaded executor must not turn a correctness
+  // question into an archaeology question.
   std::mutex twist_watchdog_mutex_;
   TwistEchoWatchdog twist_watchdog_;
 

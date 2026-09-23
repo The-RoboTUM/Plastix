@@ -77,15 +77,13 @@ RELEASE_SEC = 0.30
 ALIGN_TIMEOUT = 5.0          # long on purpose: arming must come from feedback
 DRIVE_HOLD = 0.30
 
-# a/b CORRECTED 2026-08-21. They were 0.203 / 0.16556, the pre-2026-08-13
-# obsolete-CAD pair, so this check has been asserting against a geometry the
-# robot does not have. The live values come from ros2_controllers.yaml, which
-# is what swerve_controller actually runs on.
+# a/b come from ros2_controllers.yaml (live source), not re-derived here --
+# a second, hand-typed pair would be a second source of truth for a
+# safety-relevant geometry check.
 # NOTE b is the half KING-PIN track, not the half contact-point track: the
-# kinematics computes at the steering point. 0.16556 was a CONTACT-POINT figure,
-# which is why the two looked like a 34 % contradiction and were not one.
-# Both stay TO-VERIFY for a much smaller reason - 0.110 against the CAD king-pin
-# half-track 0.1087, i.e. 1.2 %, unresolved.
+# kinematics computes at the steering point.
+# TO-VERIFY: 0.110 (this measurement) vs CAD king-pin half-track 0.1087, i.e.
+# 1.2 %, unresolved.
 MODEL = FourWIS4WIDKinematicModel(a=A, b=B, wheel_radius=WHEEL_RADIUS)
 LIMITS = SteeringLimits.from_outward_inward(
     math.radians(DEFAULT_OUTWARD_LIMIT_DEG),
@@ -298,8 +296,8 @@ def main() -> int:
         print()
 
         # === 3. Spin: angular.z survives ==================================
-        # KEY 0, not arrow up, since 2026-08-24: the arrows now steer an active
-        # crab and the two spins moved to 0 (CW) and 9 (CCW).
+        # Spin uses key 0 (CW), not arrow up -- the arrows steer an active crab
+        # instead; the other spin is key 9 (CCW).
         print("=== 3. Key 0 — spin clockwise ===")
         h.pump(RELEASE_SEC + 0.5, key="0")
         check(
@@ -320,10 +318,10 @@ def main() -> int:
         print()
 
         # === 4. Mutual exclusion =========================================
-        # STILL MUTUALLY EXCLUSIVE, but between the four MANOEUVRE keys, which
-        # are now left/right/0/9. Arrow up/down left that set on 2026-08-24 and
-        # are tested as crab MODIFIERS in section 4b instead — holding left and
-        # up together is now a supported combination, not a conflict.
+        # MUTUALLY EXCLUSIVE between the four MANOEUVRE keys (left/right/0/9).
+        # Arrow up/down are crab STEERING modifiers, not manoeuvre keys --
+        # holding left and up together is a supported combination, not a
+        # conflict.
         print("=== 4. Two manoeuvre keys at once ===")
         h.teleop.press("left")
         h.teleop.press("0")

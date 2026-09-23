@@ -43,19 +43,17 @@ def generate_launch_description():
         # declared by the node.
         DeclareLaunchArgument('crab_speed_m_s', default_value='0.25',
                               description='Sideways speed for arrow left/right [m/s]'),
-        # 0.6 -> 1.4 (2026-08-17): at 0.6 the in-place spin did not start on the
-        # ground. Not friction alone — the spin radius is only
-        # hypot(a, b) = 0.211 m, so 0.6 rad/s asks for just 0.127 m/s at the
-        # wheel, and the firmware's open-loop feedforward (PWM = |rpm| * 0.85,
-        # motor_controller.cpp) turns that into PWM 15/255 = 5.8 % duty — at or
-        # below stiction, while the spin needs MORE torque than driving straight.
-        # There is no PID/integrator to push through it (encoders feed odometry
-        # only), so a stalled wheel stays stalled at PWM 15.
-        # 1.4 rad/s = 4.22 rad/s at the wheel = PWM 34 (13.4 %), i.e. the SAME
-        # duty as normal straight driving at 0.3 m/s — a levelling, not a
-        # speed-up. Headroom: swerve_cmd.yaml max_wheel_angular_speed=12.0 only
-        # binds at 3.98 rad/s. TO-VERIFY on the ground; override without editing
-        # via spin_speed_rad_s:=<value>.
+        # Stiction bound: the spin radius is only hypot(a, b) = 0.211 m, so a
+        # low spin_speed_rad_s asks for very little linear speed at the wheel,
+        # and the firmware's open-loop feedforward (PWM = |rpm| * 0.85,
+        # motor_controller.cpp) can land at or below stiction duty -- while a
+        # spin needs MORE torque than driving straight, and there is no
+        # PID/integrator to push through it (encoders feed odometry only), so
+        # a stalled wheel stays stalled. 1.4 rad/s keeps the wheel duty at
+        # roughly the same level as normal straight driving at 0.3 m/s.
+        # Headroom: swerve_cmd.yaml max_wheel_angular_speed=12.0 only binds at
+        # 3.98 rad/s. TO-VERIFY on the ground; override without editing via
+        # spin_speed_rad_s:=<value>.
         DeclareLaunchArgument('spin_speed_rad_s', default_value='1.4',
                               description='In-place rotation rate for arrow up/down [rad/s]'),
         DeclareLaunchArgument('use_steer_feedback', default_value='true',

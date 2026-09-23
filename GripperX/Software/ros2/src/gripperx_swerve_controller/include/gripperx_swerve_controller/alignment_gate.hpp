@@ -1,61 +1,53 @@
 // Withhold drive while the steering modules are slewing into a new pose.
 //
-// WHAT THIS REPLACES, AND WHY IT MOVES HERE.
-// gripperx_teleop/manoeuvre.py::TransitionGuard does this today, on the
-// OPERATOR'S LAPTOP, for the keyboard teleop only. It works, and the reason it
-// is being moved is not that it is broken:
+// Replaces gripperx_teleop/manoeuvre.py::TransitionGuard (operator laptop,
+// keyboard teleop only) — not because it was broken, but because:
+//   * it cannot see the controller's target, so it has to PREDICT it with a
+//     second implementation of inverse_kinematics() + resolve_wheel_targets()
+//     against a mirrored geometry copy — a second implementation of a
+//     safety-relevant comparison. In here there is nothing to predict: the
+//     target was computed three lines up, in this cycle, from these measured
+//     angles.
+//   * it only guards the keyboard. Nav2's crab recovery (gripperx_behaviors::
+//     CrabWalk) commands vy with no guard at all — nearly the whole heading
+//     error of a crab appears in the steering transients, not the steady
+//     lateral roll (measurement and citation in nav2.yaml). A guard here
+//     covers teleop, Nav2, the behaviors and anything else that ever
+//     publishes a twist, because they all arrive as one.
+//   * it is bypassable: it lives above /cmd_vel, so any other publisher
+//     simply does not have it. Here it sits inside write_wheel_commands(),
+//     the single funnel every branch of update() goes through — the same
+//     argument stall_detector.hpp makes for HWR-30a's placement.
 //
-//   * IT CANNOT SEE THE CONTROLLER'S TARGET, so it has to PREDICT it. manoeuvre.py
-//     re-runs inverse_kinematics() + resolve_wheel_targets() in Python against a
-//     mirrored copy of the geometry and the steering windows, purely to know
-//     which angles to wait for. That is a SECOND IMPLEMENTATION of a
-//     safety-relevant comparison, and its own docstring says so. In here there is
-//     nothing to predict: the target was computed three lines up, in this cycle,
-//     from these measured angles.
-//   * IT ONLY GUARDS THE KEYBOARD. Nav2's crab recovery (gripperx_behaviors::
-//     CrabWalk) commands vy with no guard at all, and nav2.yaml records the cost
-//     from 16 twin runs: essentially the WHOLE heading error of a crab appears in
-//     the two steering transients (-0.11 deg while vy was cut, -0.79 deg after
-//     the steering unwound) and almost none in the steady lateral roll
-//     (5e-5 .. 8e-4 rad/s). A guard here covers teleop, Nav2, the behaviors and
-//     anything else that ever publishes a twist, because they all arrive as one.
-//   * IT IS BYPASSABLE. It lives above /cmd_vel, so any other publisher simply
-//     does not have it. Here it sits inside write_wheel_commands(), the single
-//     funnel every branch of update() goes through — the same argument
-//     stall_detector.hpp makes for HWR-30a's placement, and it transfers verbatim.
+// No GuardState::RELEASING equivalent here: arbitration lives inside
+// update(), where "is the override still winning" is an exact boolean
+// (`direct_fresh`, OP-23/A2-b) rather than something to guess at behind a
+// timeout.
 //
-// GuardState::RELEASING HAS NO EQUIVALENT HERE, on purpose. It existed because
-// the /teleop/direct_steer override lived in a DIFFERENT PROCESS (steer_servo_node),
-// so the teleop could only wait out its timeout and hope. Since OP-23/A2-b the
-// arbitration is inside update() and "is the override still winning" is an exact
-// boolean (`direct_fresh`). A timeout that guesses at a fact we hold is not worth
-// porting.
-//
-// WHAT THIS IS NOT: it is NOT a soft brake and it does NOT replace one.
+// WHAT THIS IS NOT: not a soft brake, and does not replace one.
 // SwerveController::steer_alignment_scale() stays exactly as it is — tuned,
-// hardware-accepted (NFR-10), and measuring residual TRACKING LAG in an ordinary
-// corner. This class answers a different question: has the demanded GEOMETRY just
-// JUMPED, i.e. are the modules currently travelling somewhere far from where they
-// stand? The two compose: the gate holds the drive at exactly zero through a
-// transition, the brake trims it afterwards. Removing the brake would be a
-// separate decision and is not taken here.
+// hardware-accepted (NFR-10), measuring residual TRACKING LAG in an ordinary
+// corner. This class answers a different question: has the demanded
+// GEOMETRY just JUMPED, i.e. are the modules travelling somewhere far from
+// where they stand? The two compose: the gate holds the drive at exactly
+// zero through a transition, the brake trims it afterwards.
 //
-// THE ONLY THING THIS CLASS CAN DO TO A WHEEL COMMAND IS REPLACE IT WITH EXACTLY
-// 0.0 — no scaling, no bias, no error term. It never reads a measured VELOCITY.
-// That keeps NFR-10 acceptance 10 ("the control law is demonstrably open-loop")
-// untouched: a gate that can only zero cannot close a loop.
+// THE ONLY THING THIS CLASS CAN DO TO A WHEEL COMMAND IS REPLACE IT WITH
+// EXACTLY 0.0 — no scaling, no bias, no error term, and it never reads a
+// measured VELOCITY, so NFR-10 acceptance 10 ("the control law is
+// demonstrably open-loop") stays untouched.
 //
 // SHIPS DISABLED (`enabled` false in the struct default AND in
-// ros2_controllers.yaml), following WheelRegulator rather than StallDetector.
-// The reason is not timidity: enabling it CHANGES HOW THE ROBOT DRIVES on the
-// first deploy — a crab or spin entry that used to move immediately at the slew
-// brake's floor now stands still for up to ~1 s first. That is the intended
-// behaviour, and it is exactly why it should be switched on deliberately, in the
-// twin, against the 16-run baseline, rather than arrive with a merge.
+// ros2_controllers.yaml), following WheelRegulator rather than StallDetector:
+// enabling it CHANGES HOW THE ROBOT DRIVES on the first deploy — a crab or
+// spin entry that used to move immediately at the slew brake's floor now
+// stands still for up to ~1 s first. That is intended, and why it must be
+// switched on deliberately, against the twin baseline, not arrive with a
+// merge.
 //
 // NO rclcpp IN THIS HEADER OR ITS .cpp, exactly as swerve_kinematics,
-// steering_limits, stall_detector and wheel_regulator — so the state machine is
-// unit-checkable without a running stack (test/test_alignment_gate.cpp).
+// steering_limits, stall_detector and wheel_regulator — so the state
+// machine is unit-checkable without a running stack (test_alignment_gate.cpp).
 
 #ifndef GRIPPERX_SWERVE_CONTROLLER__ALIGNMENT_GATE_HPP_
 #define GRIPPERX_SWERVE_CONTROLLER__ALIGNMENT_GATE_HPP_
@@ -152,6 +144,20 @@ struct AlignmentGateResult
   /// are never zeroed individually — a partial pose is not a pose.
   std::array<double, kNumWheels> commands{};
   int status{kAlignDisabled};
+  /// True on exactly the cycles this gate replaced the commands with 0.0.
+  ///
+  /// NOT DERIVABLE FROM `status` BY THE CALLER, which is the whole reason it is
+  /// a field: on a cycle with no steering write the gate KEEPS its status and
+  /// passes the command through, so kAlignSlewing can be reported on a cycle
+  /// that withheld nothing. A caller that reconstructed the fact as
+  /// `status == kAlignSlewing && target_written` would be a second
+  /// implementation of the condition three lines below -- and, in this file's
+  /// own words, two signals that must agree are two signals that can disagree.
+  /// This one is set on the same branch as the zeroing it reports.
+  ///
+  /// HWR-30a READS IT (StallDetector::update's `drive_withheld`): a wheel that
+  /// does not turn while this is true is obeying the gate, not stalling.
+  bool withheld{false};
   /// True on the cycle the status changed — the caller's cue to log or publish.
   /// Edge-triggered so a consumer cannot produce per-cycle spam.
   bool state_changed{false};

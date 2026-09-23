@@ -242,15 +242,12 @@ def clock_status(
 
     "Not yet proven" is the same level with ONE exception, and the exception is
     SAFETY.md F-31: while the node is still inside its measured ``/clock``
-    discovery grace, an unproven clock is WARN. It was ERROR from the very first
-    diagnostic tick under every configuration, wall time included, so an
-    ordinary twin start put an ERROR item on ``/diagnostics`` for the whole
-    pre-proof interval - and an ERROR that fires on ordinary starts is an ERROR
-    an operator learns to scroll past, which is the failure F-24 was raised
-    about wearing different clothes. ``startup_grace`` is the caller's answer to
-    "has this had a fair chance to discover a publisher yet"; it grades the
-    REPORT only. Arming is refused for an unproven clock either way, and the
-    gateway's own gate does not read this status at all.
+    discovery grace, an unproven clock is WARN, not ERROR - an ERROR that fires
+    on every ordinary twin start is one an operator learns to scroll past,
+    which is the failure F-24 exists to prevent. ``startup_grace`` is the
+    caller's answer to "has this had a fair chance to discover a publisher
+    yet"; it grades the REPORT only. Arming is refused for an unproven clock
+    either way, and the gateway's own gate does not read this status at all.
 
     One thing this status cannot do on its own: while the clock is frozen the
     timer that publishes ``/diagnostics`` has stopped too, so the gateway
@@ -263,18 +260,16 @@ def clock_status(
         "frozen_for_sec": round(float(frozen_for_sec), 1),
         "clock_stall_sec": stall_sec,
         "startup_grace": bool(startup_grace) and not proven,
-        # SAFETY.md F-40, user decision 2026-08-20. Before this there was no key
-        # here at all for a forward discontinuity - measured, 0 of 8 jumps
-        # produced anything anywhere - so an operator had no way to learn one had
-        # happened. Reported as a COUNT plus the last size, because the question
-        # after the fact is "did the clock step while that goal was running", and
-        # a value that only exists during the event cannot answer it.
+        # SAFETY.md F-40. Reported as a COUNT plus the last size, because the
+        # question after the fact is "did the clock step while that goal was
+        # running", and a value that only exists during the event cannot answer
+        # it.
         #
-        # It does NOT raise the level. A forward jump is REPORT-ONLY by that
-        # decision: the gate is untouched, and there is no moment at which the
-        # condition clears, so a latched WARN here would be permanent for the
-        # life of the node and would bury the stall and the never-proven cases
-        # that DO gate. The WARN is the log line; this is the durable value.
+        # It does NOT raise the level. A forward jump is REPORT-ONLY: the gate
+        # is untouched, and there is no moment at which the condition clears,
+        # so a latched WARN here would be permanent for the life of the node
+        # and would bury the stall and the never-proven cases that DO gate.
+        # The WARN is the log line; this is the durable value.
         # SAFETY.md F-35. Reported beside `use_sim_time` because the pair is
         # the finding: a live /clock publisher is unremarkable when sim time is
         # on and is an epoch mismatch when it is off. Value only - it gates
@@ -318,10 +313,16 @@ def config_status(
 ) -> DiagnosticStatus:
     """Which TO-VERIFY values are still unmeasured.
 
-    WARN and not ERROR: an unmeasured geofence or grasp offset makes the
-    gateway *refuse* goals, which is the safe outcome, not a broken one. But it
-    must be visible, or "nothing happens" looks like a bug rather than a
-    pending bench measurement.
+    WARN and not ERROR: nothing here is broken. An unmeasured geofence or grasp
+    offset makes the gateway *refuse* goals, which is the safe outcome; the
+    others degrade conservatively instead (`datum_jump_warn_m` treats any datum
+    change as significant, and the clock-discontinuity thresholds keep detecting
+    at a provisional value). But every one of them must be visible, or a refusal
+    looks like a bug and a provisional threshold looks like a measurement.
+
+    The summary line therefore says only that they are unmeasured; what each
+    unmeasured value *does* is carried by the caller in the item text, because
+    it differs per value and a single sentence here was wrong for half of them.
     """
     values = {"unset": ", ".join(unset_items) if unset_items else None}
     values.update(extra or {})
@@ -329,7 +330,7 @@ def config_status(
         return status(
             "external/config",
             WARN,
-            "TO-VERIFY, goals are refused until measured: " + ", ".join(unset_items),
+            "TO-VERIFY, unmeasured: " + ", ".join(unset_items),
             values,
         )
     return status("external/config", OK, "all measured values configured", values)

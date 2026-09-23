@@ -1,9 +1,8 @@
 // Unit tests for the W2 command watchdog decision core (OP-18a, SR-11, §3.1.5).
 //
 // Every case the requirement names is here, including the ones that must NOT
-// trip. A watchdog that only has positive tests is a watchdog nobody will leave
-// enabled: the 2026-08-17 record of a BEST_EFFORT reader latching silence-STOP
-// for 14 minutes is what a false positive looks like from the driver's seat.
+// trip. A watchdog that only has positive tests is a watchdog nobody will
+// leave enabled — a false positive erodes trust as fast as a missed real one.
 //
 // Time is injected, never slept on, so these run in microseconds and cannot go
 // flaky on a loaded Pi.
@@ -203,8 +202,7 @@ TEST(CommandWatchdog, DivergenceClearsWhenTheControllerRecovers)
 TEST(CommandWatchdog, ConstantCommandHeldForSecondsIsNotAFault)
 {
   // Driving straight at a fixed speed. The VALUE is frozen; the sequence is
-  // not, because every republished Twist is a new consumed message. This is the
-  // case option W4 was rejected for being unable to distinguish.
+  // not, because every republished Twist is a new consumed message.
   auto watchdog = make();
   uint64_t sequence = 0;
   run_healthy(watchdog, TwistSample{0.5, 0.0, 0.0}, 0.0, 8.0, sequence);
@@ -276,10 +274,19 @@ TEST(CommandWatchdog, TheFinestCommandTheTreeCanEmitCountsAsAChange)
 {
   // The derivation the default tolerance rests on: the smallest non-zero
   // /cmd_vel component any source in this repository emits is a manoeuvre-slew
-  // twist -- crab_speed_m_s 0.25 x manoeuvre_pose_scale 0.02 = 0.005 m/s, and
-  // spin_speed_rad_s 0.60 x 0.02 = 0.012 rad/s. If either of these stopped
+  // twist -- crab_speed_m_s x manoeuvre_pose_scale for linear, spin_speed_rad_s
+  // x manoeuvre_pose_scale for angular (current defaults in
+  // keyboard_teleop_node.py, not restated here). If either component stopped
   // registering as a change, the divergence check would go blind exactly where
   // the operator is moving most carefully.
+  //
+  // The two values below are the NODE's declared defaults, not the launch
+  // files': laptop_teleop.launch.py and web_teleop.launch.py both pass a
+  // larger spin_speed_rad_s for stiction reasons. The node default is the
+  // smaller of the two, so it is the finest command the tree can emit, which
+  // is what this test is named for. Re-derive both when either default moves
+  // -- the angular one already drifted once, and a test that no longer sits on
+  // its own boundary still passes while proving less than its name claims.
   auto watchdog = make();
   watchdog.on_cmd_vel(TwistSample{0.0, 0.0, 0.0}, at(0.0));
   watchdog.on_cmd_vel(TwistSample{0.0, 0.005, 0.0}, at(0.05));
@@ -287,7 +294,7 @@ TEST(CommandWatchdog, TheFinestCommandTheTreeCanEmitCountsAsAChange)
 
   auto angular = make();
   angular.on_cmd_vel(TwistSample{0.0, 0.0, 0.0}, at(0.0));
-  angular.on_cmd_vel(TwistSample{0.0, 0.0, 0.012}, at(0.05));
+  angular.on_cmd_vel(TwistSample{0.0, 0.0, 0.011}, at(0.05));
   EXPECT_EQ(angular.cmd_vel_change_count(), 1u);
 }
 

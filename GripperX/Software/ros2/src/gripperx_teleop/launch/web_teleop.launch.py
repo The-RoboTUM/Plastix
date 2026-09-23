@@ -63,15 +63,12 @@ def generate_launch_description():
             name='web_teleop_node',
             output='screen',
             parameters=[
-                # GEOMETRY SOURCE, added 2026-08-25 when this branch was merged.
-                # keyboard_teleop_node declares a, b and wheel_radius WITHOUT a default
-                # (Parameter.Type.DOUBLE) so they can only come from the single source of
-                # truth. web_teleop_node builds on KeyboardTeleopNode and inherits that
-                # declaration, so WITHOUT this file the node raises on startup instead of
-                # running -- which is the intended loud failure, but it means the web UI
-                # would simply not come up. laptop_teleop.launch.py already passes it; this
-                # launch file was written before that fix landed and had the same gap the
-                # geometry work found there: an inline dict that silently omits the geometry.
+                # GEOMETRY SOURCE, required. keyboard_teleop_node declares a, b and
+                # wheel_radius WITHOUT a default (Parameter.Type.DOUBLE) so they can only
+                # come from the single source of truth; web_teleop_node inherits that
+                # declaration. WITHOUT this file the node raises on startup instead of
+                # running -- the intended loud failure, but it means the web UI does not
+                # come up. laptop_teleop.launch.py passes the same file.
                 os.path.join(
                     get_package_share_directory('gripperx_teleop'),
                     'config', 'keyboard_teleop.yaml'),

@@ -5,12 +5,11 @@ WHAT THIS TEST IS FOR
     reads back all 42 places those quantities are actually written down and
     fails when any of them has drifted.
 
-WHY IT PASSES TODAY DESPITE 20 DISAGREEMENTS
-    Twenty sites disagree with the declaration right now, on 2026-08-21, before
-    anything has been changed. That is the problem this whole exercise exists to
-    fix, and Phase 1 fixes it. Until then each one is registered below with what
-    it holds and why — so the test is green on the KNOWN state and red on any
-    NEW drift, instead of being red from birth and therefore ignored.
+HOW THE REGISTRY WORKS
+    A site allowed to disagree with the declaration must be registered below
+    with what it holds and why — so the test is green on a KNOWN divergence
+    and red on any NEW drift, instead of being red from birth and therefore
+    ignored.
 
     The registry pins the VALUE, not just the site. A registered site that
     changes to some third value still fails. A registered site that gets fixed
@@ -36,38 +35,6 @@ from gripperx_geometry.inventory import (
 # ---------------------------------------------------------------------------
 # The registry
 # ---------------------------------------------------------------------------
-
-STALE_CAD = (
-    "Obsolete CAD pair a=0.203 / b=0.16556 (wheelbase 0.406, track 0.33112), "
-    "superseded by the 2026-08-19 import. This site was never moved with the "
-    "configs. A node started without its param file, or a test run at all, "
-    "silently uses a robot that does not exist. Phase 1 removes it."
-)
-
-CORRECT_BUT_DUPLICATED = (
-    "Holds 0.070, which is the declared value — and is registered anyway. A "
-    "node default that happens to be right today is still a second source of "
-    "truth: nothing keeps it in step, and it is precisely what the node falls "
-    "back on when its parameter file is missing, i.e. when being right matters "
-    "most. Phase 1 removes the default rather than correcting it."
-)
-
-SUPERSEDED_TAPE = (
-    "Holds the tape pair a=0.180 / b=0.110 (measured 2026-08-13, commit "
-    "275246c). GQ-1 was decided on 2026-08-21 in favour of the CAD figures as "
-    "one quantity, so this is no longer an open question — it is a known-wrong "
-    "value with a scheduled fix. Phase 1 corrects it.\n\n"
-    "DEPLOY GATE, NOT A LANDING GATE: the correction moves the commanded "
-    "in-place-spin steering angle 58.570 deg -> 58.999 deg. Phase 1 may land in "
-    "the repo; the Pi must not receive it until a drive test has validated the "
-    "change, and that test sits behind the OP-29 chirality test in the ordering "
-    "constraint."
-)
-
-# check_teleop_manoeuvre_path.py moved from the obsolete pair to the config pair
-# in fbd2276, between this registry being written and the branch being rebased.
-# The test caught it unprompted, named both sites and said what had changed —
-# the first live evidence that the mechanism works outside injected drift.
 
 KNOWN_DIVERGENCES: dict[str, tuple[float, str]] = {
     # EMPTIED BY PHASE 1, 2026-08-21. Every site that held a geometry value now
@@ -161,14 +128,11 @@ def test_every_consumer_site_still_exists(sites):
 def test_node_defaults_carry_no_geometry_value(sites):
     """No node may hold a numeric default for a declared geometric quantity.
 
-    This is the invariant Phase 1 establishes, asserted here from the start so
-    the target state is testable before it is reached. A default in code is a
-    second source of truth by construction: it is what the node uses when its
-    parameter file is absent, and nothing keeps it in step. That is how three
-    nodes came to fall back on a robot with a 0.406 m wheelbase.
-
-    Every site still holding one is registered below; the registry empties as
-    Phase 1 lands.
+    A default in code is a second source of truth by construction: it is what
+    the node uses when its parameter file is absent, and nothing keeps it in
+    step. That is how three nodes once fell back on a robot with a 0.406 m
+    wheelbase. Any site holding one again must be registered in
+    KNOWN_DIVERGENCES below.
     """
     holding = [
         s for s in sites

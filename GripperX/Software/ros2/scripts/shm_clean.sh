@@ -4,80 +4,34 @@
 # WHY THIS EXISTS
 # ---------------
 # A SIGKILLed FastDDS process cannot run its destructors, so it leaves its
-# /dev/shm/fastrtps_* segments behind. Measured on this laptop 2026-08-19:
-# one killed node leaks ~8 entries (2 participant segments + shared port files
-# and their semaphores); three kills leave 12 entries.
+# /dev/shm/fastrtps_* segments behind. Kill-based tests are the main source
+# (external-link disarm triggers, SAFETY.md C-8 acceptance), since they
+# produce these in bulk; a cleanly exiting node leaks nothing.
 #
-# The failure mode is nasty because it does not look like a resource problem.
-# At roughly 180 leftovers, newly started participants stop being visible to
-# the `ros2` CLI while node-to-node discovery still works -- i.e. `ros2 node
-# list` shows nothing although the node's own log shows a clean startup. It
-# looks exactly like "the node failed to start".
-#
-# Kill-based tests are the source: the external-link disarm triggers (LINK_LOST,
-# NODE_SHUTDOWN) and the SAFETY.md C-8 acceptance are all verified by killing
-# processes, so they produce these in bulk. Cleanly exiting nodes leak nothing
-# (verified 2026-08-19, and again 2026-08-20 -- see the per-participant figures
-# below; note the count returns to the BASELINE that was there before, which is
-# not necessarily 0).
+# The failure mode is SILENT: at a high enough leftover count, newly started
+# participants stop being visible to the `ros2` CLI while node-to-node
+# discovery still works -- `ros2 node list` shows nothing although the node's
+# own log is clean. It looks exactly like "the node failed to start".
 #
 # SAFE TO RUN WHILE TESTS ARE RUNNING
 # -----------------------------------
-# `fastdds shm clean` checks ownership and reports "N segments in use". Verified
-# 2026-08-19: with one live node plus one zombie present, it cleaned the zombie,
-# spared the live node's segments, and the live node kept running and exited
-# normally. So this does NOT require stopping other sessions -- which matters,
-# because several worktrees share this laptop (domains 20 real / 220 / 221).
+# `fastdds shm clean` checks ownership before removing anything, so it does
+# NOT require stopping other sessions -- several worktrees share this laptop
+# on different ROS domains.
 #
 # WHAT IT ACTUALLY RECLAIMS -- AND WHAT IT DOES NOT
 # -------------------------------------------------
-# MEASURED 2026-08-20 18:34 CEST. Conditions, because a reclaim figure without
-# them is not comparable to the next one: machine otherwise QUIET, domain 220
-# IDLE (the parallel Nav2 session had ended and cleaned up), no test nodes
-# running, two `ros2` CLI daemons alive (domains 20 and 221).
+# It only reclaims participant segments (fastrtps_<id> + _el) belonging to
+# dead processes. It does NOT touch the port files and their semaphores
+# (fastrtps_port<n>, sem.fastrtps_port<n>_mutex): these accumulate across
+# sessions, outlive the process that made them, and make up most of any
+# long-standing residue. Do not report a remainder as "other sessions' live
+# processes" without checking -- most of it is orphaned ours.
 #
-#     126 entries before  ->  126 after.  ZERO reclaimed.
-#
-# An earlier reading the same day, taken while the 220 session was still live,
-# was 284 -> 198 (43 zombie segments cleaned) and was written up as "the
-# remainder belongs to other people's live processes". THAT WAS TOO GENEROUS TO
-# THIS SCRIPT AND IS CORRECTED HERE. With 220 idle and nothing of ours running,
-# the remainder is almost entirely OURS -- and unreclaimable anyway. The 126:
-#
-#     4    participant segments (fastrtps_<id> + _el) -- the two live `ros2`
-#          daemons, correctly spared;
-#     118  port files and their semaphores (59 fastrtps_port<n> + 59
-#          sem.fastrtps_port<n>_mutex) owned by NOTHING alive, the oldest
-#          timestamped 06:38 the same morning -- 94% of the residue;
-#     4    other.
-#
-# So the honest statement is neither "this removes the exposure" nor "the
-# remainder is other sessions' live state". It is: THIS REMOVES RECENT
-# PARTICIPANT ZOMBIES AND DOES NOT TOUCH A LONG-LIVED RESIDUE OF ORPHANED PORT
-# ENTRIES, WHICH ACCUMULATES ACROSS SESSIONS AND OUTLIVES EVERY PROCESS THAT
-# MADE IT.
-#
-# What it IS good for, measured the same day, one participant at a time -- and
-# this is why calling it before a kill-based test suite earns its place:
-#
-#     clean exit (SIGINT)   126 -> 130 -> 126   leaks NOTHING
-#     SIGKILL               126 -> 130 -> 130   leaks 4 entries
-#     then this script      130 -> 122          reclaims those 4, plus a little
-#                                               older residue
-#
-# (2026-08-19 recorded ~8 entries per killed node against the 4 per killed
-# PARTICIPANT measured here; a node may hold more than one participant, and the
-# two figures are reported as taken rather than reconciled.)
-#
-# The port residue needs a sweep by name with nothing running on ANY domain.
-# That is what `--ports` below is, added by user decision 2026-08-20; the plain
-# clean above still does NOT do it, and neither may a test suite, while other
-# domains may be live. See the guard section for what makes it safe enough to
-# exist at all.
-#
-# For scale: discovery still worked at 126 entries (a freshly started node was
-# visible to `ros2 node list`), so the ~180 figure above is not contradicted by
-# any of these numbers -- we were below it throughout.
+# The port residue needs a sweep by name with nothing running on ANY domain --
+# that is what `--ports` below is. The plain clean above does NOT do it, and
+# neither may a test suite while other domains may be live. See the guard
+# section for what makes it safe enough to exist at all.
 #
 # Usage: scripts/shm_clean.sh                   (clean; safe while tests run)
 #        scripts/shm_clean.sh --count           (report only, changes nothing)
@@ -88,16 +42,14 @@
 #
 # THE --ports MODE, AND WHY IT IS GUARDED THE WAY IT IS
 # ----------------------------------------------------
-# Added 2026-08-20 by user decision, on the measurement above: the port residue
-# accumulates across sessions, nothing reclaims it, and ~180 entries is where
-# the `ros2` CLI goes blind. Without a sweep we eventually walk into that, and
-# it will happen in the middle of a measurement.
+# The port residue described above is why this mode exists: nothing else
+# reclaims it, and at scale the `ros2` CLI goes blind.
 #
 # THE GUARD IS THE FEATURE. `fastdds shm clean` can be run at any time because
 # it checks ownership itself; this mode CANNOT, because it deletes files by
-# name. A port entry that looks orphaned to `ls` is being used by any
-# participant that has the port open, so sweeping while somebody else's node is
-# running breaks THEIR run, not ours. Hence:
+# name. A port entry that looks orphaned to `ls` may be held open by any
+# participant, so sweeping while somebody else's node is running breaks THEIR
+# run, not ours. Hence:
 #
 #   * it refuses to delete unless nothing ROS is running ANYWHERE on the
 #     machine -- all domains, not just ours. `ros2` CLI daemons count: they are

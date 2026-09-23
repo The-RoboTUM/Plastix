@@ -240,7 +240,7 @@ def _extract_py_constant(text: str, name: str) -> Any:
 
 
 def _extract_cpp_member(text: str, name: str) -> Any:
-    """`double a_{0.180};` — an auto_declare fallback, i.e. what the C++
+    """`double a_{0.1809};` — an auto_declare fallback, i.e. what the C++
     controller uses when its YAML does not carry the key. Same class of second
     source of truth as a Python declare_parameter default."""
     match = re.search(rf"\b{re.escape(name)}\s*\{{\s*({_NUMBER})\s*\}}", text)
@@ -361,10 +361,15 @@ def project(spec: dict[str, Any], locator: Locator, actual: Any) -> Any:
 
 
 def compare(expected: Any, actual: Any, *, tolerance: float = 0.0) -> bool:
-    """Exact by default. Tolerance is opt-in, per site, and never a default.
+    """Decide whether a consumer site agrees with the declared value.
 
-    A tolerance silently applied is how a real discrepancy gets absorbed. GQ-1
-    is exactly such a case and is carried as a known divergence instead.
+    ``tolerance`` is a parameter, not a default: ``walk()``, the only caller in
+    this package, always leaves it at ``0.0``, so every comparison the
+    registry performs today is exact. A ``Missing`` on either side never
+    agrees. A scalar can only agree with a scalar and a list only with a list
+    of the same length, compared element-wise; a per-corner offset stays
+    signed by side, matching the sign the xacro triple and the declaration
+    both carry.
     """
     if isinstance(actual, Missing) or isinstance(expected, Missing):
         return False
@@ -410,11 +415,10 @@ def walk(src_root: Path | None = None, source_root: Path | None = None) -> list[
     ``src_root`` is the tree the consumers are read from; ``source_root`` is the
     tree the declaration is read from, and defaults to the same one.
 
-    They are separable on purpose. Checking a branch's declaration against a
-    tree that has moved on underneath it is exactly the question "is this still
-    mergeable" — and that came up for real on 2026-08-21, when Theo advanced 44
-    commits mid-work and one registered site changed value underneath the
-    branch. With the two roots welded together that check cannot be expressed.
+    They are separable on purpose: checking a branch's declaration against a
+    tree that has moved on underneath it is exactly the question "is this
+    still mergeable", which cannot be expressed if the two roots are welded
+    together.
     """
     root = src_root or find_src_root()
     source = load_source(source_root or root)

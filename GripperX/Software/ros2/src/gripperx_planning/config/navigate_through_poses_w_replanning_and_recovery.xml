@@ -3,7 +3,8 @@
   Navigate Through Poses with replanning and recovery.
   No Spin recovery — but NOT for the reason this comment used to give. The old
   claim "±45° steering servos cannot rotate in place" is wrong: the in-place
-  rotation pose needs ~59°, inside the servos' 100° limit. Spin is absent only
+  rotation pose needs ~59°, well inside the outward steering limit (source of
+  truth: gripperx_control/config/steer_servo.yaml). Spin is absent only
   because it has not been released by the user; adding it means a plugin in
   nav2.yaml behavior_plugins plus a <Spin> call in BOTH of these XMLs.
 -->

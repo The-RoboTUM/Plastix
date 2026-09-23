@@ -23,8 +23,7 @@
 //                        behaviour today; the DEFAULT, so an unqualified run of
 //                        this harness still reproduces the old chain)
 // --reference=commanded  brake against the post-arbitration commanded target
-//                        (the controller's behaviour after the 2026-08-19 user
-//                        decision)
+//                        (the controller's current behaviour)
 //
 // The two modes are IDENTICAL on every case that carries no override columns —
 // there the commanded target IS the IK target. That is the property the 413-case
@@ -59,7 +58,8 @@ using namespace gripperx_swerve_controller;  // NOLINT(build/namespaces)
 
 namespace
 {
-// Values from gripperx_control/config/swerve_cmd.yaml, unchanged.
+// Values from gripperx_geometry/config/geometry.yaml (the single source of
+// truth for these quantities), unchanged.
 constexpr double kA = 0.1809;
 constexpr double kB = 0.1087;
 constexpr double kR = 0.070;

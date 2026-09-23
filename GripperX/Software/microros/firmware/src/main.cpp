@@ -9,9 +9,7 @@
 #include <std_msgs/msg/float64_multi_array.h>
 
 // Cytron MDD10A drivers — all 4 channels in PWM+DIR mode.
-// Board: YD-ESP32-S3-N16R8 (ESP32-S3-WROOM-1). Pin map = WIRING_PLAN.md §1
-// primary GPIOs. Legacy ESP32-WROOM-32 numbering and the FR/BR rewire toggles
-// (GPIO22/GPIO4) are retired — GPIO22–25 do not exist on the S3.
+// Board: YD-ESP32-S3-N16R8 (ESP32-S3-WROOM-1). Pin map = WIRING_PLAN.md §1.
 // None of these GPIOs is a strapping / flash / octal-PSRAM pin on the S3-N16R8.
 #define PWM_PIN1       4   // FL PWM (IO4)
 #define DIR_PIN1       5   // FL DIR (IO5)
@@ -36,32 +34,16 @@
 
 // Encoder sign per wheel, in the MOTOR COMMAND frame of that MotorController: a positive
 // setTargetRPM() must read back as a positive getRPM(). This is a pure wiring fact (A/B
-// order and motor polarity at the driver header) and can only be settled at the bench.
-//
-// NOT the same thing as the FL/BL robot-frame mirroring in cmdCb()/the publish loop —
-// that one converts between the motor frame and the robot frame and stays as it is. Do
-// not copy one into the other.
-//
-// BENCH PROCEDURE (per wheel, driver connected, wheel free-standing):
+// order and motor polarity at the driver header) and can only be settled at the bench:
 //   1. command a positive RPM for that wheel
 //   2. echo hw/joint_states and look at that wheel's velocity index (4..7)
 //   3. sign matches  -> leave at +1
 //      sign inverted -> set to -1
-// CONFIRMED 2026-08-13 on the assembled robot, all four = +1 (so the previous implicit
-// defaults were right, but they are now measured rather than assumed):
-//   1. Each wheel was rolled forward BY HAND with the pintest firmware counting, giving
-//      physical direction <-> count direction:  FL/BL forward = counts UP,
-//      FR/BR forward = counts DOWN.
-//   2. Each wheel was then driven with `m <wheel> f` (= DIR HIGH) and the count direction
-//      read back:  DIR HIGH turns FL/BL BACKWARD and FR/BR FORWARD.
-// applyPwmDir() sets DIR LOW for a positive command, i.e. the opposite of the runs above,
-// so a positive command turns FL/BL forward (counts up) and FR/BR backward (counts up too).
-// Raw counts therefore rise on a positive command on every wheel => dirSign = +1 throughout.
-// This chain lives entirely in the MOTOR command frame and does not depend on the URDF.
+// Measured on the assembled robot: all four = +1.
 //
-// Note the bench entry in documentation/ENCODER_FEEDBACK.md claimed the opposite count directions;
-// it is superseded (miswired encoder cables were found and corrected in this session).
-// Its DIR<->physical half, however, was confirmed by step 2 above.
+// NOT the same thing as the FL/BL robot-frame mirroring in cmdCb()/the publish loop —
+// that one converts between the motor frame and the robot frame and stays as it is. Do
+// not copy one into the other.
 //
 // EVERY statement above is about the MOTOR frame only, i.e. it relates a motor command
 // to that motor's own encoder — it says nothing about which way the ROBOT then moves.
@@ -74,50 +56,45 @@
 
 // Global ROBOT-frame <-> MOTOR-frame sign for the wheel drives.
 //
-// Determined by OBSERVATION on the jacked-up robot, 2026-08-17: a commanded
-// linear.x = +0.3 m/s produced a clean, uniform command chain (4.286 rad/s on
-// wheel_velocity_controller/commands and hw/joint_commands, ~3200 counts per wheel
-// per 2 s, all four wheels within 5.7 %) — but all four wheels physically turned
-// BACKWARD. Uniform across all four, so this is a global frame error, NOT a per-side
-// one: the FL/BL mirroring in cmdCb()/the publish loop is correct and stays untouched.
-// Hence the factor is -1.
+// Observed on the jacked-up robot: a commanded positive linear.x produced a clean,
+// uniform command chain (all four wheels within a few percent of each other) but all
+// four wheels physically turned BACKWARD. Uniform across all four, so this is a global
+// frame error, NOT a per-side one — the FL/BL mirroring in cmdCb()/the publish loop is
+// correct and stays untouched. Hence the factor is -1.
 //
-// Why the error could hide: the fault was previously invisible in the data because
-// command and feedback carried the same mirroring, so encoders read POSITIVE while the
-// wheels ran backward — self-consistent, and contradicted by nothing but the wheels.
-// That consistency is the property worth protecting, therefore:
-// command and feedback MUST carry this factor IDENTICALLY. Applying it on one side only
-// would give correct driving with odometry counting backward — strictly worse than the
-// unfixed state. If it is ever changed, change it in cmdCb() and in the publish loop
-// (velocities AND positions) together, or not at all.
+// The fault was invisible before because command and feedback carried the same
+// mirroring, so encoders read POSITIVE while the wheels ran backward — self-consistent,
+// and contradicted by nothing but the wheels. That consistency is the property to
+// protect: command and feedback MUST carry this factor IDENTICALLY. Applying it on one
+// side only would give correct driving with odometry counting backward — strictly worse
+// than the unfixed state. If it is ever changed, change it in cmdCb() and in the publish
+// loop (velocities AND positions) together, or not at all.
 #define ROBOT_FRAME_WHEEL_SIGN  (-1.0f)
 
 // hw/joint_commands: 8 values [4 steer positions, 4 wheel velocities].
 #define NUM_CMD_JOINTS    8
 // hw/joint_states: 16 values [4 RESERVED steering slots, 4 wheel velocities,
 //   4 wheel positions, 4 wheel-feedback PROVENANCE codes].
-//   Indices 0..3 are RESERVED AND ALWAYS ZERO from this firmware — structurally,
-//   not as a gap to be filled later: the steering servos hang on the Pi's USB bus,
-//   the ESP32 has neither a steering sensor nor any steering input, so it has
-//   nothing to measure. The publish loop zeroes the array and then writes only
-//   4..11. The only value this firmware could ever place in 0..3 is an echo of the
-//   commands it receives — and an echo is exactly what FR-2 rejects as feedback.
-//   Do NOT "fix" this here. The real steering measurement is /hw/steer_states,
-//   published by steer_servo_node on the Pi; gripperx_hardware_interface merges it
-//   into the steering position state interfaces (FR-10). This comment previously
-//   read "4 steer positions", a contract this firmware cannot honour.
-//   Indices 4..7 keep the existing contract that the Pi
-//   gripperx_hardware_interface::read() consumes (size check is >= 8, extra
-//   values ignored). The appended wheel-position block (8..11) is real encoder
-//   feedback for the Pi read() to adopt (HWR-10 odometry integration).
-//   Indices 12..15 are the PROVENANCE of 4..7 and 8..11, one EncoderStatus code
-//   per wheel in the same FL, FR, BL, BR order (FR-11 items 5/6, deviation D14):
-//   the velocity is either a measurement or a verbatim echo of the command, and
-//   this block is the only thing in the message that says which. Codes and their
-//   meaning live in motor_controller.hpp (EncoderStatus) and are mirrored on the
-//   Pi in gripperx_interface.cpp. Anything that appends further values must go
-//   AFTER 15 — the Pi keys its length guards on 8 / 12 / 16 and a shorter message
-//   is read as "provenance unknown", never as "valid".
+//   Indices 0..3 are RESERVED AND ALWAYS ZERO from this firmware — structurally, not a
+//   gap to fill later: the steering servos hang on the Pi's USB bus, the ESP32 has
+//   neither a steering sensor nor any steering input, so it has nothing to measure. The
+//   publish loop zeroes the array and writes only 4..11. The only value this firmware
+//   could place in 0..3 is an echo of the commands it receives, and an echo is exactly
+//   what FR-2 (functional requirement 2) rejects as feedback. Do NOT "fix" this here —
+//   the real steering measurement is /hw/steer_states, published by steer_servo_node on
+//   the Pi and merged into the steering position state interfaces by
+//   gripperx_hardware_interface (FR-10).
+//   Indices 4..7 keep the existing contract gripperx_hardware_interface::read() consumes
+//   on the Pi (size check is >= 8, extra values ignored). 8..11 is real encoder-position
+//   feedback for read() to adopt (HWR-10, hardware rework requirement 10 — odometry
+//   integration).
+//   Indices 12..15 are the PROVENANCE of 4..7 and 8..11, one EncoderStatus code per wheel
+//   in FL, FR, BL, BR order (FR-11 items 5/6, deviation D14): the velocity is either a
+//   measurement or a verbatim echo of the command, and this is the only thing that says
+//   which. Codes are defined in motor_controller.hpp (EncoderStatus) and mirrored on the
+//   Pi in gripperx_interface.cpp. Anything appended must go AFTER 15 — the Pi keys its
+//   length guards on 8 / 12 / 16 and a shorter message reads as "provenance unknown",
+//   never as "valid".
 #define NUM_STATE_JOINTS 16
 #define IDX_FL   4
 #define IDX_FR   5
@@ -136,63 +113,40 @@
 // (gripperx_control/config/ros2_controllers.yaml L3), so GripperXInterface::read()
 // sees a fresh frame per control cycle instead of one in three or four.
 //
-// It was 100 ms (nominal 10 Hz) and MEASURED at 8.72 Hz / 114-121 ms, because the
-// executor below was allowed to sleep 100 ms inside the same loop. Both halves are
-// fixed here: this period is now scheduled on micros() with a fixed phase, and
-// EXEC_SPIN_MS bounds the sleep well below it.
+// Scheduled on micros() with a fixed phase (see loop()), so the executor's sleep
+// cannot drift the period; EXEC_SPIN_MS bounds that sleep well under it.
 //
-// LINK BUDGET, 115200 8N1 = 11520 B/s = 86.806 us per byte. Un-stuffed frame sizes:
-// one 16-value state frame = 128 B payload + 35 B XRCE/serial framing = 163 B =
-// 14.15 ms, one 8-value command frame = 64 + 35 = 99 B = 8.59 ms.
-// Allowance for byte stuffing: the XRCE serial framing escapes 0x7E and 0x7D, which
-// IEEE-754 doubles can hit, and the cost is data-dependent and formally unbounded.
-// Expected cost is small - only ~64 of the 128 payload bytes are non-zero (indices
-// 0-3 and the status codes are zero-heavy), so 64 * 2/256 = 0.5 escaped bytes per
-// state frame - so this budget carries +10 % of payload, about 25x the expectation:
-//   state frame  163 + 12.8 = 175.8 B = 15.26 ms
-//   command frame 99 +  6.4 = 105.4 B =  9.15 ms
-// Treating the link as SHARED (it is not - a UART is full duplex, so this is the
-// pessimistic reading and the numbers hold either way):
-//   states   30 Hz * 15.26 ms = 457.8 ms/s = 45.8 %
-//   commands 30 Hz *  9.15 ms = 274.5 ms/s = 27.5 %   (Pi -> ESP32, unchanged)
-//   ping     1 Hz, request + reply, allow 200 B/s      =  1.7 %
-//   TOTAL 75.0 %, margin 25.0 percentage points.
-// Per direction the same traffic is 46 % up / 28 % down.
-// Why not higher: 40 Hz gives 61.0 + 27.5 + 1.7 = 90.2 % (9.8 pp margin) and 50 Hz
-// gives 105.5 %, i.e. not feasible at all on the shared reading. The margin is kept
-// wide on purpose because ONE budget item is not quantified: the publisher QoS is
+// UART link budget at 115200 8N1: this rate plus the command traffic (Pi -> ESP32,
+// unchanged) and the 1 Hz ping use about 75 % of the link in the pessimistic
+// (shared-link) reading — a UART is actually full duplex, so the real margin is
+// larger, not smaller. 40 Hz would already exceed the shared-link budget. Margin is
+// kept wide on purpose because one item is not quantified: the publisher QoS is
 // RELIABLE (rclc_publisher_init_default), so every frame is subject to XRCE-level
-// acknowledgement whose byte cost has never been measured here.
-// Raising the baud rate is the real headroom, but that is a COORDINATED change -
-// firmware and gripperx-agent.sh (-b 115200) must move together - and it is not
-// part of this change.
+// (micro-ROS client-server protocol) acknowledgement whose byte cost has never been
+// measured here. Raising the baud rate is the real headroom, but it is a COORDINATED
+// change — firmware and gripperx-agent.sh (-b 115200) must move together.
 #define STATES_PUBLISH_US 33333
 // Upper bound on how long the executor may sit in rcl_wait with nothing to do. This
 // is NOT a per-message cost: spin_some returns as soon as a command is ready, so
-// lowering it cannot delay cmdCb - it only stops the loop from sleeping past the
-// publish deadline and past the encoder sampling interval. At 100 ms the loop spent
-// nearly all of its time inside rcl_wait - fine for the commands, which wake it, but
-// it meant everything that is NOT a callback (publishing, encoder sampling, the
-// command timeout) could only run after that sleep, which is the direct cause of the
-// measured 114-121 ms publish period. Command latency is not made worse by the
-// change: a command already pending when spin_some is entered returns from rcl_wait
-// immediately, and the work now done between two waits is a few microseconds of
-// sampling plus one publish.
+// lowering it cannot delay cmdCb — it only stops the loop from sleeping past the
+// publish deadline and past the encoder sampling interval. Command latency is not
+// made worse by lowering it: a command already pending when spin_some is entered
+// returns from rcl_wait immediately.
 #define EXEC_SPIN_MS          5
 #define CMD_TIMEOUT_MS     1000
-// PING_INTERVAL_MS, the 200 ms rmw_uros_ping_agent() timeout in loop() and the
+// PING_INTERVAL_MS, the 200 ms rmw_uros_ping_agent() timeout in loop(), and the
 // 100 ms spin_some() slice together bound how long this firmware needs to NOTICE
 // that the agent is gone: 1000 + 200 + 100 = 1300 ms worst case. The Pi depends on
-// that number. HWR-40 / SR-12 chose "Option 0" for the clean-shutdown path (user,
-// 2026-08-19): the Pi does NOT ask for a teardown over a dedicated interface, it
-// stops the micro-ROS agent and relies on the ping failure below to call
-// destroyEntities() here. Its restart path therefore waits a 1.5 s dwell before
+// that number. HWR-40 / SR-12 (hardware rework requirement 40 / safety requirement
+// 12) chose the clean-shutdown path where the Pi does NOT ask for a teardown over a
+// dedicated interface — it stops the micro-ROS agent and relies on the ping failure
+// below to call destroyEntities() here. Its restart path waits a 1.5 s dwell before
 // bringing the agent back, because startRos() opens with `if (ros_ok) return true;`
 // -- an agent that reappears before this firmware has noticed the loss leaves a
 // stale session that still LOOKS healthy while nothing is delivered.
-// CONSEQUENCE, and the reason this comment exists: raising PING_INTERVAL_MS or the
-// ping timeout, or changing the reconnect logic, breaks that dwell SILENTLY on the
-// Pi side. Change them only together with the dwell in the shutdown path.
+// Raising PING_INTERVAL_MS or the ping timeout, or changing the reconnect logic,
+// breaks that dwell SILENTLY on the Pi side. Change them only together with the
+// dwell in the shutdown path.
 #define PING_INTERVAL_MS   1000
 
 // DDS domain of the micro-ROS participant. The XRCE client dictates the domain in
@@ -285,51 +239,32 @@ static void startMotors() {
     // in motor_controller.hpp. Only the two NUMBERS live here. They are ONE calibration
     // in two halves - never change one without re-deriving the other.
     //
-    // FF_GAIN (b), PWM counts per output-shaft RPM. Raised 0.85 -> 1.0625 (+25 %) on
-    // 2026-08-20 by user decision, against a MEASURED steady-state shortfall: commanded
-    // 4.2857 rad/s per wheel with the robot ON BLOCKS and the wheels turning FREELY IN
-    // THE AIR, i.e. under no load at all, the four wheels measured 3.2242 / 3.0654 /
-    // 3.1792 / 3.1398 rad/s - about 26 % below command, with a 5.2 % spread between
-    // wheels. Unloaded, so THAT shortfall was the gain itself, not the load. After the
-    // change, still unloaded, the four wheels came in at -3.7 / -7.1 / -4.7 / -4.3 %,
-    // i.e. roughly -5 %: the gain is about right for the unloaded machine.
+    // FF_GAIN (b): PWM counts per output-shaft RPM. Calibrated on the unloaded robot
+    // (wheels on blocks, turning freely in the air) so that commanded and measured
+    // speed agree to within about 5 % across all four wheels.
     //
-    // FF_OFFSET_PWM (a), PWM counts. Measured 2026-08-20 with the robot DRIVING ON
-    // CARPET, i.e. the load case the gain above was never checked in:
-    //     commanded 4.286 rad/s -> ~2.44 rad/s   deficit 1.858 rad/s  (-43 %)
-    //     commanded 2.857 rad/s -> ~1.00 rad/s   deficit 1.859 rad/s  (-65 %)
-    // Same absolute deficit at two operating points => constant load torque, so the
-    // correction is an offset, not more gain (see the header for why more gain is the
-    // wrong form). Per-wheel at the slow point: 1.8515 / 1.8719 / 1.8478 / 1.8660 rad/s,
-    // spread 1.3 %, so ONE constant for all four.
-    //
-    // ARITHMETIC, in full:
-    //     1.858 rad/s * 60 / (2*PI)  = 17.74 RPM at the output shaft
-    //     17.74 RPM * 1.0625 PWM/RPM = 18.85 -> 19 PWM counts
-    //     19 / 255                   = 7.4 % duty
-    // Note what the middle line is and is not: the deficit is converted into PWM VIA
-    // THE GAIN. This is a FIRST-ORDER COMPENSATION DERIVED FROM A SPEED DEFICIT, NOT A
-    // TORQUE MEASUREMENT - no current, no torque, no motor constant was measured. It is
-    // TO-VERIFY on hardware and has never been flashed.
+    // FF_OFFSET_PWM (a): PWM counts, calibrated on carpet -- the load case the gain
+    // above is never checked against. The offset compensates that surface's rolling
+    // resistance; it is a FIRST-ORDER COMPENSATION DERIVED FROM A SPEED DEFICIT VIA
+    // FF_GAIN, NOT A TORQUE MEASUREMENT -- no current, no torque, no motor constant was
+    // measured. TO-VERIFY on hardware and has never been flashed.
     //
     // CONSEQUENCES, recorded so nobody has to rediscover them:
-    //  - CARPET ONLY. The offset compensates rolling resistance, which is a property of
-    //    the surface. Unloaded the same firmware is already within about -5 %, so there
+    //  - CARPET ONLY. Unloaded the feedforward is already within about -5 %, so there
     //    the offset is almost pure overspeed. On grass or gravel it will be too small,
     //    on smooth floor too large, by whatever the rolling-resistance difference is.
     //  - It does NOT make the feedforward correct. It makes it correct AT ONE LOAD. The
-    //    remainder as the load varies is what a future regulator (FR-11) is for; none is
-    //    built here, and this stays open-loop (NFR-10 acceptance item 10).
-    //  - SATURATION / HEADROOM: at max_wheel_angular_speed 12.0 rad/s (114.59 RPM,
-    //    ros2_controllers.yaml) the output is 19 + 114.59*1.0625 = 140.75 -> 140 of 255
-    //    (55 % duty). It was 121 with the gain alone and 97 before that. 115 counts of
-    //    headroom remain; the clamp is not reachable from any legal wheel command.
+    //    remainder as the load varies is what a future regulator (FR-11, functional
+    //    requirement 11) is for; none is built here, and this stays open-loop (NFR-10,
+    //    non-functional requirement 10, acceptance item 10).
+    //  - SATURATION / HEADROOM: at max_wheel_angular_speed 12.0 rad/s
+    //    (ros2_controllers.yaml) the output is 140 of 255 (55 % duty); headroom
+    //    remains, the clamp is not reachable from any legal wheel command.
     //  - THE MINIMUM COMMANDED SPEED THAT PRODUCES MOTION GOES DOWN. Below the deadband
-    //    nothing changed (the old law truncated to 0 counts there too), but immediately
-    //    above it the output steps from 0 to 19 counts instead of ramping from 0 - and
-    //    19 counts is by construction the duty that overcomes carpet rolling resistance.
-    //    Small commands that used to be swallowed by stiction now move the robot. On a
-    //    lower-resistance surface the same step is a large overspeed at small commands.
+    //    nothing changes, but immediately above it the output steps straight to the
+    //    carpet-rolling-resistance duty instead of ramping from 0: small commands that
+    //    used to be swallowed by stiction now move the robot, and on a lower-resistance
+    //    surface the same step is a larger overspeed.
     static constexpr float FF_GAIN       = 1.0625f;   // b, PWM counts per RPM
     static constexpr float FF_OFFSET_PWM = 19.0f;     // a, PWM counts (CARPET, TO-VERIFY)
     motor_fl.setFeedForward(FF_GAIN); motor_fl.setFeedForwardOffset(FF_OFFSET_PWM);
@@ -424,11 +359,10 @@ void loop() {
 
     rclc_executor_spin_some(&executor, RCL_MS_TO_NS(EXEC_SPIN_MS));
 
-    // Encoder sampling is DECOUPLED from publishing (motor_controller.hpp): it runs
-    // on every loop iteration, self-throttled to ENC_SAMPLE_INTERVAL_US, and the
-    // publish block below only reads the result. Sampling inside the publish block
-    // was the defect: a measurement then existed only once per publish, over whatever
-    // jittery interval the publish loop happened to produce.
+    // Encoder sampling is DECOUPLED from publishing (motor_controller.hpp): it runs on
+    // every loop iteration, self-throttled to ENC_SAMPLE_INTERVAL_US; the publish block
+    // below only reads the result. Do not sample inside the publish block instead --
+    // that ties each measurement to the jittery publish interval rather than a steady one.
     if (motors_ok) {
         motor_fl.sampleEncoder(); motor_fr.sampleEncoder();
         motor_bl.sampleEncoder(); motor_br.sampleEncoder();
@@ -442,11 +376,10 @@ void loop() {
 
     // Publish joint states on a FIXED phase: the deadline advances by exactly one
     // period rather than being re-based on the current time, so the publish interval
-    // does not accumulate the loop's overshoot (that drift is why 100 ms nominal
-    // measured 114-121 ms). If a cycle is missed entirely the phase is re-based
-    // instead of catching up, so a stall can never produce a burst of frames onto a
-    // link that is already the binding constraint. The signed comparison is wrap-safe
-    // on the 32-bit micros() counter.
+    // does not accumulate the loop's overshoot. If a cycle is missed entirely the
+    // phase is re-based instead of catching up, so a stall can never produce a burst
+    // of frames onto a link that is already the binding constraint. The signed
+    // comparison is wrap-safe on the 32-bit micros() counter.
     static uint32_t next_pub_us = 0;
     const uint32_t now_us = micros();
     if ((int32_t)(now_us - next_pub_us) < 0) return;

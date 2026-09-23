@@ -53,9 +53,13 @@ Read the table before you run anything.
 
 ## Caveat on `stopping_distance.py`
 
-Three throwaway patch scripts (`patch_yaw.py`, `patch_stopping.py`, `patch_status.py`) existed
-alongside these and rewrote sibling scripts **in place** at a hard-coded absolute path. They are
-deliberately **not** part of this directory. One consequence survives them: the committed state of
-`stopping_distance.py` may or may not already include the patches they applied (an `HWR-30a` latch
-abort, alternating direction, absolute distance). Check its content against what you expect before
-trusting a run.
+Three throwaway patch scripts (`patch_yaw.py`, `patch_stopping.py`, `patch_status.py`) rewrote
+sibling scripts **in place** at a hard-coded Pi-absolute path. They were **deleted on 2026-09-23**;
+git holds them. By then all three pointed at `/home/ubuntu/ws/tools/`, where these tools have not
+lived since they were exported under `Software/`, so none of them could run at all — and
+`patch_yaw.py` still carried the retired 100 deg steering window as the text it injected.
+
+One consequence survives them: the committed state of `stopping_distance.py` may or may not already
+include the patches they applied (an `HWR-30a` latch abort, alternating direction, absolute
+distance). Check its content against what you expect before trusting a run. Deleting the patchers
+does not answer that question — it only stops anyone re-applying a patch blind.
