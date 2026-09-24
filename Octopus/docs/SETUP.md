@@ -315,7 +315,7 @@ OCTOPUS_MAPPING_MODE=indoor_static_mission ./Octopus/scripts/start_octopus_debug
 
 Das ist alles. Der Befehl startet in dieser Reihenfolge:
 
-1. **Laptop:** Dashboard-Backend, elf ROS-Nodes, rosbridge
+1. **Laptop:** Dashboard-Backend, zwölf ROS-Nodes, rosbridge
 2. **Pi (per SSH):** PX4-Brücke und Kamera
 3. **Laptop:** den YOLO-Detektor
 
@@ -465,7 +465,7 @@ Detektion, `confirmed` und Mapping bleiben unberührt.
 ## Terminal 4 — Laptop: Octopus-Stack
 
 Derselbe Befehl wie oben — er ist die Grundlage, Terminal 1 bis 3 sind seine Handarbeit-
-Variante. Startet Dashboard-Backend, alle elf ROS-Nodes, rosbridge und (sofern nicht
+Variante. Startet Dashboard-Backend, alle zwölf ROS-Nodes, rosbridge und (sofern nicht
 abgeschaltet) Pi-Seite und Detektor:
 
 ```bash

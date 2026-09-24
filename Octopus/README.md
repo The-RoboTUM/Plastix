@@ -439,7 +439,7 @@ Short version, once everything is set up:
 OCTOPUS_MAPPING_MODE=indoor_static_mission ./Octopus/scripts/start_octopus_debug_stack.sh
 ```
 
-The script starts the dashboard backend, all eleven ROS nodes and rosbridge. Then open:
+The script starts the dashboard backend, all twelve ROS nodes and rosbridge. Then open:
 
 ```text
 http://127.0.0.1:8000/dashboard.html
@@ -504,11 +504,17 @@ The other robot should use the global outputs:
 /octopus/trash_grid
 ```
 
-Backend debug endpoint:
+Backend debug endpoints:
 
 ```text
 /api/map_patch/latest
+/api/trash_targets/latest
 ```
+
+`/api/trash_targets/latest` is the dashboard's copy of `/octopus/trash_gps`, put
+there by `trash_targets_backend_bridge_node` because the dashboard polls HTTP and
+cannot read ROS. `/api/tasks` serves the same targets in the shape the Tasks panel
+renders. Neither is for robot navigation — the robot takes the ROS topics above.
 
 Do not use this for robot navigation:
 

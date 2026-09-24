@@ -587,15 +587,86 @@ def query_db(query, args=()):
 def get_locations(limit: int = 100):
     return query_db("SELECT origin_id AS id, type, latitude AS lat, longitude AS lon, altitude AS alt, timestamp AS ts FROM locations ORDER BY timestamp DESC LIMIT ?", (limit,))
 
+# --- TRASH TARGETS: the real task list ---
+# trash_gps_goal_node owns the targets and publishes them on /octopus/trash_gps
+# for the collecting robot; trash_targets_backend_bridge_node POSTs the same
+# payload here. In-memory and newest-wins - this is live state, not a log.
+#
+# The `tasks` SQLite table below predates that pipeline and nothing writes to it
+# any more. It used to be served with a hardcoded sample row whenever it came
+# back empty, which is to say always: the dashboard showed a permanent
+# "Trash task #1, in_progress" from a fixed 2025-11-13 timestamp, aging forever.
+latest_trash_targets = None
+
+
+@app.post("/api/trash_targets")
+async def receive_trash_targets(payload: dict):
+    global latest_trash_targets
+    latest_trash_targets = {
+        "status": "ok",
+        "payload": payload,
+        "received_at": datetime.now().isoformat(),
+    }
+    return {"status": "ok"}
+
+
+@app.get("/api/trash_targets/latest")
+async def get_latest_trash_targets():
+    if latest_trash_targets is None:
+        return {"status": "empty", "payload": None, "received_at": None}
+    return latest_trash_targets
+
+
+def _assignee_for_target(target_id):
+    """Which robot says it is driving to this target.
+
+    Only the robot knows, and it says so in nav.active_goal_id on
+    /octopus/devices/<id>/status. Deliberately not inferred from is_goal: a
+    target being the current goal says nothing about anyone having accepted it.
+    """
+    for device_id, record in DEVICE_STATUS.items():
+        nav = record.get("nav") or {}
+        active = nav.get("active_goal_id")
+        if active is not None and str(active) == str(target_id):
+            return record.get("robot_id") or device_id
+    return None
+
+
+def _target_to_task(target):
+    if target.get("collected"):
+        status = "completed"
+    elif target.get("is_goal"):
+        status = "in_progress"
+    else:
+        status = "pending"
+
+    target_id = target.get("id")
+    return {
+        "id": target_id,
+        "lat": target.get("lat"),
+        "lon": target.get("lon"),
+        "assigned": _assignee_for_target(target_id),
+        "status": status,
+        # Unix seconds - the dashboard's parseTimestamp takes that as-is. This is
+        # when the detector last confirmed the object, so the panel's age finally
+        # means something instead of counting up from a constant.
+        "ts": target.get("last_seen"),
+        "confidence": target.get("confidence"),
+        "x": target.get("x"),
+        "y": target.get("y"),
+    }
+
+
 @app.get("/api/tasks")
 def get_tasks():
-    rows = query_db("SELECT id, latitude AS lat, longitude AS lon, assigned_to AS assigned, status, timestamp AS ts FROM tasks ORDER BY timestamp DESC LIMIT 100")
-    # fallback sample if no table
-    if not rows:
-        return [
-           {"id":1,"lat":48.137,"lon":11.576,"assigned":"robot_1","status":"in_progress","ts":"2025-11-13T12:00:00Z"}
-        ]
-    return rows
+    # Live targets win. The SQLite table is only consulted while the bridge has
+    # never reported - after that an empty target list is a real answer and must
+    # not fall back to stale rows.
+    if latest_trash_targets is not None:
+        targets = (latest_trash_targets.get("payload") or {}).get("targets") or []
+        return [_target_to_task(t) for t in targets]
+
+    return query_db("SELECT id, latitude AS lat, longitude AS lon, assigned_to AS assigned, status, timestamp AS ts FROM tasks ORDER BY timestamp DESC LIMIT 100")
 
 @app.get("/api/battery")
 def get_battery():

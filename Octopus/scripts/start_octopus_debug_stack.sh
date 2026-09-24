@@ -33,6 +33,7 @@ pkill -f "local_camera_grid_node" || true
 pkill -f "camera_transform_status_backend_bridge_node" || true
 pkill -f "trash_gps_goal_node" || true
 pkill -f "device_status_backend_bridge_node" || true
+pkill -f "trash_targets_backend_bridge_node" || true
 pkill -f "rosbridge_websocket" || true
 pkill -f "eve_fake_gps_bridge_node" || true
 pkill -f "uvicorn api:app" || true
@@ -132,6 +133,11 @@ echo "Starting device status backend bridge node..."
 setsid ros2 run octopus_backend_bridge device_status_backend_bridge_node \
   > "$LOG_DIR/device_status_backend_bridge.log" 2>&1 &
 echo $! > "$LOG_DIR/device_status_backend_bridge.pid"
+
+echo "Starting trash targets backend bridge node..."
+setsid ros2 run octopus_backend_bridge trash_targets_backend_bridge_node \
+  > "$LOG_DIR/trash_targets_backend_bridge.log" 2>&1 &
+echo $! > "$LOG_DIR/trash_targets_backend_bridge.pid"
 
 # rosbridge carries the GripperX link: the contract topics in and out over
 # ws://<host>:9090. The arguments live in run_rosbridge.sh so this script, the

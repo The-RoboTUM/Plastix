@@ -26,6 +26,7 @@ setup(
             'local_camera_grid_backend_bridge_node = octopus_backend_bridge.local_camera_grid_backend_bridge_node:main',
             'eve_fake_gps_bridge_node = octopus_backend_bridge.eve_fake_gps_bridge_node:main',
             'device_status_backend_bridge_node = octopus_backend_bridge.device_status_backend_bridge_node:main',
+            'trash_targets_backend_bridge_node = octopus_backend_bridge.trash_targets_backend_bridge_node:main',
         ],
     },
 )
