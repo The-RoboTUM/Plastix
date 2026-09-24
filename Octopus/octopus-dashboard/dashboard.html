@@ -1876,6 +1876,34 @@
       color: #0b1220;
     }
 
+    /* The one control that decides which side of the line is +y. Not a
+       preference: section 3 of the spec warns the pixel formula is left-handed
+       and section 9 lists the real system's handedness as unverified, so this
+       is set from the zero-motion check, not from taste. */
+    .line-cal-check {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      padding: 7px 10px;
+      min-height: 34px;
+      border-radius: 9px;
+      border: 1px solid var(--border-subtle);
+      background: rgba(255, 255, 255, 0.04);
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      text-transform: none;
+      letter-spacing: 0;
+      color: inherit;
+    }
+
+    .line-cal-check input { cursor: pointer; }
+
+    .line-cal-check:has(input:checked) {
+      border-color: #e37222;
+      background: rgba(227, 114, 34, 0.16);
+    }
+
     .line-cal-row input[type="number"] {
       width: 100px;
       padding: 7px 9px;
@@ -2895,6 +2923,9 @@ body.octopus-view-debug .camera-debug-panel .item-card {
             <button class="line-cal-button" type="button" id="line-cal-mark-b">Mark B</button>
             <label for="line-cal-length">L (m)</label>
             <input type="number" id="line-cal-length" step="0.001" min="0" placeholder="2.800" />
+            <label class="line-cal-check" for="line-cal-mirrored" title="Tick when the robot is left of A-&gt;B but arrives with y of the opposite sign">
+              <input type="checkbox" id="line-cal-mirrored" /> mirror y
+            </label>
             <button class="line-cal-button primary" type="button" id="line-cal-apply">Apply</button>
             <button class="line-cal-button" type="button" id="line-cal-clear">Clear</button>
           </div>
@@ -2910,6 +2941,6 @@ body.octopus-view-debug .camera-debug-panel .item-card {
     </section>
   </main>
 
-  <script src="live_data.js?v=line-cal-3"></script>
+  <script src="live_data.js?v=line-cal-4"></script>
 </body>
 </html>

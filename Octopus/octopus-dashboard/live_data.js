@@ -4667,7 +4667,22 @@ function localReadoutChips() {
 // crop changed after marking does not silently move the marks.
 // -----------------------------------------------------------------------------
 
-const LINE_CAL_STATE = { armed: null, a: null, b: null, message: null };
+const LINE_CAL_STATE = { armed: null, a: null, b: null, message: null, seenMirrored: undefined };
+
+// Reflect the stored flag into the checkbox, but ONLY when the stored value
+// actually changes. Writing it on every 1 Hz poll would undo the operator's
+// tick a second after they made it and before they could press Apply, which
+// makes the control look broken; never writing it would show an unticked box
+// over a mirrored calibration after a reload, which is worse - it hides the
+// sign that decides which side of the line goals land on.
+function syncLineCalMirrored(storedMirrored) {
+  const box = $("line-cal-mirrored");
+  if (!box) return;
+  const value = !!storedMirrored;
+  if (LINE_CAL_STATE.seenMirrored === value) return;
+  LINE_CAL_STATE.seenMirrored = value;
+  box.checked = value;
+}
 
 // Click position -> full-frame sensor pixel, or null outside the picture.
 function lineCalPixelFromEvent(event, img) {
@@ -4812,6 +4827,7 @@ async function applyLineCalibration() {
         pixel_a: LINE_CAL_STATE.a,
         pixel_b: LINE_CAL_STATE.b,
         length_m: length,
+        mirrored: !!$("line-cal-mirrored")?.checked,
         source: "dashboard",
       }),
     });
@@ -4828,6 +4844,9 @@ async function clearLineCalibration() {
   LINE_CAL_STATE.a = null;
   LINE_CAL_STATE.b = null;
   LINE_CAL_STATE.message = null;
+  // Forget the stored value too, so the next calibration's flag is adopted
+  // instead of being compared against one that no longer exists.
+  LINE_CAL_STATE.seenMirrored = undefined;
   setLineCalArmed(null);
   try {
     await fetch("/api/line_calibration", {
@@ -4869,6 +4888,7 @@ function renderLineCalibration() {
   marksEl.innerHTML = `${armed}A: ${fmt(LINE_CAL_STATE.a)} &nbsp;·&nbsp; B: ${fmt(LINE_CAL_STATE.b)}${message}`;
 
   const cal = OCTOPUS.latest.lineCalibration;
+  if (cal && cal.marks_set) syncLineCalMirrored(cal.mirrored);
   if (!cal) {
     statusEl.innerHTML = `<div class="item-card"><div class="item-title">No status</div><div class="item-meta">line_calibration_node is not reporting.</div></div>`;
     return;
@@ -4896,6 +4916,7 @@ function renderLineCalibration() {
         <tr><td>implied height</td><td>${safeNumber(cal.implied_camera_height_m, 0).toFixed(3)} m</td></tr>
         <tr><td>configured height</td><td>${safeNumber(cal.configured_height_m, 0).toFixed(3)} m</td></tr>
         <tr><td>line angle in image</td><td>${safeNumber(cal.image_angle_deg, 0).toFixed(1)}&deg;</td></tr>
+        <tr><td>+y side</td><td>${cal.mirrored ? "mirrored (right of A&rarr;B)" : "left of A&rarr;B"}</td></tr>
         <tr><td>applied to projection</td><td>${cal.applied_to_projection ? "yes" : "<strong>no</strong>"}</td></tr>
       </tbody>
     </table>`;

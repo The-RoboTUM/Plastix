@@ -127,6 +127,9 @@ damit Scharfschalten und Klicken im selben Blickfeld liegen:
 eintragen, *Apply*. Die gesetzten Marken werden als Punkte mit Verbindungslinie über das
 Bild gelegt, *Clear* verwirft sie. Escape bricht eine scharfgeschaltete Markierung ab.
 
+Der Haken **mirror y** kippt, welche Seite der Linie `+y` ist. Er gehört zur Kalibrierung,
+nicht zu den Anzeigeeinstellungen — siehe „Offene Punkte" Nummer 3.
+
 Die Marken werden in **Vollbild-Sensorpixeln** gespeichert, nicht in Anzeigekoordinaten —
 dort leben `fx`/`cx` und `line_frame.py`. Liefert Eve nur den Ausschnitt, rechnet die UI
 über `effectiveCameraCrop()` zurück; ein nachträglich geänderter Crop verschiebt die
@@ -270,9 +273,19 @@ implizite Höhe ist eine grobe Gegenprobe.
 §8 des Drafts, auf unserer Seite ebenfalls offen. Das Status-Topic wäre der natürliche Ort:
 es liegt bereits unter `/octopus/*` und trägt einen Zeitstempel.
 
-**3. Ob das Kamerabild gespiegelt ist**, entscheidet über das Vorzeichen von `+y` (§3, §9).
-Der Parameter `mirrored` existiert, der richtige Wert ist ungeprüft. Die Nullbewegungs-Probe
-aus §7 Schritt 7 ist der Test dafür.
+**3. Das Kamerabild ist gespiegelt — `mirrored` steht auf `true`** (2026-09-24, am echten
+Aufbau festgestellt, weil die Ziele mit vertauschtem Vorzeichen in `y` ankamen). Damit ist der
+`TO-VERIFY`-Punkt aus §9 auf unserer Seite entschieden.
+
+Einschränkung: festgestellt wurde es daran, dass die Ziele auf der falschen Seite landeten,
+**nicht** über die Nullbewegungs-Probe aus §7 Schritt 7. Die bleibt der saubere Test und sollte
+vor dem Scharfschalten einmal gefahren werden — sie prüft beide Seiten gegeneinander, während
+hier nur unsere Seite umgestellt wurde.
+
+Der Schalter **mirror y** sitzt im Panel neben dem L-Feld und geht bei jedem *Apply* mit.
+Wichtig, weil die Kalibrierung laut §7 bei jedem Start neu gemacht wird: ohne den Schalter
+fiele das Flag jedes Mal auf `false` zurück. Gespiegelt wird ausschließlich `y` (quer zur
+Linie); `x` und der Geofence bleiben unberührt, letzterer weil er gegen `|across|` prüft.
 
 **4. Die Ähnlichkeitstransformation aus §3 modelliert weder Perspektive noch Verzeichnung.**
 `flight_camera_transform_node` tut beides (die Intrinsics tragen `k1`, `k2`, `p1`, `p2`).
