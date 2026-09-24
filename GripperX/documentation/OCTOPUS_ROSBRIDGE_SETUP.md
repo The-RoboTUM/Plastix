@@ -36,10 +36,12 @@ Three things are yours and we have deliberately left them blank rather than inve
 | **Your user / workspace paths** | for the systemd unit | step 4 below |
 
 > **ANSWERED 2026-08-21, and this table is kept as the record of what was asked, not as an open
-> list.** The address is `ws://10.42.0.158:9090` (host `ITQLM125`); `0.0.0.0` is bound and nothing
-> objected. **Only the third row is still open**, and its consequence is in section 6: the systemd
-> unit exists in your repo but is **not installed**, so the link does **not** come back by itself
-> after a reboot. See section 8 for all four answers.
+> list.** `0.0.0.0` is bound and nothing objected. **The address is `ws://192.168.50.30:9090`
+> (host `ITQLM125`) as of 2026-09-24** — the 2026-08-21 answer was `ws://10.42.0.158:9090`, which was
+> never reachable from our robot; section 8 item 1 records why and what replaced it. **Only the third
+> row is still open**, and its consequence is in section 6: the systemd unit exists in your repo but is
+> **not installed**, so the link does **not** come back by itself after a reboot. See section 8 for all
+> four answers.
 
 ~~**We also do not know whether rosbridge is installed on your host at all.**~~ **Answered
 2026-08-21: it is installed and running** — rosbridge **2.0.7**, **built from source**, on host
@@ -321,8 +323,18 @@ and the failure is the silent one from the table above. Set it explicitly even i
 **ALL FOUR ANSWERED 2026-08-21.** Kept here with their answers so the question and the answer sit
 together:
 
-1. **The address** — `ws://10.42.0.158:9090`, host `ITQLM125`, bound on all interfaces.
-   **Not pinned across a reboot**, and a name can be set up if we ask.
+1. **The address** — **`ws://192.168.50.30:9090` as of 2026-09-24**, host `ITQLM125`, bound on all
+   interfaces. *(Was `ws://10.42.0.158:9090` on 2026-08-21. That address was never once reachable from
+   our robot: both machines sat on `10.42.0.0/24`, but each on its own laptop's NetworkManager
+   **shared** connection — and that range is NetworkManager's default, so "same range" never meant
+   "same network".)*
+   **This changed because the segment did, and it should now stop moving.** A TL-WR840N serves
+   `192.168.50.0/24` with one **DHCP reservation per MAC**: your host `.30`, our robot `.20`, the
+   development laptop `.10`, EVE `.40`. Reachability was measured on 2026-09-24 from the robot itself —
+   ping, a TCP connect to 9090, then a subscribe returning live frames on all three of your topics.
+   **Still not pinned across a reboot on your side:** your systemd unit is present but not installed,
+   so rosbridge does not come back by itself (section 6). A name instead of an address is still on
+   offer if you want one.
 2. **`0.0.0.0`** — bound, nothing objected. No firewall rule was needed because `ufw` is
    **disabled** on that host, which also means the port is open to anything that can reach it.
 3. **The globs** — agreed in substance, corrected in form. See section 3.

@@ -1,6 +1,14 @@
 # /etc/systemd/system/gripperx.target
 #
-# PROPOSAL, not yet installed or enabled (SR-12 (4) / OP-20 E / HWR-40).
+# PROPOSAL, not yet ACTIVE (SR-12 (4) / OP-20 E / HWR-40).
+#
+# CORRECTED 2026-09-24, by measurement over read-only SSH rather than by reading:
+# this header used to say "not yet installed or enabled". The file IS installed --
+# /etc/systemd/system/gripperx.target exists on GripperX-1, because the deploy step
+# in documentation/DEPLOYMENT.md §0 copies every unit in this directory. It is
+# `systemctl is-enabled` = DISABLED, and no gripperx-*.service carries PartOf=, so
+# it is inert: nothing depends on it and stopping it stops nothing. The activation
+# checklist below is therefore steps 1-3 minus the install, not minus nothing.
 #
 # WHY A TARGET AT ALL -- what the existing Requires= chain already gives us, and
 # what it does not:
@@ -36,18 +44,31 @@
 #
 # RECOMMENDATION: yes, add this target. It is the idiomatic answer and it costs
 # one file plus one PartOf= line per service. `stop gripperx.target` then stops
-# all four, ordered by the members' own After= chain (a target does not order
+# all five, ordered by the members' own After= chain (a target does not order
 # its members among themselves -- the existing After= chain does that, which is
 # why the proposed After=gripperx-agent.service on bringup is part of this
 # package and not optional).
 #
-# Resulting stop order: navigation -> mapping -> bringup -> agent.
-# Resulting start order: agent -> bringup -> mapping -> navigation.
+# Resulting stop order: external -> navigation -> mapping -> bringup -> agent.
+# Resulting start order: agent -> bringup -> mapping -> navigation -> external.
+#
+# ADDED 2026-09-24: gripperx-external.service (the FR-12 Octopus external-goal
+# link) is a fifth member. It is in the same position as the agent was above --
+# in no Requires= relationship with anything, so no stop propagates to it -- and
+# it is listed here so that activating this target does not silently leave it
+# out. It is ordered LAST on the way up and FIRST on the way down: it is the
+# outermost consumer (it needs /navigate_to_pose, the map TF and
+# /teleop/active_mode, and nothing needs it), and going down first lets its own
+# shutdown cancel a goal in flight while Nav2 is still there to receive the
+# cancel. That ordering comes from its own After=gripperx-navigation.service, not
+# from this file -- a target does not order its members among themselves.
+# Note that Mode R does NOT depend on this target: the restart path is
+# gripperx-stack-stop's STOP_ORDER/START_ORDER, where the unit is already listed.
 #
 # ACTIVATION -- all of it, or none of it:
 #   1. add "PartOf=gripperx.target" to gripperx-{agent,bringup,mapping,
-#      navigation}.service   (stop/restart propagation FROM the target; it does
-#      not change start behaviour)
+#      navigation,external}.service   (stop/restart propagation FROM the target;
+#      it does not change start behaviour)
 #   2. add "After=gripperx-agent.service" + "Wants=gripperx-agent.service" to
 #      gripperx-bringup.service   (already present there, commented out)
 #   3. systemctl daemon-reload && systemctl enable gripperx.target
@@ -64,12 +85,13 @@
 # started at boot.
 
 [Unit]
-Description=GripperX ROS2 stack (agent + bringup + mapping + navigation)
+Description=GripperX ROS2 stack (agent + bringup + mapping + navigation + external link)
 Wants=gripperx-agent.service
 Wants=gripperx-bringup.service
 Wants=gripperx-mapping.service
 Wants=gripperx-navigation.service
-After=gripperx-agent.service gripperx-bringup.service gripperx-mapping.service gripperx-navigation.service
+Wants=gripperx-external.service
+After=gripperx-agent.service gripperx-bringup.service gripperx-mapping.service gripperx-navigation.service gripperx-external.service
 
 [Install]
 WantedBy=multi-user.target

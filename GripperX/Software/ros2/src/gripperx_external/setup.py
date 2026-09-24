@@ -33,18 +33,24 @@ setup(
     ),
     license="MIT",
     entry_points={
-        # The pure modules (octopus_protocol, geodesy, grasp, validation,
-        # arming) stay rclpy-free and are exercised with plain python3 and
-        # nothing running - see test/check_*.py. Only these two wrappers touch
-        # rclpy.
+        # The pure modules (octopus_protocol, geodesy, line_frame, grasp,
+        # validation, arming) stay rclpy-free and are exercised with plain
+        # python3 and nothing running - see test/check_*.py. Only these
+        # wrappers touch rclpy.
         #
-        # There is deliberately no third executable. The Nav2 action client,
-        # the PickPlastic client and the trash_goal_done acknowledgement (stage
-        # 3) live in `goal_gateway_node` behind the arming gate, not in a
-        # separate process that could be started on its own.
+        # There is deliberately no executable that COMMANDS anything besides the
+        # gateway. The Nav2 action client, the PickPlastic client and the
+        # trash_goal_done acknowledgement (stage 3) live in `goal_gateway_node`
+        # behind the arming gate, not in a separate process that could be
+        # started on its own. `line_calibration_node` is the third executable
+        # and it has no client of any kind: it only turns two operator clicks
+        # into a status the gateway gates on.
         "console_scripts": [
             "octopus_link_node = gripperx_external.octopus_link_node:main",
             "goal_gateway_node = gripperx_external.goal_gateway_node:main",
+            # The operator's two RViz clicks -> the shared Octopus line frame.
+            # No client, no motion-chain publisher; the gateway gates on it.
+            "line_calibration_node = gripperx_external.line_calibration_node:main",
         ],
     },
 )

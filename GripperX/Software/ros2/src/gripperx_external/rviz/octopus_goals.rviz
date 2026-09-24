@@ -41,6 +41,8 @@ Visualization Manager:
           Value: true
         odom:
           Value: true
+        octopus_line:
+          Value: true
       Marker Scale: 0.6
       Name: TF
       Show Arrows: false
@@ -112,6 +114,40 @@ Visualization Manager:
         Reliability Policy: Reliable
         Value: /gripperx/external/preview_markers
       Value: true
+    # The shared Octopus reference line (line_calibration_node): posts A/B, the
+    # line, the octopus_line axis triad (x red, y green, z blue) at the midpoint
+    # and "L = x.xxx m" - the number to enter on the drone side. Empty until
+    # both posts are clicked with the Publish Point tool.
+    - Class: rviz_default_plugins/MarkerArray
+      Enabled: true
+      Name: Octopus line calibration
+      Namespaces:
+        {}
+      Topic:
+        Depth: 1
+        Durability Policy: Transient Local
+        History Policy: Keep Last
+        Reliability Policy: Reliable
+        Value: /gripperx/external/line_calibration_markers
+      Value: true
+    # The clicks land on scan points, so the scan has to be visible.
+    - Alpha: 1
+      Class: rviz_default_plugins/LaserScan
+      Color Transformer: FlatColor
+      Color: 255; 255; 255
+      Enabled: true
+      Name: LaserScan
+      Position Transformer: XYZ
+      Size (m): 0.03
+      Style: Flat Squares
+      Topic:
+        Depth: 5
+        Durability Policy: Volatile
+        History Policy: Keep Last
+        Reliability Policy: Best Effort
+        Value: /scan
+      Use Fixed Frame: true
+      Value: true
   Enabled: true
   Global Options:
     Background Color: 48; 48; 48
@@ -124,6 +160,14 @@ Visualization Manager:
     - Class: rviz_default_plugins/FocusCamera
     - Class: rviz_default_plugins/Measure
       Line color: 128; 128; 0
+    # THE CALIBRATION TOOL. Click post A first, then post B, on their scan
+    # clusters; each click goes to /clicked_point in the fixed frame (map).
+    # Click ON each post's scan cluster, no offset towards the post centre
+    # (user decision 2026-09-24, documentation/OCTOPUS_LINE_CALIBRATION.md 2).
+    - Class: rviz_default_plugins/PublishPoint
+      Single click: true
+      Topic:
+        Value: /clicked_point
   # DELIBERATELY NO "2D Goal Pose" TOOL. It publishes /goal_pose, and the whole
   # point of FR-12 item 3 is that goals reach Nav2 through the action interface
   # only. (bt_navigator has no /goal_pose subscriber in this build anyway, so

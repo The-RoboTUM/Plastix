@@ -9,13 +9,16 @@ Order (:func:`validate_goal`), exactly as designed:
 
  1. ``NavSatFix`` well-formed and ``status >= 0``
  2. datum present and NOT the Octopus bootstrap fallback
+ 2b. the Octopus line calibration present (``line_frame``); without it their
+     coordinates have no place in our map at all
  3. lat/lon finite and in range
  4. staleness of ``header.stamp``
  5. duplicate of the current goal id (idempotent, not re-dispatched)
- 6. convert to map metres
+ 6. convert to map metres: lat/lon -> line frame (geodesy) -> map (line_frame)
  7. grasp offset configured
  8. approach candidate found
- 9. chosen pose inside the geofence
+ 9. chosen pose inside the geofence - the square of side L around the line
+    midpoint, derived from the line calibration (``line_frame.geofence_contains``)
 10. TF ``map -> base_footprint`` fresh
 11. chosen pose inside the global costmap
 12. cell cost below ``max_goal_cost``
@@ -51,7 +54,8 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Callable, List, Optional, Sequence, Tuple
 
-from .geodesy import DatumTracker, GeodesyError, latlon_to_map
+from .geodesy import DatumTracker, GeodesyError
+from .line_frame import LineCalibration, geofence_contains, latlon_to_our_map
 from .grasp import (
     ApproachResult,
     Candidate,
@@ -91,9 +95,10 @@ STALE_STAMP = "STALE_STAMP"
 NO_STAMP = "NO_STAMP"
 CONVERSION_FAILED = "CONVERSION_FAILED"
 GRASP_OFFSET_NOT_CONFIGURED = "GRASP_OFFSET_NOT_CONFIGURED"
-#: The geofence rectangle is still TO-VERIFY. Raised by the caller BEFORE the
-#: pipeline runs - an invented rectangle would make every verdict a guess
-#: (FR-12 item 6). LOCAL: our configuration is missing, not the peer's payload.
+#: No geofence to check against. Since 2026-09-24 the geofence is derived from
+#: the line calibration (user decision), so this means "no calibration" by
+#: another road - an unbounded check would make every verdict a guess.
+#: LOCAL: our state is missing, not the peer's payload.
 GEOFENCE_NOT_CONFIGURED = "GEOFENCE_NOT_CONFIGURED"
 NO_APPROACH_CANDIDATE = "NO_APPROACH_CANDIDATE"
 OUTSIDE_GEOFENCE = "OUTSIDE_GEOFENCE"
@@ -126,6 +131,16 @@ MODE_NOT_AUTONOMOUS = "MODE_NOT_AUTONOMOUS"
 MODE_STALE = "MODE_STALE"
 NAV2_UNAVAILABLE = "NAV2_UNAVAILABLE"
 DATUM_CHANGED = "DATUM_CHANGED"
+#: No live Octopus line calibration: the two frame posts have not been clicked
+#: since this map session began, or the calibration was reset / invalidated.
+#: Their coordinates are expressed in the line frame, so without it there is no
+#: map position to validate. LOCAL: the missing state is ours.
+NO_LINE_CALIBRATION = "NO_LINE_CALIBRATION"
+#: The calibration a goal was resolved with is no longer the live one
+#: (recalibrated, reset, or its map session ended). The same kind of event as
+#: DATUM_CHANGED - the pose no longer means what it did - and LOCAL for the
+#: reason above.
+LINE_CALIBRATION_CHANGED = "LINE_CALIBRATION_CHANGED"
 INTERNAL_ERROR = "INTERNAL_ERROR"
 
 #: Our-side failures. Everything else is the peer's or the world's.
@@ -138,6 +153,8 @@ _LOCAL_REASONS = frozenset(
         CONVERSION_FAILED,
         INTERNAL_ERROR,
         GEOFENCE_NOT_CONFIGURED,
+        NO_LINE_CALIBRATION,
+        LINE_CALIBRATION_CHANGED,
     }
 )
 
@@ -210,12 +227,19 @@ class ValidationContext:
     #: acknowledged to the Octopus - see build_goal_done().
     blacklisted_ids: Sequence[str] = ()
 
+    #: TEST HOOK ONLY - the gateway never sets it. When ``None`` (always, in the
+    #: node) the geofence is the square derived from ``line_calibration``, and
+    #: with no calibration there is no geofence and every pose is REFUSED
+    #: (GEOFENCE_NOT_CONFIGURED). One source: the calibration.
     geofence: Optional[GeofenceFn] = None
     costmap_cost: Optional[CostmapFn] = None
     max_goal_cost: int = 200
     path_check: Optional[PathCheckFn] = None
 
     approach_candidates: int = 12
+    #: The live Octopus line calibration. ``None`` REFUSES every goal
+    #: (NO_LINE_CALIBRATION) - the default is the fail-closed one on purpose.
+    line_calibration: Optional[LineCalibration] = None
     #: Operator override. When set, the ring is reduced to this single heading -
     #: an override means "approach from here", not "prefer here".
     approach_theta_override: Optional[float] = None
@@ -267,7 +291,12 @@ def check_pose(ctx: ValidationContext, x: float, y: float, yaw: float) -> Candid
     """
     warnings: List[str] = []
 
-    if ctx.geofence is not None and not ctx.geofence(x, y):
+    inside = _geofence(ctx)
+    if inside is None:
+        return CandidateVerdict(
+            False, GEOFENCE_NOT_CONFIGURED, "no line calibration, so no geofence"
+        )
+    if not inside(x, y):
         return CandidateVerdict(False, OUTSIDE_GEOFENCE, f"pose ({x:.3f}, {y:.3f})")
 
     if ctx.costmap_cost is not None:
@@ -288,6 +317,15 @@ def check_pose(ctx: ValidationContext, x: float, y: float, yaw: float) -> Candid
         return CandidateVerdict(False, PATH_NOT_FOUND, f"pose ({x:.3f}, {y:.3f}, {yaw:.3f})")
 
     return CandidateVerdict(True, warnings=tuple(warnings))
+
+
+def _geofence(ctx: ValidationContext) -> Optional[GeofenceFn]:
+    if ctx.geofence is not None:
+        return ctx.geofence
+    cal = ctx.line_calibration
+    if cal is None:
+        return None
+    return lambda x, y: geofence_contains(cal, x, y)
 
 
 def make_pose_acceptor(ctx: ValidationContext) -> Callable[[Candidate], CandidateVerdict]:
@@ -325,10 +363,22 @@ def validate_goal(ctx: ValidationContext) -> ValidationResult:
     datum = ctx.datum_tracker.datum
     assert datum is not None
 
+    # 2b -- the Octopus line calibration. Their x/y are line-frame metres; with
+    #       no calibration there is no map position to check anything against.
+    calibration = ctx.line_calibration
+    if calibration is None:
+        return _reject(
+            NO_LINE_CALIBRATION,
+            "no live line calibration: click post A, then post B, in RViz "
+            "(Publish Point) - required at every start and after every SLAM restart",
+        )
+
     # 3 -- lat/lon finite and in range (delegated to the geodesy module, which
     #      owns the definition of a usable coordinate)
     try:
-        object_x, object_y = latlon_to_map(datum, goal.latitude_deg, goal.longitude_deg)
+        object_x, object_y = latlon_to_our_map(
+            datum, calibration, goal.latitude_deg, goal.longitude_deg
+        )
     except GeodesyError as exc:
         reason = exc.reason if exc.reason in (LATLON_NOT_FINITE, LATLON_OUT_OF_RANGE) else CONVERSION_FAILED
         return _reject(reason, exc.detail)
@@ -488,6 +538,9 @@ class DispatchContext:
     nav2_available: bool
     #: Datum in force now vs. when the goal was validated.
     datum_unchanged: bool
+    #: The live line calibration is the one the goal was resolved with. No
+    #: default: a caller that forgets it must not get a pass.
+    line_calibration_unchanged: bool
     #: ``(x, y, yaw)`` of the resolved goal, re-checked against the costmap.
     pose: Tuple[float, float, float]
     max_teleop_mode_age_sec: float = 2.0
@@ -521,6 +574,12 @@ def validate_dispatch(
         return _reject(
             DATUM_CHANGED,
             "the datum moved since validation; the pose no longer means what it did",
+        )
+    if not dctx.line_calibration_unchanged:
+        return _reject(
+            LINE_CALIBRATION_CHANGED,
+            "the Octopus line calibration was replaced, reset or lost with its map "
+            "session since validation; the pose no longer means what it did",
         )
 
     verdict = check_pose(ctx, dctx.pose[0], dctx.pose[1], dctx.pose[2])

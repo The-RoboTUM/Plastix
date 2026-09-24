@@ -4,13 +4,24 @@ The robot's interface to the **Octopus**, an external litter-detection system th
 supplies GPS goals over a rosbridge WebSocket. This package is the only place that
 speaks the external wire format.
 
-Two executables, both in the namespace `/gripperx/external`:
+Three executables, all in the namespace `/gripperx/external`:
 
 - **`octopus_link_node`** — transport only. Drains the WebSocket, converts JSON to
   typed messages and back. Makes no decisions.
 - **`goal_gateway_node`** — all the judgement: validation, geodesy, grasp-pose
   resolution, the arming gate, preview, telemetry, and the gated dispatch to Nav2
   and the arm.
+- **`line_calibration_node`** — the shared reference line with the Octopus: the
+  operator clicks frame post A, then post B, in RViz ("Publish Point", fixed frame
+  `map`); it publishes `map -> octopus_line`, a latched status and markers, and
+  logs the measured length L to enter on the drone side. **The gateway refuses
+  every goal until this is done, at every start and after every SLAM restart.**
+  It is **not** started by `octopus_link.launch.py` but by
+  `gripperx_localization/launch/localization.launch.py` (the `gripperx-mapping`
+  service, `enable_line_calibration:=true` by default), so it lives and dies with
+  slam_toolbox; it loads this package's `octopus_link_<env>.yaml`. The geofence is
+  derived from the calibration: the square of side L around the line midpoint.
+  Convention and interface: `documentation/OCTOPUS_LINE_CALIBRATION.md`.
 
 ## Octopus wire topics
 
@@ -27,6 +38,9 @@ Two executables, both in the namespace `/gripperx/external`:
 
 Link → gateway: `datum`, `link_status`, and — only with `goal_ingress_enabled` —
 `goal`, `targets`. Gateway → link: `telemetry`, `goal_done`.
+Calibration → gateway: `line_calibration` (latched JSON); the calibration node
+also publishes `line_calibration_markers`, `/tf` (`map -> octopus_line`) and
+serves `line_calibration_node/reset` (`std_srvs/Trigger`).
 Gateway publishes `status`, `arming_state`, `preview_markers` and `/diagnostics`;
 it subscribes `/odometry/filtered`, `/global_costmap/costmap` and
 `/teleop/active_mode`, and holds action clients for `/navigate_to_pose` and

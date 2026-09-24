@@ -24,10 +24,30 @@ float64 map_y
 float64 yaw_deg
 float32 pose_age_sec
 
+# --- the same pose in the shared Octopus LINE frame (octopus_line) --------
+# The frame of the two clicked frame posts (gripperx_external/line_frame.py,
+# documentation/OCTOPUS_LINE_CALIBRATION.md). map_x/map_y above are ALWAYS our
+# map; THESE are what the Octopus is sent. Valid only with a live line
+# calibration AND a valid map pose; otherwise NaN with a reason, e.g.
+# "NO_LINE_CALIBRATION" or the pose_reason.
+bool line_valid
+string line_reason
+float64 line_x
+float64 line_y
+# Heading in the line frame: 0 = along post A -> post B, counter-clockwise +.
+float64 line_yaw_deg
+# The live calibration itself, so the Octopus can compare the length L with
+# what its operator typed in. line_calibration_id is -1 and line_length_m NaN
+# while there is no live calibration - independent of line_valid, which also
+# needs a map pose.
+int32 line_calibration_id
+float64 line_length_m
+
 # --- the same pose as WGS84, in the Octopus's own expansion ---------------
-# Separately flagged: the map pose can be perfectly known while the datum is
-# not, and reporting a lat/lon derived from a missing or bootstrap datum would
-# be a fabricated position on their dashboard.
+# Derived from the LINE-frame pose above (their flat earth around their datum,
+# which is the line midpoint). Separately flagged: the pose can be perfectly
+# known while the datum is not, and reporting a lat/lon derived from a missing
+# or bootstrap datum would be a fabricated position on their dashboard.
 bool latlon_valid
 string latlon_reason
 float64 latitude_deg

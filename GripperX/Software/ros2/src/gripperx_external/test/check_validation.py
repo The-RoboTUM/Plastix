@@ -46,6 +46,16 @@ from gripperx_external.geodesy import (  # noqa: E402
     DatumTracker,
 )
 from gripperx_external.grasp import GraspOffset  # noqa: E402
+from gripperx_external.line_frame import compute_calibration  # noqa: E402
+
+#: A line calibration that is the IDENTITY (origin at the map origin, +x along
+#: map +x), so every metre written in this file means the same in both frames.
+#: The pipeline refuses without one (NO_LINE_CALIBRATION); the transform
+#: itself is exercised in check_line_calibration.py, not here.
+IDENTITY_LINE = compute_calibration(
+    (-1.0, 0.0), (1.0, 0.0), session="check_validation", calibration_id=1,
+    map_session=("fixture",),
+)
 
 # NOT A MEASUREMENT - test fixture only. See check_grasp.py.
 FIXTURE_OFFSET = GraspOffset(x=0.35, y=0.0, tolerance_m=0.05)
@@ -98,6 +108,7 @@ def make_ctx(**overrides) -> val.ValidationContext:
         geofence=lambda x, y: -5.0 <= x <= 5.0 and -5.0 <= y <= 5.0,
         costmap_cost=lambda x, y: 0,
         max_goal_cost=200,
+        line_calibration=IDENTITY_LINE,
     )
     defaults.update(overrides)
     return val.ValidationContext(**defaults)
@@ -562,6 +573,7 @@ def part2_pipeline() -> None:
             teleop_mode_age_sec=0.1,
             nav2_available=True,
             datum_unchanged=True,
+            line_calibration_unchanged=True,
             pose=pose,
         )
         defaults.update(overrides)
@@ -928,6 +940,7 @@ def part4_correlation() -> None:
             teleop_mode_age_sec=0.1,
             nav2_available=True,
             datum_unchanged=True,
+            line_calibration_unchanged=True,
             pose=(1.0, 0.0, 0.0),
         )
         base.update(overrides)
@@ -986,6 +999,7 @@ def part4_correlation() -> None:
             teleop_mode_age_sec=0.1,
             nav2_available=True,
             datum_unchanged=True,
+            line_calibration_unchanged=True,
             pose=(1.0, 0.0, 0.0),
         ),
         moved_world,

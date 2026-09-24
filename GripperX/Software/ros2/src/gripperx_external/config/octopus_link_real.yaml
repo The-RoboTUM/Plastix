@@ -27,17 +27,33 @@
     # - not the launch-file form this project's documents used to give; see
     # the corrections in OCTOPUS_ROSBRIDGE_SETUP.md section 3.
     #
-    # ADDRESS NOT PROVEN REACHABLE FROM THIS ROBOT, and 10.42.0.x is not
-    # evidence that it is: that range is NetworkManager's default for a
-    # SHARED connection, so every laptop hotspot uses it. Our Pi is
-    # 10.42.0.71 on THIS laptop's shared subnet; their host is 10.42.0.158 on
-    # THEIRS - same range, two different networks, address collision
-    # possible, and nobody has yet put a packet between the two machines
-    # (their own reply asks us to confirm exactly this).
+    # MEASURED REACHABLE 2026-09-24, and that had never been true before: a
+    # ping and a TCP connect to port 9090 from THIS Pi, then a subscribe over
+    # the link that returned live frames on all three of their inbound topics.
+    # Until that day nobody had put a packet between the two machines.
+    #
+    # The address is stable now for a structural reason, not by luck. The
+    # segment used to be 10.42.0.0/24, served by a developer laptop's
+    # NetworkManager SHARED connection - and that range is NetworkManager's
+    # default, so every laptop hotspot hands out the same addresses and "same
+    # range" never meant "same network". That is how this file previously came
+    # to name 10.42.0.158, an address that was already dead when it was written
+    # here. Since 2026-09-24 a TL-WR840N serves 192.168.50.0/24 with one DHCP
+    # reservation per MAC: robot .20, their host .30. The laptop is an ordinary
+    # client at .10 and remains the gateway, so the segment now survives it
+    # being switched off.
     #
     # Set here rather than left TO-VERIFY because a wrong address fails
     # LOUDLY (connection refused, link reports it).
-    url: "ws://10.42.0.158:9090"
+    #
+    # CAVEAT that outlives the measurement: octopus_link.launch.py declares
+    # `url` as a launch argument defaulting to ws://127.0.0.1:9090 and passes
+    # it as a parameter OVERRIDE, so it beats this line. A plain `ros2 launch`
+    # with no explicit url:= talks to localhost whatever is written here - and
+    # on the twin that is invisible, because there localhost IS the fixture.
+    # The systemd wrapper reads this value back out and hands it over as url:=;
+    # a manual launch has to pass it too.
+    url: "ws://192.168.50.30:9090"
 
     goal_ingress_enabled: false
 
@@ -102,26 +118,26 @@
     arming.max_duration_sec: 600.0
     arming.max_consecutive_aborts: 3
 
-    # Demo-area bounds under the drone: drivable area is 1.25 m in every
-    # direction, same rectangle as the twin, deliberately. Bounds the CHOSEN
-    # ROBOT POSE, not the object, not the path. Still TO-VERIFY per
-    # deployment; the gateway refuses to validate until these are set.
-    # Runtime-adjustable via `ros2 param set`.
+    # GEOFENCE - NO PARAMETERS HERE ANY MORE (user decision 2026-09-24). It is
+    # the square of side L centred on the line midpoint and aligned with the
+    # line (x, y in [-L/2, +L/2] in octopus_line), derived by the gateway from
+    # the LIVE line calibration: one source, and it moves with every
+    # recalibration. No calibration -> no geofence -> every goal is refused.
+    #
+    # WHAT IT BOUNDS is unchanged: the CHOSEN ROBOT POSE, not the object
+    # (validation.py check_pose, step 9). A target outside the square may still
+    # be served when its standoff pose falls inside; a target inside may be
+    # refused when every approach candidate lands outside. It bounds the GOAL
+    # only, never the PATH: Nav2 may drive outside the square on the way.
     #
     # The camera sees more than this - an operational hazard, not harmless
-    # surplus. A target whose every approach pose falls outside is refused
-    # AT VALIDATION - it never becomes a mission, never counts an attempt,
-    # never reaches the blacklist (both _blacklist_target callers sit behind
-    # dispatch). Octopus only advances on trash_goal_done and has no failure
-    # channel, so an out-of-bounds target DEADLOCKS: they re-send, we
-    # re-refuse, no timeout either side, and every reachable target behind
-    # it is stuck. Until Octopus bounds detection or adds a failure channel,
-    # the whole CAMERA FIELD - not just this rectangle - must stay clear of
-    # anything the detector fires on.
-    geofence.min_x_m: -1.25
-    geofence.max_x_m: 1.25
-    geofence.min_y_m: -1.25
-    geofence.max_y_m: 1.25
+    # surplus. A target whose every approach pose falls outside is refused AT
+    # VALIDATION: it never becomes a mission, never counts an attempt, never
+    # reaches the blacklist. The Octopus only advances on trash_goal_done and has
+    # no failure channel, so an out-of-bounds target DEADLOCKS their mission.
+    # Until they bound detection or add a failure channel, the whole CAMERA
+    # FIELD - not just this square - must stay clear of anything the detector
+    # fires on.
 
     # offset_x/y: purely longitudinal. A user SPECIFICATION, not a bench
     # measurement - no document may describe it as measured.
@@ -254,6 +270,52 @@
 
     map_frame: "map"
     base_frame: "base_footprint"
+    # The Octopus line calibration this gateway gates on (line_calibration_node,
+    # started by gripperx-mapping via localization.launch.py). Its range, frame
+    # name, map topic and map-session grace are in the `/**` section at the end
+    # of this file - shared with that node, one source. No calibration -> no
+    # dispatch (NO_LINE_CALIBRATION).
+    line_calibration_topic: "line_calibration"
     costmap_topic: "/global_costmap/costmap"
     odom_topic: "/odometry/filtered"
     teleop_mode_topic: "/teleop/active_mode"
+
+# The shared reference line: the operator clicks frame post A, then post B, in
+# RViz (Publish Point, fixed frame map). Nothing is persisted - it is clicked
+# again at every start, and it dies by itself when the SLAM map session ends.
+# Convention and interface: documentation/OCTOPUS_LINE_CALIBRATION.md.
+#
+# This node is NOT started by octopus_link.launch.py: it is started by
+# gripperx_localization/launch/localization.launch.py (gripperx-mapping), which
+# loads THIS file for it, so it lives and dies with slam_toolbox.
+/gripperx/external/line_calibration_node:
+  ros__parameters:
+    use_sim_time: false
+    expected_domain_id: 20
+    map_frame: "map"
+    clicked_point_topic: "/clicked_point"
+    map_session_check_period_sec: 1.0
+    tf_rate_hz: 10.0
+
+# SHARED by line_calibration_node AND goal_gateway_node (audit H1): both read
+# these very keys, so the node that accepts a calibration and the gateway that
+# converts goals with it cannot disagree. The gateway applies ITS copy; the
+# range a status carries is informational and is ignored.
+/**:
+  ros__parameters:
+    line_frame_id: "octopus_line"
+    map_topic: "/map"
+    # User-stated range for the post spacing - a plausibility bound, not a
+    # measurement. CHANGED 2026-09-24 by the user during the first real-robot
+    # test, from 2.5-3.0 m to 2.20-2.80 m; still not a measurement. A clicked pair whose L falls outside it is
+    # REJECTED (no transform, no 'calibrated' status, a red marker in RViz) and
+    # the operator re-clicks: it catches a wrong post or a stray click before it
+    # can reach a goal. Also the side of the geofence square. Read by
+    # check_line_calibration.py from THIS file.
+    expected_length_min_m: 2.2
+    expected_length_max_m: 2.8
+    # How long the map topic may show NO publisher before the calibration
+    # counts as lost (audit M2). Unmeasured: while TO-VERIFY an empty read
+    # counts at once - the calibration node drops the calibration, the gateway
+    # cancels a goal in flight and blocks new dispatch.
+    map_session_grace_sec: "TO-VERIFY"

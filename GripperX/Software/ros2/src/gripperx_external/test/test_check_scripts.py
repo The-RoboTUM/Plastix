@@ -28,6 +28,7 @@ _HERE = Path(__file__).parent
 CHECKS = [
     "check_frame_gate.py",
     "check_geodesy.py",
+    "check_line_calibration.py",
     "check_grasp.py",
     "check_rosbridge_client.py",
     "check_transform_status.py",

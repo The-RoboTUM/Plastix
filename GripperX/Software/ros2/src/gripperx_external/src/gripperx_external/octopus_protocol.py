@@ -966,6 +966,7 @@ def build_device_status(
     counters: Optional[Mapping[str, Any]] = None,
     blacklist: Sequence[str] = (),
     octopus_transform: Optional[Mapping[str, Any]] = None,
+    line_calibration: Optional[Mapping[str, Any]] = None,
 ) -> str:
     """Emit the proposed robot telemetry payload.
 
@@ -987,6 +988,12 @@ def build_device_status(
 
     Telemetry is OUTBOUND ONLY and carries no control semantics - nothing the
     Octopus sends in response may change our state (SR-15 rule 3).
+
+    ``map_x/map_y/yaw_deg`` here are the caller's choice of frame; the link
+    node passes the shared LINE frame (``octopus_line``), never our map - see
+    ``documentation/OCTOPUS_LINE_CALIBRATION.md``. ``line_calibration`` is the
+    live calibration's id and length L, so their operator's typed-in L can be
+    compared with ours; ``null`` when the caller does not report it.
     """
     return json.dumps(
         {
@@ -1031,5 +1038,6 @@ def build_device_status(
             # which is a different statement from "no lock" and is spelled
             # differently on purpose (FR-12 item 8).
             "octopus_transform": None if octopus_transform is None else dict(octopus_transform),
+            "line_calibration": None if line_calibration is None else dict(line_calibration),
         }
     )

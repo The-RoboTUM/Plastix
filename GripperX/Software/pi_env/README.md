@@ -139,7 +139,7 @@ relying on the flags.
 - **WiFi credentials** (`/etc/netplan/50-cloud-init.yaml`,
   `wpa_supplicant` configuration): reading was classified as a credential
   risk and was not done. During a fresh setup, WiFi/hotspot pairing
-  (iPhone hotspot `172.20.10.2`, LAN fallback `10.42.0.70`) must be
+  (the networks and addresses are in `LOCAL_ENV.md` §2, not here) must be
   manually reconfigured, including static ethernet IP setup (`nmcli`/netplan)
   for a direct Pi-laptop cable link if needed.
 - **`~/microros_ws`** (separate, non-colcon Pi workspace, ~151 MB

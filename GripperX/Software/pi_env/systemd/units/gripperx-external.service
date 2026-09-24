@@ -1,0 +1,165 @@
+# /etc/systemd/system/gripperx-external.service
+#
+# The Octopus external-goal link (FR-12 — external litter goals supplied by the
+# Octopus litter-detection system over a rosbridge WebSocket) as a service, so it
+# comes up on boot and on a Mode R restart (HWR-40 short press — restart the ROS 2
+# stack, the Pi stays up) instead of only from a manual `ros2 launch`.
+#
+# ROLLOUT STAGE 1 — telemetry only, no goal ingress, disarmed, dry-run. The stage
+# and everything it implies is argued at the call site in gripperx-external.sh;
+# `Description=` names it so `systemctl status` cannot be read as "the goal path
+# is live". NOTHING HERE CAN ARM ANYTHING (SR-15 rule 4: no parameter, launch
+# argument, environment variable, config file or service default may result in
+# `armed == true` at startup) and nothing here can move the machine, so starting
+# or restarting this unit is NOT a motion event under SR-1.
+#
+# MODE R IS NOT COVERED BY THIS FILE. A short press runs
+# `gripperx-stack-stop --mode=restart`, which stops and starts an explicit list of
+# units; being enabled covers a BOOT, not a restart. This unit is in that script's
+# STOP_ORDER/START_ORDER — if it is ever removed from there, Mode R stops covering
+# it and the failure is silent (the link simply never comes back).
+
+[Unit]
+Description=GripperX Octopus external-goal link (rollout stage 1: telemetry only, no goal ingress)
+After=gripperx-navigation.service network-online.target
+# Wants=, NOT Requires=, and the difference is the whole ordering decision.
+#
+# WHAT THIS NEEDS AND WHO PROVIDES IT, read off the units rather than assumed:
+#   /navigate_to_pose, /global_costmap/costmap   <- Nav2, gripperx-navigation.service
+#   map -> base_footprint TF, /odometry/filtered <- gripperx-mapping.service
+#                                (slam_toolbox + the EKF; see that unit's header)
+#   /teleop/active_mode                          <- teleop_mux_node, gripperx-bringup.service
+# navigation Requires=+After= mapping Requires=+After= bringup, so ordering after
+# navigation orders this unit after all three, and After= makes systemd stop it
+# BEFORE navigation — the outermost consumer goes down first, which is the order
+# the stop sequence wants anyway.
+#
+# WHY NOT Requires=: because a dead Nav2 must not take the link down with it.
+# The gateway is built for Nav2's absence — `_update_servers` polls
+# `server_is_ready()` (never the blocking `wait_for_server`), reports the
+# NAV2_UNAVAILABLE auto-disarm trigger with no grace period, and recovers by
+# itself the moment discovery matches. Keeping the link up in that state is
+# worth more than tidiness: it is the ONLY thing that still tells the Octopus
+# anything, and their side has no failure channel (internal safety audit F-10),
+# so stopping the link on a Nav2 failure would replace a reported degradation
+# with exactly the silence F-10 is about. Starting before Nav2 is up is therefore
+# acceptable, not merely tolerated — it degrades to telemetry-only and repairs
+# itself.
+#
+# CONSEQUENCE OF Wants= THAT IS NOT AN OVERSIGHT: a stop propagates along
+# Requires=, so `systemctl stop gripperx-bringup` takes navigation and mapping
+# with it and LEAVES THIS UNIT RUNNING. That is the intended end state — the
+# gateway then reports NAV2_UNAVAILABLE, disarms and keeps reporting, and it has
+# nothing left to dispatch to, so it cannot produce motion. Whoever wants the
+# whole stack down uses `gripperx-stack-stop --mode=stop`, which lists this unit
+# explicitly, or the gripperx.target proposal once that is activated.
+Wants=gripperx-navigation.service
+Wants=network-online.target
+
+# A RESTART LOOP MUST BE BOUNDED AND VISIBLE, not endless (see Restart= below).
+# The defaults on the other units — burst 5 within 10 s — cannot latch here,
+# because RestartSec=10 spaces the attempts wider than the window, so the window
+# is widened instead of the burst tightened: four starts within five minutes,
+# then systemd stops trying and the unit stays `failed`. That is a policy choice
+# about how long to keep retrying, not a measurement of anything.
+# WATCH OUT when diagnosing a latched limit by hand: `systemctl show -p Result`
+# still says `exit-code`, not `start-limit-hit`; only the journal names it
+# ("Start request repeated too quickly"). Recorded in gripperx-stack-stop.
+StartLimitIntervalSec=300
+StartLimitBurst=4
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+Environment=HOME=/home/ubuntu
+
+# Not a readiness wait, and nothing here depends on it being long enough: the
+# gateway tolerates a missing Nav2 and repairs itself (see Wants= above). It
+# spreads the DDS discovery load instead. Nav2 brings up six managed nodes and
+# slam_toolbox drives its own lifecycle in the same window, and participant churn
+# there is a measured load problem on this Pi, not a theoretical one — it
+# correlates with controller_manager write() overruns and spawner timeouts
+# (documentation/DEPLOYMENT.md §2.1/§2.3). Same value and same purpose as the
+# ExecStartPre on gripperx-navigation.service. Cost: it also lengthens a Mode R
+# restart by 15 s, on top of the ~130 s that restart already takes.
+ExecStartPre=/bin/sleep 15
+ExecStart=/usr/local/bin/gripperx-external.sh
+
+# SIGINT for the reason gripperx-bringup.service writes out in full: SIGTERM is
+# the one signal `ros2 launch` handles badly — its handler cancels its own task
+# and does NOT terminate its children, which leaves real orphans — while on
+# SIGINT it runs its documented ordered teardown. Both nodes install their own
+# SIGINT/SIGTERM handlers so the gateway can cancel a goal in flight before the
+# context goes down; what they cannot survive is a SIGKILL, which is what an
+# unhandled stop signal escalates to.
+#
+# THIS ONLY WORKS BECAUSE gripperx-external.sh USES `exec`, and that is measured,
+# not assumed: a non-interactive bash sets SIGINT to IGNORED in every `&` child,
+# SIG_IGN is inherited across fork and exec, so a backgrounded launch AND the two
+# nodes under it would all ignore this signal and the stop would fall through to
+# TimeoutStopSec and a SIGKILL. The evidence is written out in that script.
+#
+# control-group is kept, and written out rather than left to the default so it
+# cannot be lost by accident, so both nodes get the signal even if the launch
+# parent is wedged.
+KillSignal=SIGINT
+KillMode=control-group
+# A ceiling, not a delay: a normal stop finishes as soon as the cgroup is empty.
+# It only has to exceed `ros2 launch`'s own escalation for a child that will not
+# exit — sigterm_timeout 5 s (SIGINT -> SIGTERM) plus sigkill_timeout 5 s
+# (SIGTERM -> SIGKILL), both launch defaults — plus margin. Unlike bringup there
+# is no hardware boundary in this budget: these are two pure-python nodes, they
+# hold no bus and no GPIO line, and nothing about the drive depends on how long
+# they take to go away.
+TimeoutStopSec=20
+
+# Restart=always, AND IT IS NOT THE LAZY CHOICE — `on-failure` would be wrong
+# here, because `ros2 launch` throws the evidence away. Its return code is 0
+# unless the launch service itself raises, so both nodes exiting FATAL with code
+# 2 — the DESIGNED response to an SR-8 domain mismatch or to the SAFETY.md F-24
+# sim-time misconfiguration — produces an idle launch service and a clean exit 0.
+# For this unit a clean exit 0 IS a failure: the only reason launch has nothing
+# left to supervise is that its children are gone. `on-failure` would leave the
+# unit `inactive (dead)` with the word "successfully" in the journal, which is
+# the silent-health failure F-10 is about. `always` does NOT restart after a stop
+# that systemd or the Mode R sequence requested, so a deliberate stop still stays
+# stopped.
+#
+# THE TWO FAILURE KINDS ARE THEREFORE HANDLED SEPARATELY:
+#   78 / EX_CONFIG   a DELIBERATE refusal, caught by the script's pre-flight SR-8
+#                    probe before launch is started at all. NOT retried
+#                    (RestartPreventExitStatus): retrying a configuration that is
+#                    wrong by construction is the endless loop that buries the
+#                    real reason in a repeating journal, and the fix is a human
+#                    edit, never a second attempt. The unit stays `failed`, which
+#                    is the loudest state available here.
+#   everything else  a crash, a missing dependency, or a refusal the probe
+#                    deliberately does not duplicate. Retried, because this class
+#                    does include the transient cases, but bounded by
+#                    StartLimitBurst above so it cannot loop forever.
+Restart=always
+RestartSec=10
+RestartPreventExitStatus=78
+
+# WHAT HAPPENED, recorded at every stop without anyone being logged in at the
+# time. `-` prefixed and read-only, so it can never fail a stop.
+#   * systemd's own verdict: SERVICE_RESULT distinguishes a requested stop
+#     ("success") from a self-exit ("exit-code"), and EXIT_STATUS carries the 78
+#     above when the refusal path fired. This is the line that tells an operator
+#     which of the two cases they are looking at. The `$$` is systemd's escape
+#     for a literal dollar sign: the expansion has to be done by the shell, not
+#     by systemd, because systemd's own variable expansion does not support the
+#     `:-` default form and would either drop it or fail to parse the unit.
+#   * an orphan check in the shape gripperx-bringup.service uses. It deliberately
+#     also reports a MANUAL `ros2 launch` of this package, which this unit does
+#     not own: two link node sets on one domain would be the /slam_toolbox
+#     duplicate-name problem (gripperx-mapping.sh) with an external goal source
+#     attached.
+ExecStopPost=-/bin/sh -c 'echo "[stop] result=$${SERVICE_RESULT:-?} code=$${EXIT_CODE:-?} status=$${EXIT_STATUS:-?}"; pgrep -a -f "octopus_link_node|goal_gateway_node" || echo "[stop] no external link processes left"'
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

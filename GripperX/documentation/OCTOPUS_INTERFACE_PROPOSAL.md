@@ -93,11 +93,17 @@ either side ever needs an action across the link, it should be a diff.
   it was measured on loopback, host to itself, on a quiet graph, for 30 s. The number this parameter
   needs is measured over the real path from the robot across Wi-Fi under a full pipeline. That
   measurement is still owed.
-- **Whether GripperX can reach the Octopus host at all is unproven.** Both hosts sit in
-  `10.42.0.0/24`, which is NetworkManager's default range for a *shared* connection — our Pi is
-  `10.42.0.71` on one laptop's subnet, the Octopus host `10.42.0.158` on another. Same range, two
-  different networks; the matching prefix is not evidence. `check_rosbridge.py` has never been run
-  from the robot, and it needs both the network and an operating approval.
+- ~~**Whether GripperX can reach the Octopus host at all is unproven.**~~ **SETTLED 2026-09-24 — and
+  the concern was correct.** Both hosts sat in `10.42.0.0/24`, NetworkManager's default range for a
+  *shared* connection: our Pi `10.42.0.71` on one laptop's subnet, the Octopus host `10.42.0.158` on
+  another. Same range, two different networks, and the matching prefix was never evidence — measured
+  that day, `10.42.0.158` was unreachable from the robot (`No route to host`), as it had been all along.
+  **Fixed at the cause rather than the symptom:** a TL-WR840N now serves `192.168.50.0/24` with one
+  DHCP reservation per MAC (robot `.20`, Octopus host `.30`, laptop `.10`, EVE `.40`), so no address on
+  this segment is a laptop's shared-connection default any more. Reachability was then measured **from
+  the robot**: ping, a TCP connect to 9090, and a subscribe returning live frames on all three inbound
+  topics at ~1 Hz. **What this does NOT settle:** the timing question in the bullet above — rate and
+  jitter over the real path under a full pipeline — is still owed, and it is a separate measurement.
 - **`relative_mode` should be removed rather than left standing** — agreed on both sides, and not
   for this run. A debug path that re-anchors on whatever the detector saw first would silently break
   any compensation either side applied.

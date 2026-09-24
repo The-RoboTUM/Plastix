@@ -36,6 +36,9 @@
        does that, and it attaches on the use_sim_time PARAMETER. -->
   <exec_depend>rosgraph_msgs</exec_depend>
   <exec_depend>tf2_ros</exec_depend>
+  <!-- line_calibration_node publishes map -> octopus_line as a TFMessage on
+       /tf itself (through guarded_publisher), not via a broadcaster. -->
+  <exec_depend>tf2_msgs</exec_depend>
   <exec_depend>gripperx_arm_msgs</exec_depend>
   <exec_depend>gripperx_external_msgs</exec_depend>
   <!-- apt, noble/universe, version 10.4: legacy websockets.client API only.

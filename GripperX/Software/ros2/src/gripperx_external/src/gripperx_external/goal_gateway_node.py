@@ -129,6 +129,7 @@ that is not itself one of the frozen timers.
 from __future__ import annotations
 
 import math
+import re
 import signal
 import sys
 import threading
@@ -174,6 +175,7 @@ from std_srvs.srv import Trigger
 from . import clock_rate as rate_mod
 from . import correlation as corr
 from . import diagnostics as diag
+from . import line_frame as lf
 from . import validation as val
 from .arming import (
     REQUIRED_TELEOP_MODE,
@@ -197,6 +199,7 @@ from .geodesy import (
     map_to_latlon,
 )
 from .grasp import GraspOffset, check_reached, parse_measured_param
+from .line_frame import our_map_to_latlon
 from .octopus_link_node import (
     assert_no_chain_publishers,
     assert_no_command_clients,
@@ -332,6 +335,21 @@ _STARTUP_ONLY_PARAMS = {
         "list (SAFETY.md F-28). Widening it at runtime would widen the window in "
         "which a frozen list can name an object we then report as collected"
     ),
+    # The line-calibration gate (audit H1). Shared with line_calibration_node
+    # through the `/**` section of the config - one source for both.
+    "expected_length_min_m": (
+        "it bounds which line calibrations are accepted, and the geofence is the "
+        "square of side L - widening it on a running node widens both"
+    ),
+    "expected_length_max_m": (
+        "it bounds which line calibrations are accepted, and the geofence is the "
+        "square of side L - widening it on a running node widens both"
+    ),
+    "line_frame_id": "it names the only line frame a calibration is accepted for",
+    "map_session_grace_sec": (
+        "it decides how long an invisible map publisher is tolerated under a "
+        "goal in flight - a gate width, which a running node must not raise"
+    ),
 }
 
 _TO_VERIFY = "TO-VERIFY"
@@ -449,6 +467,20 @@ def _colour(r: float, g: float, b: float, a: float = 1.0) -> ColorRGBA:
     return c
 
 
+_REASON_CODE = re.compile(r"[A-Za-z0-9_]+(?::[A-Za-z0-9_]+)*")
+
+
+def outward_reason(text: str) -> str:
+    """The machine-readable code at the head of a reason, without its detail.
+
+    "OUTSIDE_GEOFENCE: pose (1.2, 3.4)" -> "OUTSIDE_GEOFENCE";
+    "disarm:LINK_LOST" -> "disarm:LINK_LOST". For anything that leaves this
+    robot: the detail text may carry map-frame coordinates (audit L4).
+    """
+    match = _REASON_CODE.match(text or "")
+    return match.group(0) if match else ""
+
+
 def _yaw_from_quaternion(x: float, y: float, z: float, w: float) -> float:
     return math.atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z))
 
@@ -506,6 +538,9 @@ class GoalResolution:
     datum_lat: float
     datum_lon: float
     at_sec: float
+    #: The line calibration the fix was converted with. Kept for the same
+    #: reason as the datum: it can be replaced under a running goal.
+    line_calibration: Optional[lf.LineCalibration] = None
 
     @property
     def target_id(self) -> str:
@@ -542,6 +577,10 @@ class Mission:
     #: handle to cancel, which is its own hazard - see `_cancel_mission`.
     nav_accepted: bool = False
     ack_suppressed_reason: str = ""
+    #: The Octopus line calibration `object_xy` and `pose` were derived with.
+    #: `object_xy` is OUR map; turning it back into THEIR coordinates needs
+    #: exactly this calibration and `datum_lat/lon`, never today's.
+    line_calibration: Optional[lf.LineCalibration] = None
     #: INTERIM OCCLUSION LATCH - see `_correlation_holds`.
     #: `unique_seen` records that this mission's fix DID correlate uniquely to
     #: its own target at least once. `latch_void_reason` is set the first time
@@ -564,8 +603,10 @@ class Mission:
 
 
 class GoalGatewayNode(Node):
-    def __init__(self) -> None:
-        super().__init__("goal_gateway_node")
+    def __init__(self, **node_kwargs) -> None:
+        # `node_kwargs` (e.g. parameter_overrides) exist for the checks, which
+        # build this node with values read from the config files.
+        super().__init__("goal_gateway_node", **node_kwargs)
 
         # --- parameters, declared before anything is created --------------
         self.declare_parameter("expected_domain_id", -1)
@@ -586,14 +627,12 @@ class GoalGatewayNode(Node):
         self.declare_parameter("arming.max_duration_sec", HARD_MAX_ARMING_DURATION_SEC)
         self.declare_parameter("arming.max_consecutive_aborts", 3)
 
-        # Geofence: RUNTIME-ADJUSTABLE by requirement (FR-12 item 6). Read
-        # fresh at every validation, so a `ros2 param set` takes effect on the
-        # NEXT validation without a node restart. A geofence change is NOT an
-        # arming event: it may trigger re-validation and nothing else.
-        self.declare_parameter("geofence.min_x_m", _TO_VERIFY, _measured_descriptor())
-        self.declare_parameter("geofence.max_x_m", _TO_VERIFY, _measured_descriptor())
-        self.declare_parameter("geofence.min_y_m", _TO_VERIFY, _measured_descriptor())
-        self.declare_parameter("geofence.max_y_m", _TO_VERIFY, _measured_descriptor())
+        # NO GEOFENCE PARAMETERS ANY MORE (user decision 2026-09-24): the
+        # geofence is the square of side L centred on the line midpoint and
+        # aligned with the line, derived from the live line calibration
+        # (`line_frame.geofence_contains`). It moves with every recalibration,
+        # which replaces the old runtime `ros2 param set` adjustment, and
+        # without a calibration there is none - every goal is refused.
 
         # Bench measurement on the real robot; blocks stage 5. No placeholder -
         # a plausible number here produces goals that look valid, drive the
@@ -702,6 +741,29 @@ class GoalGatewayNode(Node):
         self.declare_parameter("dispatch_rate_hz", 2.0)
         self.declare_parameter("map_frame", "map")
         self.declare_parameter("base_frame", "base_footprint")
+        # The Octopus line calibration (line_calibration_node, latched JSON) and
+        # the topic whose publishers define the map session it lives in. The
+        # gateway re-checks that session itself rather than trusting the
+        # calibration node to be alive to do it.
+        self.declare_parameter("line_calibration_topic", "line_calibration")
+        self.declare_parameter("map_topic", "/map")
+        # SHARED with line_calibration_node through the `/**` section of the
+        # config file (audit H1): the gateway applies its OWN copy of the
+        # length range and the frame names, never the ones a status declares.
+        # NaN defaults on purpose - no range is invented here; without the
+        # config every calibration is refused (NO_LENGTH_RANGE).
+        self.declare_parameter("expected_length_min_m", float("nan"))
+        self.declare_parameter("expected_length_max_m", float("nan"))
+        self.declare_parameter("line_frame_id", lf.DEFAULT_FRAME_ID)
+        # How long the map topic may show NO publisher before that counts as
+        # the map session being lost (audit M2). `TO-VERIFY`: while unmeasured,
+        # an empty read is a loss at once for a goal in flight (cancel) and
+        # blocks new dispatch - the fail-closed reading - but does not BURY the
+        # calibration, because at our own start discovery can lag behind the
+        # latched status. A DIFFERENT publisher set is final regardless.
+        self.declare_parameter(
+            "map_session_grace_sec", _TO_VERIFY, _measured_descriptor("seconds")
+        )
         self.declare_parameter("costmap_topic", "/global_costmap/costmap")
         self.declare_parameter("odom_topic", "/odometry/filtered")
         self.declare_parameter("teleop_mode_topic", "/teleop/active_mode")
@@ -804,6 +866,28 @@ class GoalGatewayNode(Node):
         self._shutdown_reason = ""
         self._shutdown_prepared = False
         self._datum_tracker = DatumTracker(fallback=None, jump_warn_m=0.0)
+        #: The live Octopus line calibration, or None. FAIL CLOSED: None refuses
+        #: every goal (NO_LINE_CALIBRATION) - see `_live_line_calibration`.
+        self._line_cal: Optional[lf.LineCalibration] = None
+        self._line_cal_reason = lf.NOT_CALIBRATED_YET
+        self._line_cal_detail = "no status received from line_calibration_node yet"
+        #: Identities (session, id) this node has seen die. A latched status can
+        #: be re-delivered after a reconnect; a calibration once invalidated here
+        #: must never come back to life that way.
+        self._line_cal_dead: set = set()
+        self._map_topic = str(self.get_parameter("map_topic").value)
+        self._line_length_range = (
+            float(self.get_parameter("expected_length_min_m").value),
+            float(self.get_parameter("expected_length_max_m").value),
+        )
+        self._line_frame_id = str(self.get_parameter("line_frame_id").value)
+        #: None while `TO-VERIFY` - see the declaration.
+        self._map_grace_sec = self._measured("map_session_grace_sec")
+        #: Monotonic time since which no map publisher has been visible, or None.
+        self._map_empty_since: Optional[float] = None
+        #: The map topic's publisher set as last observed (dispatch tick).
+        self._map_session_now: Tuple[str, ...] = ()
+        self._line_cal_cancels = 0
         self._latest_targets: Optional[ExternalTargetList] = None
         self._latest_goal: Optional[ExternalGoal] = None
         self._preview_dirty = False
@@ -1035,6 +1119,15 @@ class GoalGatewayNode(Node):
 
         self.create_subscription(
             GeodeticDatum, "datum", self._on_datum, _latched(), callback_group=group
+        )
+        # Work group, like the datum: it serialises with the dispatch tick, so a
+        # resolution never sees half of a calibration change.
+        self.create_subscription(
+            String,
+            str(self.get_parameter("line_calibration_topic").value),
+            self._on_line_calibration,
+            _latched(),
+            callback_group=group,
         )
         self.create_subscription(
             String,
@@ -1327,6 +1420,14 @@ class GoalGatewayNode(Node):
                 "the Octopus map frame is not ready (their transform status: "
                 "state not 'ready', no yaw lock, or the status went stale)"
             )
+        # NOT an observation-gated block like the one above: the absence of a
+        # calibration IS the fact. No calibration, no place in our map for any
+        # of their coordinates.
+        if self._live_line_calibration() is None:
+            blocks.append(
+                f"no Octopus line calibration ({self._line_cal_reason}: "
+                f"{self._line_cal_detail})"
+            )
         return blocks
 
     def _on_set_arming(self, request: SetArming.Request, response: SetArming.Response):
@@ -1446,14 +1547,18 @@ class GoalGatewayNode(Node):
     def _mission_object_latlon(self, mission: "Mission") -> Optional[Tuple[float, float]]:
         """The blacklisted object's position in WGS84.
 
-        Taken back through the datum the mission was RESOLVED against, not the
-        current one: that pair is what the map metres on the mission mean, and
-        using today's datum for yesterday's metres would bake a datum move into
-        the anchor.
+        Taken back through the datum AND the line calibration the mission was
+        RESOLVED against, not the current ones: that pair is what the map
+        metres on the mission mean, and using today's datum or today's
+        calibration for yesterday's metres would bake a move into the anchor.
         """
+        if mission.line_calibration is None:
+            return None
         try:
-            return map_to_latlon(
-                Datum(mission.datum_lat, mission.datum_lon), *mission.object_xy
+            return our_map_to_latlon(
+                Datum(mission.datum_lat, mission.datum_lon),
+                mission.line_calibration,
+                *mission.object_xy,
             )
         except GeodesyError:
             return None
@@ -1469,11 +1574,12 @@ class GoalGatewayNode(Node):
         not repair - disarming on it would blur what the gate means without
         making anything safer.
 
-        WHAT THIS DOES NOT CLAIM: we never apply their rotation - we take their
-        map coordinates as ours - so a re-lock does not make us MORE wrong, it
-        makes an assumption we were already making visible as having stopped
-        holding. Cancelling is the honest response; applying the alignment
-        properly is the owed work this signal keeps traceable.
+        WHAT THIS DOES NOT CLAIM: our half of the alignment is now the shared
+        line calibration (`line_frame`, `_on_line_calibration`), which a re-lock
+        on THEIR side does not touch. What a re-lock can change is how THEY map
+        their camera into that line frame, and nothing on our side can observe
+        whether their line calibration survived it. So the cancel stays: it is
+        their frame, not ours, that this signal reports as having moved.
         """
         previous = self._frame_relocks_seen
         self._frame_relocks_seen = relocks
@@ -1498,7 +1604,11 @@ class GoalGatewayNode(Node):
         This asks instead: is the thing carrying this id still where the thing
         we blacklisted was? Compared in WGS84-derived metres against the
         CURRENT datum, anchor stored as lat/lon, so a datum move displaces both
-        sides equally and cannot fake a mismatch.
+        sides equally and cannot fake a mismatch. The metres are LINE-frame
+        metres and no line calibration is applied, deliberately: a distance
+        between two points is the same in every frame a rigid transform
+        relates, so this comparison needs no calibration and keeps working
+        while there is none.
 
         Wrong in both directions, neither silently: a moved object gets a
         second chance, and an id reset landing a new object within tolerance
@@ -1676,8 +1786,8 @@ class GoalGatewayNode(Node):
     def _on_set_parameters(self, params) -> SetParametersResult:
         """Runtime parameter changes.
 
-        A geofence change is explicitly NOT an arming event (FR-12 item 6): it
-        may trigger re-validation and nothing else. Nothing in this callback
+        A parameter change is NOT an arming event (FR-12 item 6): it may
+        trigger re-validation and nothing else. Nothing in this callback
         arms, disarms or dispatches - it only marks the preview dirty so the
         next tick re-validates against the new area.
         """
@@ -1693,7 +1803,7 @@ class GoalGatewayNode(Node):
                 )
                 self.get_logger().warn(f"REFUSED parameter change - {reason}")
                 return SetParametersResult(successful=False, reason=reason)
-            if param.name.startswith(("geofence.", "grasp.offset", "grasp.tolerance")) or (
+            if param.name.startswith(("grasp.offset", "grasp.tolerance")) or (
                 param.name == "datum_jump_warn_m"
             ):
                 value = param.value
@@ -1716,25 +1826,6 @@ class GoalGatewayNode(Node):
 
     def _measured(self, name: str) -> Optional[float]:
         return parse_measured_param(self.get_parameter(name).value)
-
-    def _geofence_rect(self) -> Optional[Tuple[float, float, float, float]]:
-        """Read the geofence fresh, every time. ``None`` while unmeasured.
-
-        Reading it here rather than caching it at startup is what makes
-        `ros2 param set` effective at the next validation without a restart.
-        """
-        values = [
-            self._measured("geofence.min_x_m"),
-            self._measured("geofence.max_x_m"),
-            self._measured("geofence.min_y_m"),
-            self._measured("geofence.max_y_m"),
-        ]
-        if any(v is None for v in values):
-            return None
-        min_x, max_x, min_y, max_y = values  # type: ignore[misc]
-        if not (max_x > min_x and max_y > min_y):
-            return None
-        return min_x, max_x, min_y, max_y
 
     def _grasp_offset(self) -> GraspOffset:
         return GraspOffset.from_params(
@@ -1761,8 +1852,11 @@ class GoalGatewayNode(Node):
 
     def _unset_items(self) -> List[str]:
         unset = []
-        if self._geofence_rect() is None:
-            unset.append("geofence.{min,max}_{x,y}_m")
+        if self._map_grace_sec is None:
+            unset.append(
+                "map_session_grace_sec (an invisible /map publisher cancels a goal "
+                "in flight at once)"
+            )
         offset = self._grasp_offset()
         if not offset.configured:
             unset.append("grasp.offset_x/y_m")
@@ -1878,6 +1972,170 @@ class GoalGatewayNode(Node):
                 throttle_duration_sec=2.0,
             )
         self._preview_dirty = True
+
+    # -- the Octopus line calibration -------------------------------------
+    def _on_line_calibration(self, msg: String) -> None:
+        """The calibration node's latched status. Work group.
+
+        A NEW calibration identity while a mission is in flight CANCELS it, and
+        so does losing the calibration: both are geometric events on the same
+        axis as a datum move and a frame re-lock - the pose in flight was
+        derived from a line that is no longer the line. Neither disarms: the
+        arming window is a promise about time, and re-arming would not repair
+        geometry (same reasoning as `_note_frame_relock`).
+        """
+        status = lf.parse_status(
+            msg.data,
+            length_range_m=self._line_length_range,
+            parent_frame_id=self._map_frame,
+            frame_id=self._line_frame_id,
+        )
+        previous = self._line_cal
+        if status.calibration is not None and status.calibration.identity in self._line_cal_dead:
+            # A re-delivered latched copy of a calibration we already buried.
+            return
+        if status.calibration is not None:
+            self._line_cal = status.calibration
+            self._line_cal_reason = ""
+            self._line_cal_detail = lf.describe(status.calibration)
+            if previous is None or previous.identity != status.calibration.identity:
+                self.get_logger().warn(
+                    "Octopus LINE CALIBRATION accepted - "
+                    + lf.describe(status.calibration)
+                )
+                if previous is not None:
+                    self._line_cal_dead.add(previous.identity)
+                    self._cancel_for_line_calibration(
+                        "LINE_RECALIBRATED",
+                        f"calibration #{previous.calibration_id} was replaced by "
+                        f"#{status.calibration.calibration_id}",
+                    )
+        else:
+            self._line_cal = None
+            self._line_cal_reason = status.reason or lf.NOT_CALIBRATED_YET
+            self._line_cal_detail = status.detail or status.state
+            if previous is not None:
+                self._line_cal_dead.add(previous.identity)
+                self.get_logger().error(
+                    f"Octopus line calibration #{previous.calibration_id} is GONE "
+                    f"({self._line_cal_reason}: {self._line_cal_detail}). Dispatch "
+                    "is refused until the posts are clicked again."
+                )
+                self._cancel_for_line_calibration(
+                    "LINE_CALIBRATION_LOST", f"{self._line_cal_reason}: {self._line_cal_detail}"
+                )
+        self._preview_dirty = True
+
+    def _check_map_session(self) -> None:
+        """Our own check that the calibration's map frame still exists.
+
+        Independent of the calibration node, which lives in another service.
+        Three cases (audit M2):
+
+        * a DIFFERENT non-empty publisher set: proof that the map frame was
+          replaced (slam_toolbox restarted). Final: the calibration is buried
+          and a goal in flight is cancelled.
+        * NO publisher visible: not proof of anything by itself - at our own
+          start the latched status can arrive before discovery shows us the map
+          publisher, and a single empty discovery read can happen. It blocks
+          NEW dispatch at once (`_live_line_calibration`). Once it has lasted
+          `map_session_grace_sec` it counts as a loss: a goal in flight is
+          cancelled and, with a MEASURED grace, the calibration is buried. While
+          the grace is `TO-VERIFY` it counts as a loss at once for the goal in
+          flight (cancel), without burying - see the declaration.
+        * the recorded set: nothing to do.
+        """
+        infos = self.get_publishers_info_by_topic(self._map_topic)
+        self._map_session_now = lf.map_session_key([i.endpoint_gid for i in infos])
+        mono = time.monotonic()
+        if self._map_session_now:
+            self._map_empty_since = None
+        elif self._map_empty_since is None:
+            self._map_empty_since = mono
+        cal = self._line_cal
+        if cal is None:
+            return
+        verdict = lf.map_session_verdict(cal.map_session, self._map_session_now)
+        if verdict == lf.MAP_SESSION_CHANGED:
+            detail = (
+                f"a DIFFERENT publisher is on {self._map_topic} than at calibration "
+                f"#{cal.calibration_id} - slam_toolbox restarted, so its map frame is new"
+            )
+            self._bury_line_calibration(cal, lf.MAP_SESSION_CHANGED, detail)
+            return
+        if (
+            verdict == lf.NO_MAP_SESSION
+            and self._map_grace_sec is not None
+            and self._map_session_lost()
+        ):
+            detail = (
+                f"no publisher on {self._map_topic} for more than "
+                f"map_session_grace_sec={self._map_grace_sec:.1f}s - the map frame "
+                f"calibration #{cal.calibration_id} was clicked in is no longer shown to exist"
+            )
+            self._bury_line_calibration(cal, lf.MAP_SESSION_LOST, detail)
+
+    def _map_session_lost(self) -> bool:
+        """Has the map publisher been invisible for longer than the grace?
+
+        With the grace `TO-VERIFY`, any empty read counts (fail closed)."""
+        if self._map_empty_since is None:
+            return False
+        if self._map_grace_sec is None:
+            return True
+        return time.monotonic() - self._map_empty_since > self._map_grace_sec
+
+    def _bury_line_calibration(self, cal: lf.LineCalibration, reason: str, detail: str) -> None:
+        self._line_cal = None
+        self._line_cal_dead.add(cal.identity)
+        self._line_cal_reason = reason
+        self._line_cal_detail = detail
+        self.get_logger().error(
+            f"Octopus line calibration #{cal.calibration_id} INVALIDATED ({reason}): "
+            f"{detail}. Dispatch is refused until the posts are clicked again."
+        )
+        self._cancel_for_line_calibration(reason, detail)
+        self._preview_dirty = True
+
+    def _live_line_calibration(self) -> Optional[lf.LineCalibration]:
+        """The calibration goals may be converted with right now, or None.
+
+        None also while the map session is not visible (see
+        `_check_map_session`): a calibration whose map frame we cannot see is
+        not one we may convert with.
+        """
+        cal = self._line_cal
+        if cal is None:
+            return None
+        if lf.map_session_verdict(cal.map_session, self._map_session_now):
+            return None
+        return cal
+
+    def _line_calibration_unchanged_since(
+        self, calibration: Optional[lf.LineCalibration]
+    ) -> bool:
+        """Is `calibration` still the one in force, for a goal IN FLIGHT?
+
+        Compared with the HELD calibration, not the live one: a map publisher
+        briefly invisible makes `_live_line_calibration` None (no NEW dispatch)
+        but must not by itself cancel a goal in flight - only once the absence
+        has outlasted the grace (audit M2; see `_check_map_session`).
+        """
+        current = self._line_cal
+        return (
+            calibration is not None
+            and current is not None
+            and current.identity == calibration.identity
+            and not self._map_session_lost()
+        )
+
+    def _cancel_for_line_calibration(self, reason: str, detail: str) -> None:
+        with self._mission_lock:
+            mission = self._mission
+        if mission is None:
+            return
+        self._line_cal_cancels += 1
+        self._cancel_mission(f"{reason}: {detail}", self._safety_now(), error=True)
 
     def _on_targets(self, msg: ExternalTargetList) -> None:
         # Latest-wins: a burst collapses to its final state instead of growing a
@@ -2128,11 +2386,6 @@ class GoalGatewayNode(Node):
         self, goal: val.IncomingGoal, current_goal_id: Optional[str] = None
     ) -> val.ValidationContext:
         pose, age, _ = self._robot_pose()
-        rect = self._geofence_rect()
-        geofence = None
-        if rect is not None:
-            min_x, max_x, min_y, max_y = rect
-            geofence = lambda x, y: min_x <= x <= max_x and min_y <= y <= max_y  # noqa: E731
         return val.ValidationContext(
             goal=goal,
             # External stamps are the Octopus's wall clock; comparing them
@@ -2150,7 +2403,8 @@ class GoalGatewayNode(Node):
             # preview pass, where every target is worth showing.
             current_goal_id=current_goal_id,
             blacklisted_ids=tuple(self._blacklist),
-            geofence=geofence,
+            # No `geofence=`: it is derived inside the validation from
+            # `line_calibration` below (user decision 2026-09-24).
             costmap_cost=self._costmap_cost,
             max_goal_cost=int(self.get_parameter("max_goal_cost").value),
             # verify_path needs a ComputePathToPose round trip, and the
@@ -2163,6 +2417,7 @@ class GoalGatewayNode(Node):
             # logs an ERROR while the parameter is on.
             path_check=None,
             approach_candidates=int(self.get_parameter("grasp.approach_candidates").value),
+            line_calibration=self._live_line_calibration(),
         )
 
     # ==================================================================
@@ -2181,6 +2436,9 @@ class GoalGatewayNode(Node):
         """
         now = self._ros_now()
         self._update_servers(now)
+        # Before the resolution, so it is taken against the map session as it
+        # is now; may cancel the mission in flight (MAP_SESSION_CHANGED).
+        self._check_map_session()
 
         resolution = self._resolve_goal(now)
         self._resolution = resolution
@@ -2299,6 +2557,8 @@ class GoalGatewayNode(Node):
             datum_lat=datum.latitude_deg if datum else float("nan"),
             datum_lon=datum.longitude_deg if datum else float("nan"),
             at_sec=now,
+            # The SAME object the context converted with, not a second read.
+            line_calibration=ctx.line_calibration,
         )
 
     def _correlate(
@@ -2313,7 +2573,10 @@ class GoalGatewayNode(Node):
 
         Everything is converted with the datum in force RIGHT NOW, both sides of
         the comparison, so a datum move cannot make the goal and the list drift
-        apart relative to each other.
+        apart relative to each other. The positions stay in the LINE frame - no
+        line calibration is applied - because only distances between them are
+        used, and a rigid transform does not change a distance. So correlation
+        does not depend on the calibration, and cannot be what hides its loss.
 
         ``cross_check_reported_id`` is on for the goal that WOULD be dispatched
         and off for the goal already in flight. The difference is not laziness:
@@ -2585,6 +2848,9 @@ class GoalGatewayNode(Node):
             datum_unchanged=self._datum_unchanged_since(
                 resolution.datum_lat, resolution.datum_lon
             ),
+            line_calibration_unchanged=self._line_calibration_unchanged_since(
+                resolution.line_calibration
+            ),
             pose=pose,
             max_teleop_mode_age_sec=float(
                 self.get_parameter("max_teleop_mode_age_sec").value
@@ -2658,6 +2924,7 @@ class GoalGatewayNode(Node):
             datum_lon=resolution.datum_lon,
             started_at_sec=now,
             incoming=resolution.incoming,
+            line_calibration=resolution.line_calibration,
         )
         # Published BEFORE the request goes out, so that a disarm arriving in
         # the same instant finds something to cancel. The window in which the
@@ -3164,6 +3431,9 @@ class GoalGatewayNode(Node):
             nav2_available=self._nav2_available,
             datum_unchanged=self._datum_unchanged_since(
                 mission.datum_lat, mission.datum_lon
+            ),
+            line_calibration_unchanged=self._line_calibration_unchanged_since(
+                mission.line_calibration
             ),
             pose=mission.pose,
             max_teleop_mode_age_sec=float(
@@ -4035,34 +4305,13 @@ class GoalGatewayNode(Node):
     def _validate(
         self, goal: val.IncomingGoal, ctx: Optional[val.ValidationContext] = None
     ) -> val.ValidationResult:
-        """Validate one goal, refusing outright while the geofence is unmeasured.
+        """Validate one goal.
 
-        The geofence numbers are TO-VERIFY. Until they are set the gateway
-        REFUSES to validate rather than falling back to some default area
-        (FR-12 item 6) - an invented rectangle would make every verdict a guess.
+        No early geofence refusal any more: the geofence is derived from the
+        line calibration inside the pipeline, and without a calibration the
+        pipeline itself refuses (NO_LINE_CALIBRATION, step 2b) before any
+        position exists to preview.
         """
-        if self._geofence_rect() is None:
-            result = val.ValidationResult(
-                verdict=val.VERDICT_REJECTED,
-                reason=val.GEOFENCE_NOT_CONFIGURED,
-                detail=(
-                    "geofence.{min,max}_{x,y}_m are TO-VERIFY; refusing to validate "
-                    "rather than defaulting to an area nobody measured"
-                ),
-                severity=val.SEVERITY_LOCAL,
-            )
-            # The object position is still resolvable and still worth previewing:
-            # the operator needs to see WHERE the refused target is.
-            datum = self._datum_tracker.datum
-            if datum is not None:
-                try:
-                    result.object_xy = latlon_to_map(
-                        datum, goal.latitude_deg, goal.longitude_deg
-                    )
-                except GeodesyError:
-                    pass
-            self._count(result)
-            return result
         result = val.validate_goal(ctx if ctx is not None else self._make_context(goal))
         self._count(result)
         return result
@@ -4211,10 +4460,20 @@ class GoalGatewayNode(Node):
     # telemetry + diagnostics
     # ==================================================================
     def _telemetry_tick(self) -> None:
+        """Robot telemetry. `map_x/map_y` are ALWAYS our map (audit L5); the
+        line-frame fields are what the link node sends to the Octopus.
+
+        Our map is anchored wherever the robot started and means nothing to
+        them, so everything that leaves - `pose.x/y/yaw_deg` and `pose.lat/lon`
+        on the wire - comes from the LINE-frame fields. Without a live
+        calibration there is no line-frame pose, and the line block is reported
+        unavailable with NO_LINE_CALIBRATION instead.
+        """
         msg = RobotTelemetry()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = self._map_frame
         msg.device_id = "gripperx"
+        calibration = self._live_line_calibration()
 
         pose, age, err = self._robot_pose()
         if pose is None:
@@ -4233,13 +4492,29 @@ class GoalGatewayNode(Node):
             msg.yaw_deg = math.degrees(pose[2])
             msg.pose_age_sec = float(age or 0.0)
 
-        # The lat/lon is flagged separately: the map pose can be perfectly known
+        msg.line_calibration_id = -1 if calibration is None else int(calibration.calibration_id)
+        msg.line_length_m = float("nan") if calibration is None else float(calibration.length_m)
+        if not msg.pose_valid:
+            msg.line_valid = False
+            msg.line_reason = msg.pose_reason
+            msg.line_x = msg.line_y = msg.line_yaw_deg = float("nan")
+        elif calibration is None:
+            msg.line_valid = False
+            msg.line_reason = val.NO_LINE_CALIBRATION
+            msg.line_x = msg.line_y = msg.line_yaw_deg = float("nan")
+        else:
+            msg.line_valid = True
+            msg.line_reason = ""
+            msg.line_x, msg.line_y = calibration.map_to_line(pose[0], pose[1])
+            msg.line_yaw_deg = math.degrees(calibration.yaw_map_to_line(pose[2]))
+
+        # The lat/lon is flagged separately: the pose can be perfectly known
         # while the datum is missing or still their bootstrap fallback, and a
         # lat/lon derived from that would be a fabricated position on their map.
         blocker = self._datum_tracker.dispatch_blocker()
-        if not msg.pose_valid:
+        if not msg.line_valid:
             msg.latlon_valid = False
-            msg.latlon_reason = msg.pose_reason
+            msg.latlon_reason = msg.line_reason
             msg.latitude_deg = msg.longitude_deg = float("nan")
         elif blocker:
             msg.latlon_valid = False
@@ -4248,7 +4523,9 @@ class GoalGatewayNode(Node):
         else:
             datum = self._datum_tracker.datum
             assert datum is not None
-            lat, lon = map_to_latlon(datum, msg.map_x, msg.map_y)
+            # LINE-frame metres through the plain inverse of their flat earth:
+            # the `our_map_to_latlon` chain split in two.
+            lat, lon = map_to_latlon(datum, msg.line_x, msg.line_y)
             msg.latlon_valid = True
             msg.latitude_deg, msg.longitude_deg = lat, lon
 
@@ -4279,7 +4556,10 @@ class GoalGatewayNode(Node):
             msg.nav_state_reason = ""
         else:
             msg.nav_state = mission.state
-            msg.nav_state_reason = mission.cancel_reason
+            # The CODE only (audit L4): the full cancel reason carries
+            # validation detail with MAP coordinates ("pose (x, y)"), which mean
+            # nothing to the Octopus and are unlabelled. Our log keeps it whole.
+            msg.nav_state_reason = outward_reason(mission.cancel_reason)
         msg.active_goal_id = mission.target_id if mission is not None else ""
 
         with self._arming_lock:
@@ -4360,6 +4640,13 @@ class GoalGatewayNode(Node):
                     else round(self._target_list_age_sec(), 1)
                 ),
                 "max_target_list_age_sec": self._max_target_age_sec,
+                # The Octopus line calibration dispatch is gated on.
+                "line_calibration": (
+                    lf.describe(self._live_line_calibration())
+                    if self._live_line_calibration() is not None
+                    else f"NONE ({self._line_cal_reason}: {self._line_cal_detail})"
+                ),
+                "line_calibration_cancels": self._line_cal_cancels,
             },
         )
 
