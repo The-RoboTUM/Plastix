@@ -98,8 +98,8 @@ Block, der unsere Yaw-Relocks mitzählt.
   die Reihenfolge und kennt die Nullbewegungs-Probe nicht — deren Toleranz ist `TO-VERIFY`.
 - **Kein Abbruch laufender Ziele bei Rekalibrierung** (§8). Auf unserer Seite gibt es kein
   „goal in flight", das man abbrechen könnte; der Vertrag kennt nur `trash_goal_done`.
-- **Keine `TO-VERIFY`-Werte geraten.** Die Plausibilitätsgrenze 2,5–3,0 m ist Parameter
-  (`min_length_m`/`max_length_m`), nicht Konstante.
+- **Keine `TO-VERIFY`-Werte geraten.** Die Plausibilitätsgrenze ist Parameter
+  (`min_length_m`/`max_length_m`), nicht Konstante — siehe unten.
 
 ## Benutzung heute
 
@@ -216,6 +216,20 @@ das ist GripperX' Reichweitenradius. Der ist kleiner als das Quadrat und damit d
 bindende Grenze. Beide dürfen gleichzeitig aktiv sein — Reichweite und Fläche sind
 verschiedene Dinge —, aber wer sich über eine kleine nutzbare Fläche wundert, schaut zuerst
 dorthin.
+
+## Plausibilitätsgrenze für L
+
+**2,20–2,80 m** (Stand 2026-09-24). Ein angeklicktes Paar, dessen L außerhalb liegt, wird
+abgelehnt — das fängt einen falschen Pfosten oder einen verrutschten Klick, mehr nicht. Es ist
+keine Messung.
+
+GripperX wurde am selben Tag auf denselben Bereich umgestellt, beide Seiten weisen also
+dieselben Paare zurück. **Das Spezifikationsdokument nennt weiterhin 2,5–3,0 m und ist damit
+der veraltete Stand** — beim nächsten Abgleich dort nachziehen.
+
+Einstellbar über `min_length_m`/`max_length_m` am `line_calibration_node`. Die Zahl ist
+inzwischen einmal gewandert; sie muss auf beiden Seiten gleich bleiben, sonst akzeptiert eine
+Seite eine Kalibrierung, die die andere ablehnt.
 
 ## Offene Punkte
 

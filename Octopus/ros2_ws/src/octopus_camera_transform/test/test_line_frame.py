@@ -13,7 +13,7 @@ from octopus_camera_transform.line_frame import (
     LineCalibrationError,
 )
 
-L = 2.8
+L = 2.5
 # A horizontal pair: A left, B right, 400 px apart, v constant.
 A = (100.0, 240.0)
 B = (500.0, 240.0)
@@ -91,14 +91,19 @@ def test_implied_height_matches_the_pinhole_relation():
     assert c.implied_camera_height_m(fx) == pytest.approx(c.metres_per_pixel * fx)
 
 
-@pytest.mark.parametrize("bad_length", [2.49, 3.01, 0.0, -2.8, float("nan")])
+@pytest.mark.parametrize("bad_length", [2.19, 2.81, 0.0, -2.5, float("nan")])
 def test_length_outside_the_plausibility_bound_is_refused(bad_length):
     with pytest.raises(LineCalibrationError):
         LineCalibration(A, B, bad_length)
 
 
+@pytest.mark.parametrize("edge_length", [2.2, 2.8])
+def test_the_bounds_themselves_are_accepted(edge_length):
+    assert LineCalibration(A, B, edge_length).length_m == pytest.approx(edge_length)
+
+
 def test_bound_is_adjustable_because_the_spec_still_moves():
-    # The 2.5-3.0 m range is a stated plausibility bound, not a measurement.
+    # The 2.2-2.8 m range is a stated plausibility bound, not a measurement.
     assert LineCalibration(A, B, 4.0, max_length_m=5.0).length_m == pytest.approx(4.0)
 
 

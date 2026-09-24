@@ -26,13 +26,17 @@ the spec and cannot change even if the procedure around them does.
 
 import math
 
-# GripperX refuses a clicked pair whose L falls outside this range and shows a
-# red REJECTED marker. It is a plausibility bound on the post spacing stated by
-# the operator on 2026-09-24, NOT a measurement - see section 9 of the spec.
-# Mirrored here so a typo on our side fails the same way theirs does, and kept
-# as a parameter because the bound is in the part of the document still moving.
-DEFAULT_MIN_LENGTH_M = 2.5
-DEFAULT_MAX_LENGTH_M = 3.0
+# Plausibility bound on the post spacing: a clicked pair whose L falls outside
+# it is refused. Not a measurement - it catches a wrong post or a stray click,
+# nothing more.
+#
+# 2.20-2.80 m, set by the operator on 2026-09-24. GripperX was changed to the
+# same range on the same day, so both sides refuse the same pairs; the spec
+# document still says 2.5-3.0 m and is the stale copy. Kept as a parameter
+# (min_length_m / max_length_m on line_calibration_node) because this number has
+# now moved once and the two sides have to keep agreeing on it.
+DEFAULT_MIN_LENGTH_M = 2.2
+DEFAULT_MAX_LENGTH_M = 2.8
 
 # Two clicks closer together than this cannot define a direction usefully: the
 # angle error grows without bound as the pair degenerates to a point.
