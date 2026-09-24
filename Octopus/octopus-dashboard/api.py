@@ -1301,7 +1301,11 @@ async def set_line_calibration(payload: dict):
         marks = {
             "pixel_a": [float(v) for v in payload["pixel_a"]],
             "pixel_b": [float(v) for v in payload["pixel_b"]],
-            "length_m": float(payload["length_m"]),
+            # L is optional: the two marks alone already fix the frame's origin,
+            # its direction and the demo-area square. L only adds the metric
+            # scale, and it comes from GripperX's LiDAR, which may not have been
+            # read out yet. 0 means "not known".
+            "length_m": float(payload.get("length_m") or 0.0),
             "mirrored": bool(payload.get("mirrored", False)),
             "source": str(payload.get("source", "dashboard")),
             "set_at": datetime.now().isoformat(),
@@ -1309,7 +1313,7 @@ async def set_line_calibration(payload: dict):
     except (KeyError, TypeError, ValueError) as exc:
         return {
             "status": "error",
-            "message": f"need pixel_a [u,v], pixel_b [u,v] and length_m: {exc}",
+            "message": f"need pixel_a [u,v] and pixel_b [u,v], length_m optional: {exc}",
         }
 
     if len(marks["pixel_a"]) != 2 or len(marks["pixel_b"]) != 2:

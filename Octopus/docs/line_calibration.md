@@ -117,6 +117,60 @@ die Kamera hängt höher als die Projektion annimmt, die Pipeline meldet also zu
 Eine Schätzung, kein Ersatz: die Beziehung gilt für eine nadir blickende Kamera nahe dem
 Bildmittelpunkt. Als Gegenprobe zur konfigurierten Höhe taugt sie, als Kalibrierwert noch nicht.
 
+## Geofence: die Demofläche
+
+GripperX spannt seine Demofläche als **Quadrat symmetrisch um die Linie** auf. Dasselbe gibt
+es jetzt auf unserer Seite, damit Müll außerhalb gar nicht erst als Ziel angeboten wird — ein
+Ziel, das der Roboter bei der Validierung ablehnt, blockiert sonst die Warteschlange.
+
+```
+        +-------------------+     Seite = Pfostenabstand
+        |         |         |     Mitte = Linienmittelpunkt
+        A---------+---------B     Linie = Spiegelachse
+        |         |         |
+        +-------------------+
+```
+
+| Teil | Ort |
+|---|---|
+| Berechnung und Topic | `flight_camera_transform_node` → `/octopus/line_geofence` (JSON, 1 Hz) |
+| Filter | `trash_gps_goal_node`, Parameter `use_line_geofence` (Default an) |
+| Sichtbar im Vertrag | Block `geofence` in `/octopus/trash_gps` |
+
+**Der Geofence braucht L nicht.** Die beiden Marken allein legen Mitte, Richtung und
+Seitenlänge fest; L liefert nur den metrischen Maßstab. Solange GripperX den Wert nicht
+gemeldet hat, steht die Kalibrierung auf `awaiting_length`, der Geofence ist aber schon aktiv.
+
+**Warum das Quadrat in Map-Metern und nicht aus L gebaut wird.** Die beiden markierten
+Pfosten laufen durch **dieselbe Projektion wie die Detektionen** (`detection_to_world_ned`,
+nach der Pixel-Umrechnung mit `pixel_to_normalized`). Ist der Maßstab der Projektion falsch —
+und die konfigurierte Höhe legt nahe, dass er es sein kann —, dann sind Pfosten und
+Detektionen um denselben Faktor falsch, und der Drinnen-Draußen-Test bleibt trotzdem richtig.
+Stattdessen GripperX' metrisches L einzusetzen würde zwei Bezugssysteme mischen und genau den
+Fehler zurückholen, dessentwegen es die Linie gibt.
+
+Mit `line_geofence_side_m > 0` lässt sich eine absolute Seitenlänge in Map-Metern erzwingen;
+die unterliegt dann wieder dem Maßstabsfehler. Default `0.0` = Seite gleich projiziertem
+Pfostenabstand.
+
+**Unterschied zu GripperX: wir schließen offen, sie schließen zu.** §8 des Drafts lässt
+GripperX ohne Kalibrierung *jedes* Ziel ablehnen. Bei uns heißt „kein Geofence" **nicht
+filtern**, nicht „alles ablehnen" — sonst hätte das Einschalten dieses Nodes die bestehende
+Demo, die ohne Marken läuft, stillschweigend lahmgelegt. Das ist eine bewusste Asymmetrie und
+gehört mit der GripperX-Seite abgestimmt.
+
+**Der Filter greift bei der Aufnahme, nicht rückwirkend.** Bereits registrierte Ziele bleiben
+zunächst stehen; mit dem gesetzten `target_ttl_sec=2.0` verschwinden sie binnen zwei Sekunden,
+weil sie nicht mehr bestätigt werden. Verworfene Detektionen werden gezählt
+(`geofence.dropped_outside`) und höchstens alle 10 s mit Abstand längs und quer zur Linie
+geloggt — eine leere Zielliste muss sich von einem kaputten Detektor unterscheiden lassen.
+
+**Achtung, zweiter Filter:** `max_radius_m` steht im Startskript auf **1,25 m** um das Datum,
+das ist GripperX' Reichweitenradius. Der ist kleiner als das Quadrat und damit derzeit die
+bindende Grenze. Beide dürfen gleichzeitig aktiv sein — Reichweite und Fläche sind
+verschiedene Dinge —, aber wer sich über eine kleine nutzbare Fläche wundert, schaut zuerst
+dorthin.
+
 ## Offene Punkte
 
 Zusätzlich zu den `TO-VERIFY`-Punkten in §9 des Drafts:

@@ -151,6 +151,11 @@ class LineCalibrationNode(Node):
                             "length_m", "metres_per_pixel", "implied_camera_height_m")}
                     )
                 )
+            elif payload.get("state") == "awaiting_length":
+                self.get_logger().info(
+                    "Post marks set, geofence available. "
+                    "Waiting for L from GripperX before the scale is known."
+                )
             else:
                 self.get_logger().warn(f"No line calibration: {payload.get('reason')}")
             self.last_signature = signature
@@ -173,8 +178,27 @@ class LineCalibrationNode(Node):
         if not marks:
             base.update({
                 "calibrated": False,
+                "marks_set": False,
                 "state": "not_calibrated",
                 "reason": "no post marks from the dashboard or parameters yet",
+            })
+            return base
+
+        # The marks travel even when L does not. They alone fix the origin, the
+        # direction and the demo-area square, and flight_camera_transform_node
+        # builds the geofence from them; L only adds the metric scale. Waiting
+        # for GripperX to read out L would hold up the geofence for no reason.
+        base["marks_set"] = True
+        base["pixel_a"] = [float(v) for v in marks.get("pixel_a", [])] or None
+        base["pixel_b"] = [float(v) for v in marks.get("pixel_b", [])] or None
+        base["mirrored"] = bool(marks.get("mirrored", False))
+        base["input_source"] = marks.get("source", "backend")
+
+        if not float(marks.get("length_m") or 0.0) > 0.0:
+            base.update({
+                "calibrated": False,
+                "state": "awaiting_length",
+                "reason": "marks set, waiting for L from GripperX's LiDAR",
             })
             return base
 
@@ -192,7 +216,6 @@ class LineCalibrationNode(Node):
                 "calibrated": False,
                 "state": "rejected",
                 "reason": str(exc),
-                "marks": marks,
             })
             return base
 

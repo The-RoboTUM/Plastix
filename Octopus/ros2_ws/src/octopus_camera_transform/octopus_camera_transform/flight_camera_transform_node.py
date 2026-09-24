@@ -115,6 +115,23 @@ class FlightCameraTransformNode(Node):
         # PX4 local z is NED, so positive z points down.
         self.declare_parameter("use_manual_height_above_ground", False)
         self.declare_parameter("manual_height_above_ground_m", 2.5)
+        # --- Line geofence (shared demo area with GripperX) ---
+        # GripperX fences its demo area to a square that is symmetric about the
+        # reference line. We build the same square so trash outside it is never
+        # offered as a target, and we build it in MAP coordinates by projecting
+        # the two marked posts through the very same projection the detections
+        # take. That is deliberate: if the projection's scale is off - and the
+        # configured height says it may be - the posts are off by the same
+        # factor as the detections, so the inside/outside test stays correct.
+        # Taking GripperX's metric L instead would mix two frames and reintroduce
+        # exactly the error the line was introduced to remove.
+        self.declare_parameter("line_calibration_topic", "/octopus/line_calibration/status")
+        self.declare_parameter("line_geofence_topic", "/octopus/line_geofence")
+        # 0.0 = square side equals the projected post distance, i.e. the line
+        # spans one full edge. A positive value overrides it with an absolute
+        # length in map metres and is then subject to any scale error.
+        self.declare_parameter("line_geofence_side_m", 0.0)
+
         self.declare_parameter("transform_mode", "flight_global_mission")
         # The drone IS the datum: octopus_to_robot_interface.md states that map
         # (0, 0) is the datum and that Eve's own coordinate is always (0, 0).
@@ -173,6 +190,17 @@ class FlightCameraTransformNode(Node):
             PoseArray,
             self.detector_topic,
             self.detection_callback,
+            10,
+        )
+
+        self.line_marks = None
+        self.line_geofence_pub = self.create_publisher(
+            String, str(self.get_parameter("line_geofence_topic").value), 10
+        )
+        self.line_calibration_sub = self.create_subscription(
+            String,
+            str(self.get_parameter("line_calibration_topic").value),
+            self.line_calibration_callback,
             10,
         )
 
@@ -329,6 +357,86 @@ class FlightCameraTransformNode(Node):
             raise ValueError(f"Unsupported normalized_v_origin: {v_origin}")
 
         return px, py
+
+    def pixel_to_normalized(self, px: float, py: float):
+        """Inverse of normalized_to_pixel, so marks made in pixels can take the
+        detections' path without anybody re-deriving the v convention."""
+        image_width = float(self.get_parameter("image_width").value)
+        image_height = float(self.get_parameter("image_height").value)
+        v_origin = str(self.get_parameter("normalized_v_origin").value)
+
+        u_norm = float(px) / image_width
+
+        if v_origin == "bottom_left":
+            v_norm = 1.0 - float(py) / image_height
+        elif v_origin == "top_left":
+            v_norm = float(py) / image_height
+        else:
+            raise ValueError(f"Unsupported normalized_v_origin: {v_origin}")
+
+        return u_norm, v_norm
+
+    def line_calibration_callback(self, msg: String):
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        pixel_a = payload.get("pixel_a")
+        pixel_b = payload.get("pixel_b")
+        if payload.get("marks_set") and is_finite_list(pixel_a) and is_finite_list(pixel_b):
+            self.line_marks = {"pixel_a": list(pixel_a), "pixel_b": list(pixel_b)}
+        else:
+            self.line_marks = None
+
+    def line_geofence_payload(self):
+        """The demo-area square in map metres, or why there is none."""
+        base = {
+            "source_id": "flight_camera_transform_node",
+            "frame_id": "map",
+            "timestamp": time.time(),
+        }
+
+        if self.line_marks is None:
+            base.update({"available": False, "reason": "no post marks"})
+            return base
+
+        if not self.get_pose_state()["transform_ready"]:
+            base.update({"available": False, "reason": "transform not ready"})
+            return base
+
+        try:
+            a = self.detection_to_world_ned(*self.pixel_to_normalized(*self.line_marks["pixel_a"]))
+            b = self.detection_to_world_ned(*self.pixel_to_normalized(*self.line_marks["pixel_b"]))
+        except Exception as exc:
+            base.update({"available": False, "reason": f"cannot project the posts: {exc}"})
+            return base
+
+        ax, ay = float(a[0]), float(a[1])
+        bx, by = float(b[0]), float(b[1])
+        dx, dy = bx - ax, by - ay
+        span = math.hypot(dx, dy)
+        if span < 1e-6:
+            base.update({"available": False, "reason": "both posts project to the same point"})
+            return base
+
+        override = float(self.get_parameter("line_geofence_side_m").value)
+        side = override if override > 0.0 else span
+
+        base.update({
+            "available": True,
+            "reason": None,
+            # Square centred on the line midpoint, one axis along A->B, so the
+            # line is its mirror axis in both directions.
+            "center": [(ax + bx) / 2.0, (ay + by) / 2.0],
+            "axis": [dx / span, dy / span],
+            "side_m": side,
+            "half_side_m": side / 2.0,
+            "projected_post_distance_m": span,
+            "side_source": "line_geofence_side_m" if override > 0.0 else "projected post distance",
+            "post_a_map": [ax, ay],
+            "post_b_map": [bx, by],
+        })
+        return base
 
     def detection_to_world_ned(self, u_norm: float, v_norm: float):
         if self.last_odometry is None:
@@ -490,9 +598,15 @@ class FlightCameraTransformNode(Node):
             self.output_pub.publish(out)
 
     def publish_status(self):
+        geofence = self.line_geofence_payload()
+        geofence_msg = String()
+        geofence_msg.data = json.dumps(geofence)
+        self.line_geofence_pub.publish(geofence_msg)
+
         pose_state = self.get_pose_state()
 
         payload = {
+            "line_geofence": geofence,
             "mode": "flight_pose_ground_plane",
             "transform_mode": str(self.get_parameter("transform_mode").value),
             "indoor_static_origin_x": float(self.get_parameter("indoor_static_origin_x").value),

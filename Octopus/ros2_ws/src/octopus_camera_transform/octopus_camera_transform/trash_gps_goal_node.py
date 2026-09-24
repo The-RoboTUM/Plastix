@@ -81,6 +81,17 @@ class TrashGpsGoalNode(Node):
         # reported done, and blocks every reachable target behind it. 0.0 keeps
         # the old "targets are never forgotten" behaviour and is the default, so
         # a consumer that never sets it sees no change.
+        # GripperX fences its demo area to a square that is symmetric about the
+        # reference line; this is the same fence on our side, so a piece of trash
+        # outside it never becomes a target the robot would be sent to and then
+        # refuse. flight_camera_transform_node builds the square by projecting
+        # the two marked posts, so it is expressed in the same map metres the
+        # detections are - see Octopus/docs/line_calibration.md.
+        #
+        # Independent of max_radius_m above: that one is a circle around the
+        # datum for reach, this one is the agreed area. Both may be on.
+        self.declare_parameter("use_line_geofence", True)
+        self.declare_parameter("line_geofence_topic", "/octopus/line_geofence")
         self.declare_parameter("target_ttl_sec", 0.0)
         self.declare_parameter("publish_period_sec", 1.0)
         self.declare_parameter("frame_id", "map")
@@ -102,9 +113,14 @@ class TrashGpsGoalNode(Node):
         self.datum_from_topic = False
         self.update_datum(self.datum_lat, self.datum_lon)
 
+        self.use_line_geofence = bool(self.get_parameter("use_line_geofence").value)
+        self.line_geofence = None
+
         self.targets = []  # ordered by first detection
         self.out_of_range_count = 0
         self.last_out_of_range_log = 0.0
+        self.outside_fence_count = 0
+        self.last_outside_fence_log = 0.0
         self.next_target_id = 1
         self.last_goal_id = None
 
@@ -122,6 +138,12 @@ class TrashGpsGoalNode(Node):
         )
 
         self.create_subscription(String, self.input_topic, self.detections_callback, 10)
+        self.create_subscription(
+            String,
+            str(self.get_parameter("line_geofence_topic").value),
+            self.line_geofence_callback,
+            10,
+        )
         self.create_subscription(
             String,
             str(self.get_parameter("goal_done_topic").value),
@@ -179,6 +201,32 @@ class TrashGpsGoalNode(Node):
         # with it. Republish immediately instead of waiting for the next tick.
         self.publish_all()
 
+    def line_geofence_callback(self, msg: String):
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        self.line_geofence = payload if payload.get("available") else None
+
+    def inside_line_geofence(self, x, y):
+        """Is this map point inside the agreed square? (distance along, distance across).
+
+        Returns None for both distances when there is no fence to test against -
+        no fence means no filtering, never "reject everything".
+        """
+        fence = self.line_geofence
+        if not self.use_line_geofence or fence is None:
+            return True, None, None
+
+        cx, cy = fence["center"]
+        ex, ey = fence["axis"]
+        half = float(fence["half_side_m"])
+
+        dx, dy = float(x) - float(cx), float(y) - float(cy)
+        along = dx * float(ex) + dy * float(ey)
+        across = dx * float(ey) - dy * float(ex)
+        return abs(along) <= half and abs(across) <= half, along, across
+
     def local_to_latlon(self, x_m, y_m):
         """Map meters (x = east, y = north) to WGS84 around the datum."""
         lat = self.datum_lat + y_m / METERS_PER_DEGREE_LAT
@@ -213,6 +261,11 @@ class TrashGpsGoalNode(Node):
                     self.note_out_of_range(x, y, radius, now)
                     continue
 
+            inside, along, across = self.inside_line_geofence(x, y)
+            if not inside:
+                self.note_outside_fence(x, y, along, across, now)
+                continue
+
             self.register(x, y, confidence, detection.get("class_name"), now)
 
     def note_out_of_range(self, x, y, radius, now):
@@ -225,6 +278,22 @@ class TrashGpsGoalNode(Node):
             f"Detection at map ({x:.2f}, {y:.2f}) is {radius:.2f} m from the datum, "
             f"outside max_radius_m={self.max_radius_m:.2f}. Not offered as a target. "
             f"{self.out_of_range_count} dropped so far."
+        )
+
+    def note_outside_fence(self, x, y, along, across, now):
+        """Same throttled-and-counted treatment as the radius bound: a dropped
+        detection has to be visible somewhere, or an empty target list during a
+        demo looks like a broken detector."""
+        self.outside_fence_count += 1
+        if now - self.last_outside_fence_log < 10.0:
+            return
+        self.last_outside_fence_log = now
+        half = float(self.line_geofence["half_side_m"])
+        self.get_logger().warn(
+            f"Detection at map ({x:.2f}, {y:.2f}) is {along:+.2f} m along and "
+            f"{across:+.2f} m across the reference line, outside the "
+            f"{2 * half:.2f} m demo square. Not offered as a target. "
+            f"{self.outside_fence_count} dropped so far."
         )
 
     def register(self, x, y, confidence, class_name, now):
@@ -374,10 +443,27 @@ class TrashGpsGoalNode(Node):
                 "last_seen": target["last_seen"],
             })
 
+        # Say what was filtered out and by what. A consumer that sees an empty
+        # list needs to be able to tell "nothing detected" from "everything was
+        # outside the fence", and so does anyone watching the dashboard.
+        fence = self.line_geofence if self.use_line_geofence else None
+        geofence_payload = {
+            "enabled": bool(self.use_line_geofence),
+            "active": fence is not None,
+            "dropped_outside": self.outside_fence_count,
+        }
+        if fence is not None:
+            geofence_payload.update({
+                "center": fence.get("center"),
+                "axis": fence.get("axis"),
+                "side_m": fence.get("side_m"),
+            })
+
         self.targets_pub.publish(String(data=json.dumps({
             "source_id": "trash_gps_goal_node",
             "frame_id": self.frame_id,
             "timestamp": time.time(),
+            "geofence": geofence_payload,
             "datum": {
                 "lat": self.datum_lat,
                 "lon": self.datum_lon,
