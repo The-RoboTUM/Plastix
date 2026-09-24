@@ -1,0 +1,54 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>gripperx_external</name>
+  <version>0.1.0</version>
+  <description>External-goal link: consumes Octopus litter positions over rosbridge, validates them, resolves them into robot standing poses and dispatches them to Nav2 behind an arming gate. Reports robot telemetry back.</description>
+  <maintainer email="theo.blaesse@itq.de">Theo Blässe</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>rclpy</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>builtin_interfaces</exec_depend>
+  <exec_depend>std_msgs</exec_depend>
+  <!-- Trigger, for the operator's clear_blacklist service. A stock type on
+       purpose: the call carries no value that needs validating, and a custom
+       srv would imply it does. -->
+  <exec_depend>std_srvs</exec_depend>
+  <exec_depend>sensor_msgs</exec_depend>
+  <exec_depend>geometry_msgs</exec_depend>
+  <exec_depend>diagnostic_msgs</exec_depend>
+  <exec_depend>nav_msgs</exec_depend>
+  <!-- System-installed ros-jazzy-nav2-msgs 1.3.12, byte-identical to the
+       .rosdeps_local copy bt_navigator uses (.action files diff-clean). That is
+       why octopus_link.launch.py uses additional_env={} and deliberately NOT
+       GRIPPERX_ROSDEPS_LIB - see the comment at the call site. Not imported
+       until the action client arrives at rollout stage 3. -->
+  <exec_depend>nav2_msgs</exec_depend>
+  <exec_depend>visualization_msgs</exec_depend>
+  <exec_depend>rcl_interfaces</exec_depend>
+  <!-- /clock, subscribed ONLY to detect the SAFETY.md F-35 mismatch
+       (a live /clock publisher while use_sim_time is false). It does
+       NOT make either node sim-time driven: only rclpy's TimeSource
+       does that, and it attaches on the use_sim_time PARAMETER. -->
+  <exec_depend>rosgraph_msgs</exec_depend>
+  <exec_depend>tf2_ros</exec_depend>
+  <exec_depend>gripperx_arm_msgs</exec_depend>
+  <exec_depend>gripperx_external_msgs</exec_depend>
+  <!-- apt, noble/universe, version 10.4: legacy websockets.client API only.
+       10.4 has neither websockets.asyncio (13+) nor websockets.sync (12+).
+       See the library-pin note at the top of rosbridge_client.py before touching
+       this, and the 10.4-on-Python-3.12 server deadlock recorded in
+       test/mock_rosbridge_server.py close_listener(). -->
+  <exec_depend>python3-websockets</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

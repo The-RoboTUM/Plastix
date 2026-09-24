@@ -1,0 +1,523 @@
+controller_manager:
+  ros__parameters:
+    # Shared with the real robot -- do not change this for a simulation-only
+    # reason. In the twin, 100 Hz physics does not divide evenly by 30, so the
+    # controller period alternates 30/40 ms instead of a steady 33.3 ms;
+    # odometry stays correct (true elapsed period is used), but a fixed-gain
+    # filter tuned against steady 30 Hz would see jitter in sim only. Fix
+    # belongs in the world files (1/120 s divides 30 Hz exactly), not here.
+    update_rate: 30
+
+    joint_state_broadcaster:
+      type: joint_state_broadcaster/JointStateBroadcaster
+
+    # NFR-10 / §3.1 variant B: the 4WIS4WID kinematics as a ros2_control
+    # controller, subscribing /cmd_vel directly and owning arbitration point
+    # A2 (/teleop/direct_steer, OP-23 / A2-b). Replaces swerve_cmd_node +
+    # joint_command_bridge and the two controllers below.
+    #
+    # DECLARED, NOT YET SPAWNED: no launch file requests it yet, so adding
+    # this entry loads nothing (NFR-2 soft gating, pending hardware sign-off).
+    #
+    # MUTUALLY EXCLUSIVE with steering_position_controller and
+    # wheel_velocity_controller: all three claim the same eight command
+    # interfaces, so a spawner list must not contain swerve_controller
+    # together with those two.
+    #
+    # Same entry, same spawner, same parameters on real and sim (§3.1.6 item
+    # 1); see the REAL vs. SIM block further down for what differs.
+    swerve_controller:
+      type: gripperx_swerve_controller/SwerveController
+
+    steering_position_controller:
+      type: position_controllers/JointGroupPositionController
+
+    wheel_velocity_controller:
+      type: velocity_controllers/JointGroupVelocityController
+
+swerve_controller:
+  ros__parameters:
+    # --- ROBOT GEOMETRY -- a/b TO-VERIFY, wheel_radius resolved -------------
+    # a and b are KING-PIN quantities (swerve_kinematics.cpp works at the
+    # point each wheel steers about), a different convention from the
+    # CONTACT-POINT lateral offset below (wheel_lateral_offset) — do not mix
+    # the two. Declared in gripperx_geometry/config/geometry.yaml; do not
+    # edit the values by hand. a and b remain TO-VERIFY.
+    # See OP-29: the king-pin/contact-point gap may explain part of the
+    # in-place-spin error, since the controller treats the two as coincident.
+    # wheel_radius = 0.070 m is the carpet/hard-floor EFFECTIVE rolling
+    # radius (lugged tyres are surface-dependent), fixed from a rolling
+    # measurement (FL 70.43 mm / BL 71.62 mm over 2 revolutions each). Full
+    # provenance in swerve_cmd.yaml, not repeated here.
+    a: 0.1809   # declared in gripperx_geometry/config/geometry.yaml
+    b: 0.1087   # declared in gripperx_geometry/config/geometry.yaml
+    wheel_radius: 0.070
+
+    # --- KING-PIN -> TYRE-CONTACT LATERAL OFFSET, JOINT order FL, FR, BL, BR ---
+    # Signed in base_link y (positive = left). SOURCE OF TRUTH is
+    # gripperx_description/urdf/gripperx_v1.core.xacro *_wheel_offset_xyz y.
+    # Corrects the SPEED only (-omega*h per wheel) for the tyre sitting
+    # outboard of the king-pin circle in an in-place spin; steering angles
+    # are unchanged since the lateral lever arm drops out of the no-slip
+    # constraint that fixes the angle but not the speed.
+    # NOT a scalar and NOT derived from localization.yaml: the 0.2 mm FR
+    # asymmetry is real CAD, kept deliberately in both places.
+    # Omitting the key leaves the controller on an all-zero (king-pin-only)
+    # default, stated in its configure log.
+    wheel_lateral_offset: [0.055572, -0.055372, 0.055572, -0.055571]
+
+    # Joint order FL, FR, BL, BR everywhere in this file — the order of
+    # steer_servo.yaml, of /hw/joint_commands[0-3] and of /teleop/direct_steer.
+    # The IK works internally in Lee-2015 model order (FL, BL, BR, FR); the
+    # controller converts explicitly, never implicitly.
+    steering_joint_names:
+      - f_left_steer
+      - f_right_steer
+      - b_leftsteer
+      - b_rightsteer
+    wheel_joint_names:
+      - f_leftwheel
+      - f_rightwheel
+      - b_leftwheel
+      - b_rightwheel
+
+    # --- PER-WHEEL, PER-DIRECTION STEERING WINDOW -- FR-5 / SR-6, SAFETY ------
+    # SOURCE OF TRUTH is gripperx_control/config/steer_servo.yaml (calibrated
+    # on the machine; its clamp in steer_servo_node is the last line of
+    # defence and stays so). These three keys mirror the same-named keys
+    # there and MUST be changed together; the controller logs the resolved
+    # window at configure time so a mismatch is visible.
+    #
+    # Both limits are magnitudes; steering_outward_sign says which sign of
+    # the joint angle is physically outward and was MEASURED — a URDF-only
+    # reading gives [1,-1,1,-1], wrong on the front pair, under which the
+    # in-place spin would be impossible. Resulting windows:
+    #   FL [-125, +35]  FR [-35, +125]  BL [-35, +125]  BR [-125, +35]  deg
+    #
+    # Neither limit is a mechanical ceiling: the outward bound is set by
+    # FL's raw-count wrap (centre 1520 counts, counts down outward, wraps at
+    # 0/4095 133.6 deg away) — the real mechanical stop is near 193.6 deg.
+    # See config/steer_servo.yaml for what a wrap would do to the readback.
+    steering_outward_limit_deg: 125.0
+    steering_inward_limit_deg: 35.0
+    steering_outward_sign: [-1, 1, 1, -1]
+
+    # --- SLEW BRAKING -- reduce wheel drive while the modules are still turning
+    # steer_alignment_reference_rad is the NORMALISATION of "how big is a big
+    # steering error", NOT a limit. Kept at the value the old symmetric
+    # steering_angle_limit carried, so the braking behaviour is unchanged.
+    steer_alignment_min_scale: 0.45
+    steer_alignment_deadband_rad: 0.12
+    steer_alignment_reference_rad: 1.0472
+
+    max_wheel_angular_speed: 12.0
+
+    # --- STAGE 2 (OP-24 / S1) ------------------------------------------------
+    # Three cases, all in the controller: fresh non-zero twist -> IK; fresh
+    # ZERO twist -> wheels zero and steering HOLDS; genuinely stale /cmd_vel
+    # -> the same hold. The zero test is EXACT (vx == vy == omega == 0.0) —
+    # deliberately NO epsilon parameter, none to be added until Nav2/DWB
+    # reopens the question with a measured value.
+    cmd_vel_timeout_sec: 0.5
+
+    # Full swerve for teleop/manual. Nav2 forward-only limits live in
+    # gripperx_planning/config/nav2.yaml (DWB), not here.
+    enforce_front_forward: false
+    allow_reverse: true
+
+    # --- STEERING DIFFERENTIAL FROM STEER FEEDBACK (task #21) ----------------
+    # In keyboard mode teleop_mux zeroes angular.z, so the IK sees omega = 0
+    # and gives all four wheels the same speed regardless of servo angle;
+    # this reconstructs a plausible omega from the MEASURED steering angles
+    # and feeds it back through the same IK. A geometric feedforward split,
+    # NOT a wheel-velocity regulator — the control law stays open-loop
+    # (FR-11 item 2).
+    enable_steer_feedback_differential: true
+    steer_diff_omega_gate: 0.05
+    steer_diff_min_speed_mps: 0.03
+    steer_diff_time_constant_sec: 0.3
+    steer_diff_max_omega: 1.5
+    steer_diff_min_ratio: 0.5
+    steer_diff_max_ratio: 1.5
+
+    # --- ARBITRATION POINT A2 (OP-23 / A2-b) --------------------------------
+    # The override wins while fresh AND while /teleop/active_mode is not
+    # `autonomous`, then falls back. One implementation shared by real and
+    # sim, replacing two copies (steer_servo_node + sim_steer_bridge).
+    direct_steer_topic: /teleop/direct_steer
+    direct_timeout_sec: 0.5
+    active_mode_topic: /teleop/active_mode
+    autonomous_mode_name: autonomous
+
+    cmd_vel_topic: /cmd_vel
+
+    # --- WATCHDOG INTENT ECHO (OP-18a / W2, §3.1.2 stage 4b) ----------------
+    # Topic, message type and rate are TO-VERIFY: PROPOSED as
+    # gripperx_control_msgs/SwerveIntentEcho at update_rate (30 Hz), QoS
+    # KeepLast(10) + RELIABLE, published via a realtime_tools publisher
+    # thread so it does NOT depend on the controller_manager executor.
+    intent_echo_topic: /swerve_controller/intent_echo
+
+    # --- PER-WHEEL VELOCITY REPORT (FR-11 item 1) ---------------------------
+    # Commanded and measured in ONE message, per wheel, so the two are
+    # comparable without correlating topics by timestamp.
+    wheel_report_topic: /swerve_controller/wheel_velocities
+
+    # --- PER-WHEEL VELOCITY REGULATOR (structure only) ----------------------
+    # With it off, the value written to each wheel VELOCITY command interface
+    # is the kinematic feedforward setpoint itself, bit for bit -- FR-11 item
+    # 2 (open-loop) and NFR-10 acceptance item 10 (demonstrably open-loop)
+    # hold.
+    #
+    # TURNING IT ON IS A REQUIREMENTS DECISION, NOT A TUNING STEP: FR-11 item
+    # 2 is `clarified` and forbids the loop in this rebuild, so enabling this
+    # parameter contradicts it as written until the requirement is revised.
+    # The controller logs at ERROR on every configure while it is on, so a
+    # closed-loop stack cannot be quiet about it.
+    #
+    # RUNTIME SWITCHABLE -- the ONLY parameter in this block that is:
+    #   ros2 param set /swerve_controller wheel_regulator_enabled true|false
+    # takes effect on the NEXT update() cycle, with no reload; both edges
+    # reset every integrator, and OFF is a STEP to zero correction, not a
+    # ramp. The GAINS below are NOT runtime-settable -- an attempt to set
+    # them is REFUSED with a reason, because a `ros2 param get` that
+    # disagrees with the running control law is exactly the silent
+    # divergence SR-13 exists to prevent.
+    #
+    # WHY IT EXISTS: the CONSTANT per-wheel deficit in the open-loop drive is
+    # compensated by the firmware feedforward offset (pwm = a + b*|rpm|), NOT
+    # by this parameter, which is only for the VARIATION -- surfaces,
+    # payload, slope -- that no constant offset can track. It is a PI trim,
+    # no D term (the velocity estimate is a first difference from a 30 Hz
+    # feed, and a derivative would differentiate its quantisation noise); it
+    # TRIMS the feedforward and never replaces it.
+    #
+    # ENABLED BY DEFAULT: NFR-10 acceptance item 10 is therefore NOT
+    # satisfied while true -- the machine runs closed-loop from boot. The
+    # runtime switch above is the way back to open-loop without a reload.
+    wheel_regulator_enabled: true
+
+    # TO-VERIFY: the better of two points tried on hardware under load, not a
+    # proven optimum -- still TO-VERIFY as a tuned value. Deliberately slow:
+    # a first enable on hardware must not surprise the person watching.
+    wheel_regulator_kp: 0.2
+
+    # TO-VERIFY, same status as kp. 1/s. Corrections observed on hardware
+    # stayed well under the authority bound, so the integrator is nowhere near
+    # it in normal driving. TO-VERIFY: oscillation was NOT measured -- only
+    # the mean error was compared, never the variance of the correction.
+    wheel_regulator_ki: 0.2
+
+    # AUTHORITY BOUND, as a fraction of |setpoint|. THE REFERENCE QUANTITY IS
+    # THE FEEDFORWARD OUTPUT (FR-14 item 8), since no PWM value ever crosses
+    # the ros2_control boundary for a PWM-range alternative to read. An
+    # ABSOLUTE bound in rad/s was rejected: the point of a fraction is that
+    # the bound scales with the command instead of being huge at low speed
+    # and negligible at high speed.
+    #
+    # THIS IS WHAT STOPS A REGULATOR FROM DRIVING A SLIPPING OR BLOCKED WHEEL
+    # TO FULL EFFORT: an unbounded PI answers a permanent error with ever
+    # more effort. The INTEGRATOR IS CLAMPED TO THE SAME BOUND, not just the
+    # output. HWR-30a is the response to such a wheel; this bound only
+    # guarantees the regulator does not make it worse before the detector
+    # trips.
+    #
+    # RANGE IS [0, 1), STRICTLY BELOW 1.0 — refused at startup otherwise. At
+    # exactly 1.0 a correction of -|setpoint| writes exactly 0.0, which is
+    # INDISTINGUISHABLE AT THE ACTUATOR from an HWR-30a stall latch. FR-14
+    # item 2 forbids a trim that can reduce the feedforward to zero.
+    wheel_regulator_max_correction_fraction: 0.30
+
+    # TO-VERIFY. A wheel regulates only while its feedback is newer than
+    # this; past it, it falls back to pure feedforward and its integrator
+    # resets, and a new sample after a gap this long re-seeds the timing
+    # instead of integrating across the hole. 0.2 s is several periods of
+    # the ~30 Hz feedback feed, clear of ordinary jitter; nobody has measured
+    # how long a gap may safely be ignored.
+    wheel_regulator_max_sample_age_sec: 0.2
+
+    # OBSERVABILITY (FR-14 item 7, binding). Per wheel, on
+    # /swerve_controller/wheel_velocities: the CORRECTION, a `regulating`
+    # flag, and a `regulator_status` code for WHY when it is not regulating.
+    # The reason is evidence, not preference: a per-wheel error visible here
+    # is how a loose connection gets diagnosed, which a regulator driving the
+    # wheel harder until speeds converge would hide.
+    #
+    # Per-wheel rate limit on the "at the authority limit" log line. A
+    # LOGGING cadence, not a control threshold and NOT TO-VERIFY: entering
+    # and leaving the bound are edge events, this only bounds an oscillation.
+    wheel_regulator_log_period_sec: 5.0
+
+    # NOT A PARAMETER, stated so it is not looked for: the corrected command
+    # is capped at max_wheel_angular_speed (above), which the controller
+    # mirrors into the regulator, so a second independent ceiling could
+    # disagree with the first.
+    #
+    # ALSO NOT A PARAMETER OF ITS OWN: assume_live_provenance (below, in the
+    # HWR-30a block) gates BOTH the stall detector and the regulator, since
+    # they consume the same latched topic.
+
+    # --- STALL DETECTION + TIER-1 RESPONSE (HWR-30a) ------------------------
+    # Built in SOFTWARE, ROS2-side, without current measurement, so it does
+    # not wait on HWR-30b and the missing GB37-50 stall-current measurement.
+    # DEVIATES from HWR-30's written text, which places the cut-off in the
+    # ESP32 firmware; the deviation is recorded in REQUIREMENTS separately.
+    # It sits in the CONTROLLER, not the hardware interface, because
+    # GripperXInterface is replaced by gz_ros2_control/GazeboSimSystem in the
+    # twin (3.1.6) — a detector there would be structurally untestable in sim.
+    #
+    # WHAT IT DOES: per wheel, trip when for stall_window_sec continuously
+    #   (a) |commanded wheel angular velocity| > stall_min_command_rad_s, AND
+    #   (b) that wheel's encoder provenance on /hw/wheel_feedback_valid is LIVE,
+    #   AND
+    #   (c) the ACCUMULATED wheel POSITION has moved by less than
+    #       stall_min_position_delta_rad.
+    # Response = HWR-30 TIER 1: that wheel's velocity command goes to zero,
+    # the other three and the steering are untouched — explicitly NOT a hard
+    # stop of the machine.
+    #
+    # (b) IS BINDING, not a nicety. HWR-30a: "the detection MUST key off the
+    # encoder-valid condition, not off the reported velocity" — a dead
+    # encoder reporting a plausible 0.0 and a healthy stationary wheel are
+    # bit-identical in the velocity. Nothing here reads the measured velocity.
+    #
+    # EVERY THRESHOLD BELOW IS `TO-VERIFY`, FOR ONE SHARED REASON: the window
+    # this protects is a THERMAL property of the deliberately thin motor lead
+    # (WIRING_PLAN 8.2 Option B) at STALL CURRENT, and that stall-current
+    # measurement (WIRING_PLAN 8.5, GB37-50) DOES NOT EXIST. None of these
+    # values is derived; they are chosen safe against FALSE trips, because a
+    # false trip stops a working wheel mid-drive and is itself a hazard.
+    stall_detection_enabled: true
+
+    # TO-VERIFY. Order of magnitude only. The user's stated intent for the
+    # TIER-2 (thermal) window is "a few seconds"; 1.0 s keeps tier 1 clearly
+    # inside that. Chosen this long rather than shorter against false trips:
+    # a wheel briefly caught on terrain, or a slow break-away against static
+    # friction, must not trip. It spans 30 controller cycles at update_rate
+    # 30, and about 30 feedback samples too (/hw/joint_states publishes at
+    # ~30 Hz, measured mean 29.999 Hz), so no single late or dropped sample
+    # can produce a trip.
+    stall_window_sec: 1.0
+
+    # TO-VERIFY, and the value that MOST needs a measurement: the correct
+    # number is the motor's BREAK-AWAY command — the smallest command that
+    # moves a loaded GB37-50 at all — and that has never been measured. Below
+    # it, "not moving" is not a fault.
+    # 2.0 rad/s = 0.14 m/s at wheel_radius 0.070. Ordinary teleop driving is
+    # well inside the armed band; the manoeuvre-slew twists are deliberately
+    # OUTSIDE it. DELIBERATE UNDER-COVERAGE: slow Nav2 approaches below
+    # 0.14 m/s are not protected. Lower it only against a measured break-away
+    # figure.
+    #
+    # ⚠ DOUBLY LOAD-BEARING: it is ALSO the wheel regulator's SLOW-END FLOOR
+    # (FR-14 item 12, acceptance A17) -- at or below this magnitude the
+    # regulator holds its correction at 0.0, resets its integrator, and
+    # reports REGULATOR_OFF_BELOW_FLOOR. Deliberate sharing -- THE REGULATOR
+    # MAY ONLY ADD AUTHORITY WHERE HWR-30a IS WATCHING -- so the two are ONE
+    # number, not two that can drift. Lowering it extends the regulator's
+    # reach into the non-proportional slow end; the slow range itself is
+    # extended by the FIRMWARE OFFSET `a` (OP-32 G1), not by lowering this.
+    stall_min_command_rad_s: 2.0
+
+    # TO-VERIFY. How far the accumulated wheel position must move inside the
+    # window to count as turning. 0.05 rad is ~2.9 deg of wheel rotation,
+    # ~3.5 mm of travel at r = 0.070. Must sit above encoder quantisation and
+    # standstill dither and far below what a healthy wheel does: one count is
+    # 0.00196 rad (3200 counts/rev, firmware include/motor_controller.hpp,
+    # confirmed to ~1 % by a rolling measurement), so 0.05 rad is 25.5
+    # COUNTS -- clear of the +-1..2 count chatter on a stationary wheel,
+    # while a healthy wheel at the arming threshold covers 40x this in the
+    # window.
+    stall_min_position_delta_rad: 0.05
+
+    # OP-25 — WHAT COUNTS AS A "FRESH COMMAND". PROPOSAL, PENDING USER
+    # CONFIRMATION; OP-25 is recorded `open`.
+    # A tripped wheel stays latched off until its command has FALLEN to or
+    # below stall_release_command_rad_s and then RISEN back above
+    # stall_min_command_rad_s -- two edges, in that order, on the REQUESTED
+    # command. THE SAME HELD NON-ZERO COMMAND CAN NEVER RELEASE THE LATCH:
+    # /cmd_vel streams at 30 Hz whether or not anything changed, so "clear on
+    # the next command received" would re-energise, re-stall and chatter
+    # with inrush current every cycle, worse for the thin lead than either
+    # state.
+    # NOT IMPLEMENTED and needing a decision: F2's direction-change release,
+    # and a bounded hold-off against the autonomous deadlock where the other
+    # three wheels keep the robot moving, Nav2 never reverses, and the
+    # latched wheel stays off indefinitely — visibly, but indefinitely.
+    stall_release_command_rad_s: 0.1
+
+    # TIER 1 IS A SINGLE-MOTOR RESPONSE. HWR-30 defines tier 2 as "sustained,
+    # OR affecting more than one motor", and HWR-30b is BLOCKED on the
+    # unmeasured stall current. A trip that would latch more wheels than this
+    # cap is REFUSED and reported as the tier-2 condition it is, rather than
+    # silently approximating tier 2 with four tier-1 latches.
+    # Also guards the one false-trip mode that would turn a per-wheel
+    # response into an undeclared whole-machine stop: if /hw/joint_states
+    # stops arriving, every wheel POSITION freezes at once and all four
+    # satisfy the criterion in the same cycle.
+    stall_max_latched_wheels: 1
+
+    # Latched (TRANSIENT_LOCAL) provenance from GripperXInterface, FR-11
+    # items 5/6. A volatile subscriber would miss the retained sample
+    # (provenance settles during activation and then never changes) and the
+    # detector would stay disarmed forever while looking healthy.
+    wheel_feedback_valid_topic: /hw/wheel_feedback_valid
+
+    # SR-13 (rev 4) item 1 — "a drive motor latched off after a tier-1 stall
+    # cut-off MUST be a named state". Tier 1 disables one motor while three
+    # keep driving, so the robot generally keeps moving and nothing upstream
+    # notices. PROVISIONAL CARRIER: SR-13 wants ONE health channel consumed
+    # by the OP-21 (b) display state, which does not exist yet. Published
+    # latched and EDGE-TRIGGERED, never per cycle.
+    stall_state_topic: /swerve_controller/stall_state
+
+    # Per-wheel rate limit on the trip ERROR line. A LOGGING cadence, not a
+    # safety threshold and not TO-VERIFY: trips are edge events and the latch
+    # already makes them once-per-blockage; this only bounds a pathological
+    # trip/release oscillation.
+    stall_log_period_sec: 5.0
+
+    # ── Steering alignment gate ─────────────────────────────────────────────
+    # Withholds drive while the four steering modules are still travelling
+    # into a new pose. This is gripperx_teleop/manoeuvre.py's TransitionGuard
+    # moved into the controller, where it covers Nav2's crab recovery and
+    # every other twist source instead of only the keyboard. Full rationale
+    # at the top of alignment_gate.hpp.
+    #
+    # ENABLED. This CHANGES HOW THE ROBOT DRIVES: a crab or spin entry that
+    # used to creep at the slew brake's 0.45 floor now stands completely
+    # still until all four steering angles are within
+    # alignment_exit_tolerance_rad of target, or alignment_timeout_sec
+    # elapses -- whichever first. That is the intended behaviour.
+    #
+    # It closes NO loop: the gate reads no measured VELOCITY, and can only
+    # replace a wheel command with exactly 0.0. NFR-10 acceptance 10 is
+    # therefore unaffected in either position, unlike wheel_regulator_enabled.
+    #
+    # STILL TO-VERIFY, and it does not become measured by being switched on:
+    # alignment_entry_jump_rad (0.35) rests on a separation this file calls
+    # ARGUED, not measured.
+    alignment_gate_enabled: true
+
+    # ENTRY 1 — the commanded pose moved by more than this on any wheel in
+    # ONE cycle. 0.35 rad = 20 deg. TO-VERIFY: the separation is ARGUED, not
+    # measured -- an ordinary Nav2 or A/D twist moves the target by a
+    # fraction of a degree per cycle while a crab entry moves it 90 deg in
+    # one, so this sits between them with room on both sides.
+    #
+    # A +-180 deg module fold needs no separate detector: folding IS a jump
+    # of about pi, so this condition already carries it.
+    alignment_entry_jump_rad: 0.35
+
+    # ENTRY 2 — the pose ERROR on any wheel exceeds this, however it got
+    # large. 0.50 rad = 28.6 deg. TO-VERIFY.
+    # ENTRY 1 only sees CHANGES, so alone it cannot catch a controller that
+    # ACTIVATES with wheels parked at 90 deg, a wheel moved by hand, or the
+    # first cycle after an OP-24/S1 hold. This closes that hole; it MUST stay
+    # well above the steady tracking lag of an ordinary corner, or the robot
+    # refuses to drive through one.
+    alignment_entry_error_rad: 0.50
+
+    # EXIT — every wheel within this of its target. 6.0 deg, carried over
+    # unchanged from the teleop guard's align_tolerance_rad.
+    # MUST be smaller than both entry thresholds -- that gap IS the
+    # hysteresis, and the controller REFUSES TO CONFIGURE without it: entry
+    # at or below exit makes one steady pose chop the drive on and off.
+    alignment_exit_tolerance_rad: 0.10472
+
+    # EXIT fallback — release after this long regardless, reporting
+    # ALIGNMENT_TIMED_OUT on /swerve_controller/wheel_velocities.
+    #
+    # A gate with no timeout can immobilise the robot for ever on a
+    # steering-feedback fault, which is a worse failure than the one it
+    # prevents, so a non-positive value is refused at configure time. Sized
+    # against worst-case crab slew: a +-90 deg entry needs roughly 3.8 s to
+    # come inside the 6 deg exit tolerance, and slew speed varies enough
+    # between runs that this is not the last word. Slow entries where the
+    # servos did not start at all are not a timeout problem and are
+    # TO-VERIFY.
+    #
+    # ⚠ THE VALUE IS ONLY READ AT CONFIGURE TIME. `ros2 param set
+    # /swerve_controller alignment_timeout_sec <x>` reports success and reads
+    # back as `<x>`, but the running gate keeps using the value from its last
+    # configure -- its own log line still shows the old number. Changing
+    # this needs a controller restart; do not trust a runtime read as
+    # evidence of what the gate is using.
+    #
+    # ⚠ RAISING THIS BREAKS AN INVARIANT IN ANOTHER PACKAGE. crab_walk's
+    # `alignment_grace_sec` in gripperx_planning/config/nav2.yaml MUST stay
+    # strictly greater than this value: the grace bounds how long crab_walk
+    # waits for motion to start, and this bounds how long the gate may
+    # withhold it, so a grace below the timeout aborts the recovery while
+    # this gate is still about to release the drive. Not hypothetical -- it
+    # broke exactly this way once, unnoticed for 27 days, because the two
+    # values live in different files, packages and nodes with nothing but a
+    # hand-written comment holding them together.
+    #
+    # THEY ARE NOW CHECKED by test/check_alignment_timing.py in this
+    # package (`colcon test --packages-select gripperx_control`), which
+    # reads both files rather than carrying a copy of either number. Raise
+    # this value and the check goes red until the grace follows.
+    alignment_timeout_sec: 5.0
+
+    # Rate limit on the gate's log line. A LOGGING cadence, not a control
+    # threshold and not TO-VERIFY: the transitions are edge events and this only
+    # bounds an oscillation across the hysteresis band.
+    alignment_log_period_sec: 5.0
+
+    # FALSE on the real robot. See swerve_controller.sim.yaml for the sim
+    # value and why it differs.
+    # TWO CONSUMERS, ONE PARAMETER: gates the stall detector AND the wheel
+    # velocity regulator, which read the same latched provenance topic -- one
+    # statement about the PLATFORM, not a per-feature policy.
+    #
+    # SCOPED TO SIM. Setting it true on the real robot DEFEATS FR-11 ITEM 6
+    # (echoed, non-measured feedback must DISABLE a closed-loop law, not feed
+    # it): this flag is the one switch that makes the gate answer "LIVE" with
+    # no evidence at all. Harmless in the twin (physics is truthful by
+    # construction, and without it the regulator/detector would be
+    # permanently disengaged, since nothing publishes
+    # /hw/wheel_feedback_valid there). On hardware it would let the regulator
+    # close the loop on the COMMAND ECHOED BACK: perfect apparent tracking,
+    # no control at all.
+    assume_live_provenance: false
+
+    # --- REAL vs. SIM ------------------------------------------------------
+    # ONE value differs: assume_live_provenance (above, HWR-30a), layered on
+    # by swerve_controller.sim.yaml -- a VALUE, not a sim-only node (§3.1.6
+    # item 1).
+    # wheel_command_multipliers is [1, 1, 1, 1] on BOTH platforms: the URDF's
+    # right-side drive joints carry no axis mirror (all four tyre meshes are
+    # axis [0, 1, 0] — core.xacro L310), so both sides sit at the identity.
+    wheel_command_multipliers: [1.0, 1.0, 1.0, 1.0]
+
+    # NOT PORTED, stated rather than silently omitted (NFR-11):
+    #  * enable_point_turn / point_turn_* -- false in the active config. Pure
+    #    rotation uses the SWERVE spin (+-59.0 deg outward, = atan2(a, b),
+    #    inside the 125 deg outward window), reached through the ordinary IK.
+    #  * the tracking-controller path (use_direct_ik: false) with kx/ky/ktheta/
+    #    kd_gains -- not in the active config; use_direct_ik: true is the only
+    #    path now.
+    #  * enable_integrated_bridge / steering_command_topic / wheel_command_topic
+    #    / command_topic / joint_state_topic -- those topics cease to exist,
+    #    the path is in-process.
+    #  * steer_states_topic / steer_states_timeout_sec -- the steering
+    #    measurement now reaches the controller through the position STATE
+    #    interface, adopted by GripperXInterface (FR-10).
+
+steering_position_controller:
+  ros__parameters:
+    joints:
+      - f_left_steer
+      - f_right_steer
+      - b_leftsteer
+      - b_rightsteer
+
+wheel_velocity_controller:
+  ros__parameters:
+    joints:
+      - f_leftwheel
+      - f_rightwheel
+      - b_leftwheel
+      - b_rightwheel
+    interface_name: velocity

@@ -1,0 +1,257 @@
+<?xml version="1.0" ?>
+<sdf version="1.9">
+  <world name="demo_area_2m5">
+    <!--
+      demo_area_2m5: the real demo environment, empty, created 2026-08-21.
+
+      A 2.50 x 2.50 m area centred on the origin - 1.25 m in every direction
+      "under the drone" (user decision 2026-08-21). It is the twin of the
+      geofence set the same day in gripperx_external/config/octopus_link_twin.yaml
+      (geofence.{min,max}_{x,y}_m = -+1.25), so what the gateway will accept and
+      what the operator sees on the ground are the same rectangle.
+
+      THE BOUNDARY IS VISUAL ONLY - NO COLLISION, ON PURPOSE.
+      Real walls at -+1.25 would make this world useless for the thing it is for.
+      Measured against the stack as configured (gripperx_planning/config/nav2.yaml):
+        inflation_radius 0.50, cost_scaling_factor 7.0, inscribed radius 0.230,
+        max_goal_cost 200 (gateway).
+      Inflation cost is 252*exp(-7.0*(d - 0.230)) outside the inscribed circle, so
+      against a solid wall:
+        d < 0.230 m   LETHAL
+        d ~ 0.25 m    cost ~219  -> above max_goal_cost, goal REFUSED
+        d ~ 0.30 m    cost ~154  -> accepted
+      i.e. the outer ~0.26 m ring of the box would be refused on COST while the
+      geofence says it is inside. Two different mechanisms rejecting the same
+      poses for different reasons is exactly the confusion this world exists to
+      avoid: here the geofence is the ONLY boundary, and a refusal means what it
+      says.
+
+      WHY THERE IS AN OUTER ENCLOSURE AT -+4.0 m, IN AN "EMPTY" WORLD.
+      A world with NOTHING solid in it does not work with this stack, and the
+      failure is silent. Gazebo's LiDAR returns `inf` where nothing is hit;
+      nav2's obstacle layer has `inf_is_valid` unset, i.e. FALSE, so those
+      readings are DISCARDED instead of clearing the ray. The local costmap then
+      stays NO_INFORMATION, and with `track_unknown_space: true` (nav2.yaml,
+      deliberate) dwb_critics ObstacleFootprintCritic rejects every forward
+      trajectory whose footprint crosses unknown ground - "Trajectory Hits
+      Unknown Region". The robot would simply not move, for a reason that looks
+      nothing like its cause.
+      The enclosure gives the scan real returns, so the interior is raytraced
+      FREE and SLAM has features to hold on to. It sits 2.75 m outside the
+      geofence and inflation reaches only 0.50 m inward from it (to -+3.50 m), so
+      it CANNOT touch the -+1.25 m box. The play area is empty where emptiness
+      is the point.
+
+      WHAT IT STILL DOES NOT TEST, STATED RATHER THAN HIDDEN: there is no
+      obstacle inside the box, so nothing here exercises avoidance, and an
+      unobstructed run is NOT evidence that it works. This world tests the
+      Octopus link, the geofence, dispatch and arming. Obstacle handling belongs
+      in testworld_simple.
+
+      Origin convention: the world origin is the datum, i.e. the point under the
+      drone. Spawn the robot at (0, 0) with spawn_yaw:=0.0 so that map, odom and
+      world axes coincide and a target at map (x, y) is at world (x, y) with no
+      rotation to reason about.
+    -->
+    <gravity>0 0 -9.81</gravity>
+    <physics name="1ms" type="ignored">
+      <!-- 0.001 -> 0.010 on 2026-08-24 (user decision), i.e. 100 Hz physics.
+           MEASURED headless with the real model in testworld_v1, startup cost
+           subtracted, 2 runs each: the cost per step is flat at ~1.0 ms
+           regardless of step size, so the load scales linearly with the step
+           COUNT. Max achievable real-time factor:
+               0.001 -> 0.98-1.03x     0.002 -> 2.07-2.21x
+               0.004 -> 3.77-4.01x     0.010 -> 9.97-11.59x
+           At 0.001 the physics had NO headroom at all -- 1.0x headless, with no
+           rendering, no gz_ros2_control, no bridge, no Nav2, no RViz. That is
+           why the sim felt slow: real_time_factor 1.0 throttles the server to
+           real time, and it was sitting exactly on that limit.
+
+           WHY THIS IS AFFORDABLE HERE, and it is a statement about THIS model:
+           a fine step buys fidelity only where there is stiff, tuned contact
+           dynamics to resolve. There is none. Total simulated mass is 3.72 kg
+           (arm_stowed_link weighs 1 GRAM, imu_link likewise, and chassis_link's
+           2.27 kg is bare CAD shell -- no battery, Pi, motors or electronics);
+           the real mass is not documented anywhere (internal REQUIREMENTS S25/HWR-32,
+           "No CG/weight budget"). There is not one friction or contact
+           parameter in the whole workspace -- no mu, mu2, slip, kp/kd, no
+           <surface> -- so every tyre is Gazebo default on a smooth cylinder.
+           Integrating placeholder numbers ten times more finely buys nothing.
+
+           STABILITY, measured: dropped from 0.20 m onto the ground plane, the
+           model settles 0.074 mm lower than at 0.001, with 0.33 mm of residual
+           jitter and no tilt. Sub-millimetre against a 70 mm wheel radius.
+
+           WHAT THIS DOES COST -- control-period jitter, see the note in
+           gripperx_control/config/ros2_controllers.yaml (update_rate: 30).
+           100 Hz does not divide by 30. ros2_control can only fire on a physics
+           tick, so the 33.3 ms period becomes an alternating 30/40 ms one
+           (-10 %/+20 %); at 0.001 the same quantisation was +-1.5 %. The period
+           handed to the controllers is the true elapsed one, so odometry
+           integration stays correct -- but any fixed-gain filter or rate limiter
+           tuned at a steady 30 Hz now sees a varying period.
+           1/120 s (0.008333) would divide 30 Hz exactly, giving ~8.3x instead
+           of ~10x for zero jitter, if that trade is ever worth making. -->
+      <max_step_size>0.010</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+
+    <plugin
+      filename="gz-sim-physics-system"
+      name="gz::sim::systems::Physics" />
+    <plugin
+      filename="gz-sim-user-commands-system"
+      name="gz::sim::systems::UserCommands" />
+    <plugin
+      filename="gz-sim-scene-broadcaster-system"
+      name="gz::sim::systems::SceneBroadcaster" />
+    <plugin
+      filename="gz-sim-contact-system"
+      name="gz::sim::systems::Contact" />
+    <plugin
+      filename="gz-sim-imu-system"
+      name="gz::sim::systems::Imu" />
+    <plugin
+      filename="gz-sim-sensors-system"
+      name="gz::sim::systems::Sensors">
+      <render_engine>ogre2</render_engine>
+    </plugin>
+
+    <light name="sun" type="directional">
+      <!-- Shadows off 2026-08-24. A shadow map is a second full render pass over
+           the scene per light, and on the development laptop's Intel UHD 620 that
+           is paid for every GUI frame and every sensor frame. Nothing in this
+           project reads shadows: the LiDAR is a gpu_lidar (range only, unlit) and
+           no node subscribes to the camera. Purely cosmetic cost, so it is off by
+           default. Set back to true if a scenario ever needs a lit image. -->
+      <cast_shadows>false</cast_shadows>
+      <pose>0 0 10 0 0 0</pose>
+      <diffuse>0.8 0.8 0.8 1</diffuse>
+      <specular>0.2 0.2 0.2 1</specular>
+      <attenuation>
+        <range>1000</range>
+        <constant>0.9</constant>
+        <linear>0.01</linear>
+        <quadratic>0.001</quadratic>
+      </attenuation>
+      <direction>-0.5 0.1 -0.9</direction>
+    </light>
+
+    <model name="ground_plane">
+      <static>true</static>
+      <link name="link">
+        <collision name="collision">
+          <geometry>
+            <plane><normal>0 0 1</normal><size>100 100</size></plane>
+          </geometry>
+        </collision>
+        <visual name="visual">
+          <geometry>
+            <plane><normal>0 0 1</normal><size>100 100</size></plane>
+          </geometry>
+          <material>
+            <ambient>0.8 0.8 0.8 1</ambient>
+            <diffuse>0.8 0.8 0.8 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+
+    <!--
+      Outer enclosure at -+4.0 m. Present so the LiDAR has returns (see the
+      header note); far enough that its inflation never reaches the play area.
+    -->
+    <model name="enclosure_north">
+      <static>true</static>
+      <pose>0 4 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>8.2 0.2 2.0</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>8.2 0.2 2.0</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="enclosure_south">
+      <static>true</static>
+      <pose>0 -4 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>8.2 0.2 2.0</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>8.2 0.2 2.0</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="enclosure_east">
+      <static>true</static>
+      <pose>4 0 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.2 8.2 2.0</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.2 8.2 2.0</size></box></geometry></visual>
+      </link>
+    </model>
+    <model name="enclosure_west">
+      <static>true</static>
+      <pose>-4 0 1.0 0 0 0</pose>
+      <link name="link">
+        <collision name="collision"><geometry><box><size>0.2 8.2 2.0</size></box></geometry></collision>
+        <visual name="visual"><geometry><box><size>0.2 8.2 2.0</size></box></geometry></visual>
+      </link>
+    </model>
+
+    <!--
+      The -+1.25 m boundary. Four flat strips lying on the ground, 40 mm wide,
+      1 mm proud, NO <collision> element anywhere in this model - the LiDAR and
+      the costmap cannot see it and it can never inflate.
+    -->
+    <model name="geofence_marker">
+      <static>true</static>
+      <link name="link">
+        <visual name="edge_north">
+          <pose>0 1.25 0.0005 0 0 0</pose>
+          <geometry><box><size>2.54 0.04 0.001</size></box></geometry>
+          <material>
+            <ambient>0.9 0.55 0.1 1</ambient>
+            <diffuse>0.9 0.55 0.1 1</diffuse>
+          </material>
+        </visual>
+        <visual name="edge_south">
+          <pose>0 -1.25 0.0005 0 0 0</pose>
+          <geometry><box><size>2.54 0.04 0.001</size></box></geometry>
+          <material>
+            <ambient>0.9 0.55 0.1 1</ambient>
+            <diffuse>0.9 0.55 0.1 1</diffuse>
+          </material>
+        </visual>
+        <visual name="edge_east">
+          <pose>1.25 0 0.0005 0 0 0</pose>
+          <geometry><box><size>0.04 2.54 0.001</size></box></geometry>
+          <material>
+            <ambient>0.9 0.55 0.1 1</ambient>
+            <diffuse>0.9 0.55 0.1 1</diffuse>
+          </material>
+        </visual>
+        <visual name="edge_west">
+          <pose>-1.25 0 0.0005 0 0 0</pose>
+          <geometry><box><size>0.04 2.54 0.001</size></box></geometry>
+          <material>
+            <ambient>0.9 0.55 0.1 1</ambient>
+            <diffuse>0.9 0.55 0.1 1</diffuse>
+          </material>
+        </visual>
+        <!-- The datum: map (0,0), the point under the drone. -->
+        <visual name="datum_x">
+          <pose>0 0 0.0005 0 0 0</pose>
+          <geometry><box><size>0.30 0.02 0.001</size></box></geometry>
+          <material>
+            <ambient>0.1 0.4 0.9 1</ambient>
+            <diffuse>0.1 0.4 0.9 1</diffuse>
+          </material>
+        </visual>
+        <visual name="datum_y">
+          <pose>0 0 0.0005 0 0 0</pose>
+          <geometry><box><size>0.02 0.30 0.001</size></box></geometry>
+          <material>
+            <ambient>0.1 0.4 0.9 1</ambient>
+            <diffuse>0.1 0.4 0.9 1</diffuse>
+          </material>
+        </visual>
+      </link>
+    </model>
+  </world>
+</sdf>

@@ -1,0 +1,49 @@
+
+teleop_joint_commands_node:
+  ros__parameters:
+    # --- ROBOT GEOMETRY — DECLARED IN gripperx_geometry/config/geometry.yaml ---
+    # DO NOT EDIT THE VALUES BELOW BY HAND. They are checked against the
+    # declaration by gripperx_geometry's consistency test, which names every
+    # site that drifts. Change the quantity there, not here.
+    #
+    # a and b are KING-PIN quantities (half-wheelbase, half-track), not
+    # contact-point quantities: FourWIS4WIDKinematicModel computes each
+    # wheel's velocity at the king-pin point, and swerve_kinematics.cpp's
+    # atan2 of that velocity is the steering angle. Do not compare a/b
+    # against a contact-point measurement without converting first.
+    #
+    # wheel_radius is the EFFECTIVE ROLLING radius used for odometry, not
+    # half the geometric wheel diameter — a loaded, lugged tyre rolls
+    # smaller than its own geometric radius, and the value is
+    # surface-dependent (carpet/hard-floor here).
+    a: 0.1809   # declared in gripperx_geometry/config/geometry.yaml
+    b: 0.1087   # declared in gripperx_geometry/config/geometry.yaml
+    wheel_radius: 0.070
+    cmd_vel_topic: /cmd_vel
+    joint_states_topic: /hw/joint_states
+    joint_commands_topic: /hw/joint_commands
+    # Per-wheel, per-direction window — mirrors config/steer_servo.yaml
+    # (source of truth). This node writes /hw/joint_commands directly, so
+    # it must plan inside the same window.
+    # Joint order FL, FR, BL, BR:  FL [-125,+35]  FR [-35,+125]
+    #                              BL [-35,+125]  BR [-125,+35]  deg
+    steering_outward_limit_deg: 125.0
+    steering_inward_limit_deg: 35.0
+    # Inward 35 deg sits on 15.3 deg of margin at the real mechanical stop
+    # (measured 2026-09-18); mirrors steer_servo.yaml.
+    steering_outward_sign: [-1, 1, 1, -1]
+    steer_alignment_min_scale: 0.45
+    steer_alignment_deadband_rad: 0.12
+    max_wheel_angular_speed: 12.0
+    control_rate_hz: 100.0
+    cmd_vel_timeout_sec: 0.5
+    enforce_front_forward: false
+    allow_reverse: true
+    enable_point_turn: true
+    point_turn_steer_target: 0.0
+    point_turn_vx_threshold: 0.01
+    point_turn_vy_threshold: 0.01
+    point_turn_omega_threshold: 0.35
+
+
+

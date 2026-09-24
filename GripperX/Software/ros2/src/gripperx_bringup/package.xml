@@ -1,0 +1,37 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>gripperx_bringup</name>
+  <version>0.0.0</version>
+  <description>Real-robot bringup (URDF + swerve control). Simulation lives in gripperx_gazebo.</description>
+  <maintainer email="mariaceleste.fernandez@robotum.info">celeste</maintainer>
+  <license>TODO: License declaration</license>
+
+  <buildtool_depend>ament_cmake</buildtool_depend>
+
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>gripperx_control</exec_depend>
+  <exec_depend>gripperx_description</exec_depend>
+  <exec_depend>gripperx_hardware_interface</exec_depend>
+  <exec_depend>gripperx_localization</exec_depend>
+  <exec_depend>gripperx_planning</exec_depend>
+  <exec_depend>gripperx_sensors</exec_depend>
+  <exec_depend>controller_manager</exec_depend>
+  <exec_depend>joint_state_broadcaster</exec_depend>
+  <exec_depend>launch</exec_depend>
+  <exec_depend>launch_ros</exec_depend>
+  <exec_depend>position_controllers</exec_depend>
+  <exec_depend>robot_state_publisher</exec_depend>
+  <exec_depend>ros2_control</exec_depend>
+  <exec_depend>velocity_controllers</exec_depend>
+  <exec_depend>joy</exec_depend>
+  <exec_depend>teleop_twist_joy</exec_depend>
+  <exec_depend>teleop_twist_keyboard</exec_depend>
+
+  <test_depend>ament_lint_auto</test_depend>
+  <test_depend>ament_lint_common</test_depend>
+
+  <export>
+    <build_type>ament_cmake</build_type>
+  </export>
+</package>

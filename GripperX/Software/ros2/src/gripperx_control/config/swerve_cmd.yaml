@@ -1,0 +1,122 @@
+swerve_cmd_node:
+  ros__parameters:
+    # --- ROBOT GEOMETRY — DECLARED IN gripperx_geometry/config/geometry.yaml ---
+    # DO NOT EDIT THE VALUES BELOW BY HAND. They are checked against the
+    # declaration by gripperx_geometry's consistency test, which names every
+    # site that drifts. Change the quantity there, not here.
+    #
+    # a and b are KING-PIN quantities (half-wheelbase, half-track), not
+    # contact-point quantities: FourWIS4WIDKinematicModel computes each
+    # wheel's velocity at the king-pin point, and swerve_kinematics.cpp's
+    # atan2 of that velocity is the steering angle. Do not compare a/b
+    # against a contact-point measurement without converting first.
+    #
+    # wheel_radius is the EFFECTIVE ROLLING radius used for odometry, not
+    # half the geometric wheel diameter — a loaded, lugged tyre rolls
+    # smaller than its own geometric radius, and the value is
+    # surface-dependent (carpet/hard-floor here).
+    a: 0.1809   # declared in gripperx_geometry/config/geometry.yaml
+    b: 0.1087   # declared in gripperx_geometry/config/geometry.yaml
+    wheel_radius: 0.070
+    cmd_vel_topic: /cmd_vel
+    joint_state_topic: /joint_states
+    command_topic: /swerve_cmd_joint_states
+    # --- PER-WHEEL, PER-DIRECTION STEERING WINDOW ---------------------------
+    # Replaces a single symmetric steering_angle_limit: the mechanical range
+    # is asymmetric (outward != inward) AND the outward direction differs
+    # per wheel, so one number cannot describe it.
+    #
+    # SOURCE OF TRUTH is gripperx_control/config/steer_servo.yaml (calibrated
+    # on the machine; its clamp is the last line of defence). These three
+    # keys mirror the same-named keys there and MUST be changed together
+    # with them — swerve_cmd_node logs the resolved window at startup so a
+    # mismatch is visible.
+    #
+    # Joint order FL, FR, BL, BR. Both limits are magnitudes; steering_outward_sign
+    # says which sign of the joint angle is physically outward and was MEASURED
+    # (a URDF-only reading gives [1,-1,1,-1] and is wrong on the front pair —
+    # under it the in-place spin would be impossible). Resulting windows:
+    #   FL [-125, +35]  FR [-35, +125]  BL [-35, +125]  BR [-125, +35]  deg
+    steering_outward_limit_deg: 125.0
+    steering_inward_limit_deg: 35.0
+    steering_outward_sign: [-1, 1, 1, -1]
+    steer_alignment_min_scale: 0.45
+    steer_alignment_deadband_rad: 0.12
+    # Normalisation for the slew braking (how big counts as a "big" steering
+    # error) — NOT itself a limit.
+    steer_alignment_reference_rad: 1.0472
+    max_wheel_angular_speed: 12.0
+    # 30 Hz: ros2_control's controller_manager only processes commands at
+    # update_rate=30 anyway (ros2_controllers.yaml), so a higher rate here
+    # gains nothing. Safety margins against all dependent timeouts/time
+    # constants stay >= factor 9 at this rate (steer_diff_time_constant_sec,
+    # cmd_vel_timeout_sec, steer_states_timeout_sec, GripperXInterface
+    # command_timeout_sec) — keep that margin if this is ever raised.
+    control_rate_hz: 30.0
+    cmd_vel_timeout_sec: 0.5
+    use_direct_ik: true
+    # Steering differential from /hw/steer_states feedback. Default off.
+    # Details/deployment: gripperx_control/docs/STEER_DIFFERENTIAL.md
+    #
+    # In keyboard mode teleop_mux zeroes angular.z, so swerve_cmd_node sees
+    # omega=0 and inverse_kinematics() would otherwise give all four wheels
+    # the SAME speed regardless of the real servo angle (steering itself
+    # bypasses the IK via /teleop/direct_steer). The outer/inner wheel speed
+    # ratio the geometry actually needs is derived from a and b and is
+    # therefore TO-VERIFY on the ground. steer_diff_min_ratio/max_ratio below
+    # do NOT clamp this ratio directly — they are referenced to the mean
+    # speed.
+    enable_steer_feedback_differential: true
+    steer_diff_omega_gate: 0.05
+    steer_diff_min_speed_mps: 0.03
+    steer_diff_time_constant_sec: 0.3
+    steer_diff_max_omega: 1.5
+    steer_diff_min_ratio: 0.5
+    steer_diff_max_ratio: 1.5
+    # Full swerve for teleop/manual. Nav2 forward-only limits are in gripperx_planning/config/nav2.yaml (DWB).
+    enforce_front_forward: false
+    allow_reverse: true
+    # False: pure rotation uses the SWERVE spin — wheels roll on the
+    # rotation tangent, zero scrub/drift — which is smoother than the tank
+    # turn's straight-wheel skid. The spin pose turns every wheel OUTWARD and
+    # sits well inside the outward window (see steer_servo.yaml), so it is
+    # never reduced by point_turn's own limits. Keeping point_turn on would
+    # hide that. (Tank turn stays available as a manual option.)
+    enable_point_turn: false
+    point_turn_steer_target: 0.0
+    point_turn_vx_threshold: 0.01
+    point_turn_vy_threshold: 0.01
+    point_turn_omega_threshold: 0.35
+    kx: 4.0
+    ky: 4.0
+    ktheta: 3.0
+    kd_gains:
+      - 5.0
+      - 5.0
+      - 5.0
+      - 5.0
+    # Optional bridge merge (joint_command_bridge mapping directly in
+    # swerve_cmd_node, saves one DDS node/hop per cycle). Default OFF ->
+    # behavior-neutral, joint_command_bridge remains the default path.
+    # Enable only via control.launch.py argument use_integrated_bridge:=true
+    # (control.launch.py then takes over the values below from
+    # swerve_cmd_bridge.yaml and disables the separate joint_command_bridge
+    # node).
+    enable_integrated_bridge: false
+    steering_command_topic: /steering_position_controller/commands
+    wheel_command_topic: /wheel_velocity_controller/commands
+    steering_joint_names:
+      - f_left_steer
+      - f_right_steer
+      - b_leftsteer
+      - b_rightsteer
+    wheel_joint_names:
+      - f_leftwheel
+      - f_rightwheel
+      - b_leftwheel
+      - b_rightwheel
+    wheel_command_multipliers:
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0

@@ -1,0 +1,27 @@
+# GENERATED FROM gripperx_geometry/config/geometry.yaml — DO NOT EDIT
+# Edit the quantity there and regenerate; edits here are lost.
+#
+# keyboard_teleop_node builds a FourWIS4WIDKinematicModel to predict the
+# pose swerve_cmd_node will command, and its arming guard compares that
+# prediction against the measured steering. Without this file it falls back
+# on in-code defaults, and the prediction silently disagrees with the pose
+# actually commanded.
+
+# `/**` IS THE KEY, not `keyboard_teleop_node:` alone. web_teleop_node builds on
+# KeyboardTeleopNode and inherits its a / b / wheel_radius declaration, which has NO
+# default (Parameter.Type.DOUBLE) precisely so the values can only come from here --
+# a file keyed on the other node's name would be passed, ignored, and the node
+# would still die on the missing parameter. Silently ignored parameter keys are
+# a failure mode this project has already paid for.
+#
+# `/**` rather than a second `web_teleop_node:` block: these three values are the
+# geometry single source of truth, and a second block would be a second copy that can
+# drift. One copy, applied to whichever teleop node loads the file.
+#
+# ⚠ NOT GUARDED: this file is NOT in gripperx_geometry's consumer inventory, so
+# colcon test does not check it against geometry.yaml. It should be added.
+/**:
+  ros__parameters:
+    a: 0.1809
+    b: 0.1087
+    wheel_radius: 0.070

@@ -1,0 +1,373 @@
+/* GripperX teleop console.
+   Deliberately dark and single-theme: this page is looked at outdoors next to
+   a moving robot, and a light flash on a mode change is the last thing an
+   operator needs. No web fonts — the robot has no internet. */
+
+:root {
+  --bg:        #0a0d12;
+  --panel:     #131924;
+  --panel-2:   #0f141d;
+  --line:      #222c3b;
+  --line-soft: #1a2230;
+  --text:      #e6ecf5;
+  --dim:       #8d9bb0;
+  --dimmer:    #5d6a7d;
+
+  --hold:      #ffb02e;   /* dead-man keys: held = moving */
+  --latch:     #4fc3f7;   /* cumulative keys: stay put when released */
+  --action:    #9aa7bb;
+  --ok:        #46d17f;
+  --warn:      #ffb02e;
+  --alarm:     #ff4d4d;
+  --accent:    #4fc3f7;
+
+  --mono: ui-monospace, "SF Mono", "JetBrains Mono", "DejaVu Sans Mono", Menlo, Consolas, monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--sans);
+  font-size: 15px;
+  line-height: 1.45;
+  /* The arrow keys drive the robot; the page must never scroll under them. */
+  overscroll-behavior: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ── Top bar ───────────────────────────────────────────────────────────── */
+
+.bar {
+  display: flex; align-items: center; justify-content: space-between;
+  gap: 12px; padding: 10px 18px;
+  background: linear-gradient(180deg, #141b27, #0d121b);
+  border-bottom: 1px solid var(--line);
+  position: sticky; top: 0; z-index: 20;
+}
+.brand { display: flex; align-items: center; gap: 10px; letter-spacing: .02em; }
+.brand strong { font-size: 17px; }
+.brand .sub { color: var(--dim); font-size: 13px; text-transform: uppercase; letter-spacing: .14em; }
+.dot {
+  width: 9px; height: 9px; border-radius: 50%;
+  background: var(--dimmer); box-shadow: 0 0 0 0 transparent;
+  transition: background .15s, box-shadow .15s;
+}
+.dot.live  { background: var(--ok);    box-shadow: 0 0 10px 1px rgba(70,209,127,.55); }
+.dot.stale { background: var(--warn);  box-shadow: 0 0 10px 1px rgba(255,176,46,.5); }
+.dot.dead  { background: var(--alarm); box-shadow: 0 0 10px 1px rgba(255,77,77,.5); }
+
+.bar-right { display: flex; align-items: center; gap: 8px; }
+.chip {
+  font-family: var(--mono); font-size: 12px; padding: 4px 10px;
+  border: 1px solid var(--line); border-radius: 999px;
+  color: var(--dim); background: var(--panel-2); white-space: nowrap;
+}
+.chip.driving  { color: var(--ok);    border-color: rgba(70,209,127,.45); }
+.chip.observer { color: var(--accent); border-color: rgba(79,195,247,.45); }
+.chip.lost     { color: var(--alarm); border-color: rgba(255,77,77,.5); }
+.takeover {
+  font: inherit; font-size: 12px; padding: 5px 12px; cursor: pointer;
+  color: #06121e; background: var(--accent); border: 0; border-radius: 6px;
+  font-weight: 600;
+}
+/* Hidden by visibility, not display: the header keeps its width either way, so
+   the chips beside it do not slide when control changes hands. */
+.takeover.idle { visibility: hidden; }
+
+/* Autonomous mode: the drive keys are still bound, but teleop_mux is not
+   forwarding them. Showing them as live would be a lie the operator only finds
+   out about by pressing one and watching nothing happen. */
+.deck.inert .keycap.hold,
+.deck.inert .keycap.spring,
+.deck.inert .keycap.latch { opacity: .3; filter: grayscale(1); }
+
+/* ── Banner ────────────────────────────────────────────────────────────── */
+
+/* Fixed height, always present. Two lines' worth of room so the longest
+   warning still fits without pushing the page down -- the layout must not move
+   at the moment the operator is reading a warning. */
+.banner {
+  display: flex; align-items: center; gap: 10px;
+  min-height: 46px; padding: 8px 18px;
+  font-weight: 600; letter-spacing: .01em; font-size: 13.5px;
+  border-bottom: 1px solid rgba(0,0,0,.4);
+  transition: background .15s, color .15s, border-color .15s;
+}
+.banner-icon { flex: 0 0 auto; font-size: 15px; line-height: 1; }
+.banner-text { flex: 1 1 auto; }
+/* Idle: present but quiet, so the space is informative rather than empty. */
+.banner.calm {
+  background: var(--panel-2); color: var(--dim);
+  border-bottom-color: var(--line); font-weight: 500;
+}
+.banner.alarm { background: #4a0f14; color: #ffd9d9; border-bottom-color: var(--alarm); }
+.banner.warn  { background: #45330c; color: #ffe9c2; border-bottom-color: var(--warn); }
+.banner.info  { background: #0e2c3d; color: #d3eeff; border-bottom-color: var(--accent); }
+.banner.blink { animation: blink 1s steps(2, end) infinite; }
+@keyframes blink { 50% { opacity: .55; } }
+
+/* ── Layout ────────────────────────────────────────────────────────────── */
+
+main {
+  display: grid;
+  grid-template-columns: minmax(0, 1.05fr) minmax(0, .95fr);
+  gap: 14px; padding: 14px; align-items: start;
+}
+.logpanel { grid-column: 1 / -1; }
+@media (max-width: 900px) {
+  main { grid-template-columns: 1fr; }
+}
+
+.panel {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 14px 16px 16px;
+}
+.panel h2 {
+  margin: 0 0 14px; font-size: 12px; font-weight: 700;
+  text-transform: uppercase; letter-spacing: .16em; color: var(--dim);
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap;
+}
+.panel h2 .hint {
+  font-weight: 400; text-transform: none; letter-spacing: 0;
+  color: var(--dimmer); font-size: 12px;
+}
+
+/* ── Key deck ──────────────────────────────────────────────────────────── */
+
+.clusters { display: flex; gap: 26px; flex-wrap: wrap; }
+.cluster { flex: 1 1 260px; min-width: 240px; }
+.cluster-title {
+  font-size: 11px; text-transform: uppercase; letter-spacing: .14em;
+  color: var(--dim); margin: 0 0 10px; display: flex; align-items: center; gap: 8px;
+}
+.cluster-title .tag {
+  text-transform: none; letter-spacing: 0; font-size: 11px;
+  color: var(--hold); border: 1px solid rgba(255,176,46,.35);
+  border-radius: 999px; padding: 1px 8px;
+}
+
+.keygrid { display: grid; gap: 8px 10px; justify-content: start; }
+.keygrid.wasd {
+  grid-template-columns: repeat(3, 74px);
+  grid-template-areas: ". w ." "a s d";
+}
+.keygrid.arrows {
+  grid-template-columns: repeat(3, 74px);
+  grid-template-areas: ". up ." "left down right";
+}
+.keygrid.spins { grid-template-columns: repeat(2, 74px); }
+.spin-cluster { flex: 0 1 190px; min-width: 170px; }
+.cell.w { grid-area: w; } .cell.a { grid-area: a; }
+.cell.s { grid-area: s; } .cell.d { grid-area: d; }
+.cell.up { grid-area: up; } .cell.down { grid-area: down; }
+.cell.left { grid-area: left; } .cell.right { grid-area: right; }
+
+.cell { display: flex; flex-direction: column; align-items: center; gap: 5px; }
+.cap {
+  font-size: 11px; color: var(--dim); text-align: center;
+  line-height: 1.2; min-height: 2.4em;
+}
+
+.keycap {
+  -webkit-appearance: none; appearance: none;
+  width: 64px; height: 58px; padding: 0;
+  display: grid; place-items: center;
+  font: inherit; font-size: 20px; font-weight: 650; color: var(--text);
+  cursor: pointer; touch-action: none;
+  border: 1px solid var(--line);
+  border-bottom-width: 3px;
+  border-radius: 10px;
+  background: linear-gradient(180deg, #202a3a, #171e2b);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.06);
+  transition: transform .05s, box-shadow .1s, border-color .1s, background .1s;
+}
+.keycap b { pointer-events: none; }
+.keycap:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* Colour says what kind of key it is, before it is ever pressed. */
+.keycap.hold   { border-color: rgba(255,176,46,.38); }
+.keycap.spring { border-color: rgba(79,195,247,.38); }
+.keycap.action { font-size: 17px; color: var(--action); }
+.keycap.danger { border-color: rgba(255,77,77,.4); color: #ff9d9d; }
+
+/* Pressed. Driven by the LOCAL key state so it is instant; whether the robot
+   agreed is shown by the wheel view and the link dot, not by the keycap. */
+.keycap.on {
+  transform: translateY(2px);
+  border-bottom-width: 1px;
+  margin-bottom: 2px;
+}
+.keycap.hold.on {
+  background: linear-gradient(180deg, #4a3410, #33240b);
+  border-color: var(--hold);
+  box-shadow: 0 0 0 1px var(--hold), 0 0 16px rgba(255,176,46,.4);
+  color: #ffd591;
+}
+.keycap.spring.on {
+  background: linear-gradient(180deg, #0e3a4e, #0a2937);
+  border-color: var(--latch);
+  box-shadow: 0 0 0 1px var(--latch), 0 0 16px rgba(79,195,247,.35);
+  color: #bfe9ff;
+}
+.keycap.action.on, .keycap.danger.on {
+  background: linear-gradient(180deg, #2b374a, #1d2634);
+  border-color: var(--accent); color: var(--text);
+}
+
+.note { font-size: 12px; color: var(--dimmer); margin: 12px 0 0; line-height: 1.5; }
+.note em { color: var(--dim); font-style: normal; }
+.swatch {
+  display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+  margin-right: 5px; vertical-align: baseline;
+}
+.swatch.hold  { background: var(--hold); }
+.swatch.spring { background: var(--latch); }
+
+/* ── Emergency stop ────────────────────────────────────────────────────── */
+
+.estop {
+  display: block; width: 100%; margin: 20px 0; padding: 13px 16px;
+  font: inherit; cursor: pointer; text-align: center;
+  color: #fff2f2;
+  background: linear-gradient(180deg, #8c1a1f, #5e1015);
+  border: 1px solid #c33; border-bottom-width: 4px; border-radius: 12px;
+  box-shadow: 0 0 26px rgba(255,60,60,.18);
+  transition: transform .05s, box-shadow .1s;
+  touch-action: none;
+}
+.estop:hover { box-shadow: 0 0 34px rgba(255,60,60,.32); }
+.estop:active, .estop.on { transform: translateY(2px); border-bottom-width: 2px; }
+.estop-key {
+  display: inline-block; font-family: var(--mono); font-size: 11px;
+  letter-spacing: .22em; color: #ffc9c9; border: 1px solid rgba(255,255,255,.28);
+  border-radius: 5px; padding: 1px 9px; margin-bottom: 6px;
+}
+.estop-label { display: block; font-size: 21px; font-weight: 800; letter-spacing: .1em; }
+.estop-sub { display: block; font-size: 11.5px; color: #ffbdbd; margin-top: 3px; }
+
+/* ── Action key row ────────────────────────────────────────────────────── */
+
+.actions { display: flex; flex-wrap: wrap; gap: 8px 6px; }
+.actions .cell { width: 78px; }
+.actions .cell.gap { margin-left: 14px; }
+.actions .keycap { width: 52px; height: 46px; }
+
+/* ── Robot scope ───────────────────────────────────────────────────────── */
+
+.scope-body { display: flex; gap: 18px; align-items: flex-start; flex-wrap: wrap; }
+#robot {
+  width: 260px; height: 295px; flex: 0 0 auto;
+  background: radial-gradient(ellipse at 50% 45%, #131c28 0%, #0c1119 72%);
+  border: 1px solid var(--line-soft); border-radius: 10px;
+}
+#robot .body { fill: #1b2434; stroke: #33425a; stroke-width: 1.5; }
+#robot .nose { fill: #33425a; }
+#robot .front-label {
+  fill: var(--dimmer); font-size: 10px; letter-spacing: .18em;
+  font-family: var(--mono);
+}
+#robot .axle { stroke: #2a3648; stroke-width: 1; stroke-dasharray: 3 4; }
+
+/* Commanded pose: outline only — "where the wheel is being asked to go". */
+#robot .target {
+  fill: none; stroke: var(--accent); stroke-width: 1.6; stroke-dasharray: 4 3;
+  opacity: .95;
+}
+/* Measured servo angle: solid — "where the wheel actually is". */
+#robot .measured { fill: #46566f; stroke: #7f93b3; stroke-width: 1; }
+#robot .measured.aligned { fill: #1f5a3a; stroke: var(--ok); }
+#robot .measured.missing { display: none; }
+#robot .hub { fill: #0c1119; stroke: #56698a; stroke-width: 1; }
+#robot .wheel-label {
+  fill: var(--dimmer); font-size: 8.5px; font-family: var(--mono);
+  text-anchor: middle;
+}
+/* Reachable-heading dial. The ground is the whole circle painted as
+   unreachable; the arcs the calibration actually allows are painted over it. */
+#robot .dial-dead {
+  fill: none; stroke: rgba(255,77,77,.22); stroke-width: 5;
+}
+#robot .dial-reach {
+  fill: none; stroke: rgba(70,209,127,.62); stroke-width: 5; stroke-linecap: butt;
+}
+#robot .dial-needle line {
+  stroke: var(--hold); stroke-width: 2.5; stroke-linecap: round;
+}
+
+#robot .twist { color: var(--hold); }
+#robot .twist path, #robot .twist line { stroke: currentColor; stroke-width: 2.5; fill: none; }
+#robot .no-feedback {
+  fill: var(--warn); font-size: 9.5px; font-family: var(--mono); text-anchor: middle;
+}
+
+/* ── Readouts ──────────────────────────────────────────────────────────── */
+
+.readouts { flex: 1 1 230px; min-width: 210px; }
+
+.state {
+  border: 1px solid var(--line); border-radius: 9px;
+  padding: 9px 12px; margin-bottom: 12px; background: var(--panel-2);
+  border-left: 3px solid var(--dimmer);
+}
+.state-name {
+  display: block; font-family: var(--mono); font-size: 15px; font-weight: 700;
+  letter-spacing: .1em; text-transform: uppercase;
+}
+.state-note { display: block; font-size: 11.5px; color: var(--dim); margin-top: 2px; }
+.state.armed     { border-left-color: var(--ok);    }
+.state.armed .state-name { color: var(--ok); }
+.state.aligning  { border-left-color: var(--warn);  }
+.state.aligning .state-name { color: var(--warn); }
+.state.releasing { border-left-color: var(--accent); }
+.state.releasing .state-name { color: var(--accent); }
+.state.bad       { border-left-color: var(--alarm); }
+.state.bad .state-name { color: var(--alarm); }
+
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 5px 12px; margin: 0; font-size: 13px; }
+.kv dt { color: var(--dimmer); font-size: 11.5px; text-transform: uppercase; letter-spacing: .08em; padding-top: 2px; }
+.kv dd { margin: 0; color: var(--text); }
+.kv dd.mono, .mono { font-family: var(--mono); font-size: 12px; }
+.kv .dim, .dim { color: var(--dimmer); font-size: 11px; }
+.kv dd.ok { color: var(--ok); } .kv dd.warn { color: var(--warn); } .kv dd.bad { color: var(--alarm); }
+
+.meter {
+  display: inline-block; width: 74px; height: 5px; border-radius: 3px;
+  background: #1d2534; vertical-align: middle; margin: 0 6px; position: relative;
+  overflow: hidden;
+}
+.meter i {
+  position: absolute; top: 0; bottom: 0; left: 50%; width: 0;
+  background: var(--latch); border-radius: 3px;
+}
+
+.legend { display: flex; gap: 14px; margin-top: 12px; font-size: 11px; color: var(--dimmer); }
+.legend span { display: flex; align-items: center; gap: 6px; }
+.legend i { width: 14px; height: 8px; border-radius: 2px; display: inline-block; }
+.legend .lg-target { border: 1.5px dashed var(--accent); }
+.legend .lg-measured { background: #46566f; border: 1px solid #7f93b3; }
+.legend .lg-reach { background: rgba(70,209,127,.62); }
+.legend .lg-dead { background: rgba(255,77,77,.28); }
+
+/* ── Event log ─────────────────────────────────────────────────────────── */
+
+.log {
+  list-style: none; margin: 0; padding: 0; font-family: var(--mono); font-size: 12px;
+  max-height: 168px; overflow-y: auto; -webkit-user-select: text; user-select: text;
+}
+.log li {
+  padding: 3px 8px; border-left: 2px solid var(--line);
+  color: var(--dim); display: flex; gap: 12px;
+}
+.log li time { color: var(--dimmer); flex: 0 0 auto; }
+.log li.ok    { border-left-color: var(--ok);    color: #b7e9cc; }
+.log li.warn  { border-left-color: var(--warn);  color: #ffe0b0; }
+.log li.alarm { border-left-color: var(--alarm); color: #ffc2c2; }
+.log li.manoeuvre { border-left-color: var(--accent); color: #cfeaff; }
+.log:empty::after { content: "no events yet"; color: var(--dimmer); }

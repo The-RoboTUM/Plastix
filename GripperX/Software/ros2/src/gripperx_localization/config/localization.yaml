@@ -1,0 +1,363 @@
+localization_input_node:
+  ros__parameters:
+    use_sim_time: true
+    imu_input_topic: /imu/data
+    imu_output_topic: /imu/data/filtered
+    imu_frame_id: imu_link
+    joint_state_topic: /joint_states
+    wheel_odom_topic: /wheel/odom
+    drive_joint_names:
+      - f_leftwheel
+      - b_leftwheel
+      - b_rightwheel
+      - f_rightwheel
+    steer_joint_names:
+      - f_left_steer
+      - b_leftsteer
+      - b_rightsteer
+      - f_right_steer
+    # GEOMETRY — kept in step with the GEOMETRY comment block in
+    # gripperx_description/urdf/gripperx_v1.core.xacro. CAD: wheelbase 0.3618 m
+    # (king pin x = +-0.1809), track 0.2174 m (king pin y = +-0.1087), tyre
+    # 140 mm dia x 80 mm wide -> radius 0.070 m. A tyre-size change moves only
+    # effective_wheel_radius; it does not move wheel_positions (these are
+    # LATERAL/LONGITUDINAL contact-point offsets, unaffected by tyre diameter).
+    #
+    # CONTACT POINTS, NOT KING PINS — deliberate, and it matters. Each wheel
+    # hangs on a lateral lever arm off its king pin (*_wheel_offset_xyz,
+    # y = +-0.0556 m, i.e. 51 % of the half-track), so the two conventions are
+    # far apart. This node uses ONLY the FORWARD direction — steering angle
+    # from /joint_states plus wheel ROLLING speed -> body twist — and the
+    # lever arm that turns rolling speed into yaw rate acts at the CONTACT
+    # PATCH, so contact points are the correct input here.
+    # The INVERSE direction (IK) differs: the lateral lever arm drops out of
+    # the STEERING ANGLE (perpendicular to rolling direction) but stays fully
+    # present in the wheel SPEED, so IK must keep using the king-pin values
+    # (+-0.1809/+-0.1087) while swerve_controller's `wheel_lateral_offset`
+    # carries the same lever arm as a separate term (see OP-29).
+    #
+    # Residual: a fixed-geometry model can't capture that the true
+    # contact-point offset shrinks as the wheel steers (worst case ~7.6 %
+    # yaw-rate error at pure spin-in-place); removing that needs the lever arm
+    # inside the kinematic model itself, not a different constant here.
+    #
+    # Order matches drive_joint_names / the model's module order: FL, BL, BR, FR.
+    # Per-corner CAD asymmetry is kept rather than rounded away, as in the xacro.
+    wheel_positions:
+      - 0.180900        # FL x   king pin  0.180965 + wheel offset -0.000065
+      - 0.164272        # FL y   king pin  0.1087   + wheel offset  0.055572
+      - -0.180900       # BL x   king pin -0.180965 + wheel offset  0.000065
+      - 0.164272        # BL y   king pin  0.1087   + wheel offset  0.055572
+      - -0.180900       # BR x   king pin -0.180835 + wheel offset -0.000065
+      - -0.164271       # BR y   king pin -0.1087   + wheel offset -0.055571
+      - 0.180900        # FR x   king pin  0.180835 + wheel offset  0.000065
+      - -0.164072       # FR y   king pin -0.1087   + wheel offset -0.055372
+      # -> a = mean|x| = 0.180900 m,  b = mean|y| = 0.164222 m
+    # effective_wheel_radius: a MEASURED effective rolling radius, not a
+    # geometric stand-in (the CAD now models the same 140 mm tyre and gives
+    # the same number, so that distinction no longer separates two values;
+    # the former TO-VERIFY on this point is closed). Must stay in step with
+    # wheel_radius in gripperx_v1.core.xacro and in
+    # gripperx_control/config/swerve_cmd.yaml and teleop_joint_commands.yaml.
+    #
+    # Measured by hand-rolling one marked wheel over a known distance (the
+    # other three skid when hand-pushed and are not usable for this); ~1 %
+    # agreement between runs and with COUNTS_PER_OUTPUT_REV = 3200.
+    #
+    # KNOWN LIMIT, not visible in the CAD: the tyres are lugged and this was
+    # measured on carpet. Effective rolling radius is surface-dependent, and
+    # outdoor scaling has not been measured. See SAFETY (internal) F-41/F-42
+    # and REQUIREMENTS OP-32.
+    #
+    # DO NOT REINTRODUCE 0.052 — it was an uncalibrated placeholder that only
+    # "worked" by cancelling against a since-fixed encoder-constant error;
+    # distances were reported ~26 % short while both errors were in effect.
+    effective_wheel_radius: 0.070
+    # Must be [1,1,1,1] on BOTH the real robot and the twin: GripperXInterface
+    # already delivers robot-frame values, and the URDF no longer mirrors the
+    # right-side axes. Do not reintroduce a per-side sign flip (e.g.
+    # [1,1,-1,-1]) to "fix" the twin — that breaks the real robot instead.
+    drive_joint_multipliers:
+      - 1.0
+      - 1.0
+      - 1.0
+      - 1.0
+    odom_frame: odom
+    base_frame: base_footprint
+    publish_tf: false
+
+laser_odometry_node:
+  ros__parameters:
+    use_sim_time: true
+    publish_odom: /laser/odom
+    publish_tf: false
+    base_frame: base_footprint
+    odom_frame: odom
+    laser_frame: lidar_link
+
+ekf_filter_node:
+  ros__parameters:
+    use_sim_time: true
+    frequency: 50.0
+    sensor_timeout: 0.1
+    two_d_mode: true
+    transform_time_offset: 0.0
+    transform_timeout: 0.0
+    print_diagnostics: true
+    debug: false
+    publish_tf: true
+    publish_acceleration: false
+
+    map_frame: map
+    odom_frame: odom
+    base_link_frame: base_footprint
+    world_frame: odom
+
+    odom0: /wheel/odom
+    # Holonomic 4WIS: fuse vx, vy, and yaw rate from wheel odometry.
+    odom0_config: [false, false, false,
+                   false, false, false,
+                   true, true, false,
+                   false, false, true,
+                   false, false, false]
+    odom0_queue_size: 10
+    odom0_differential: false
+    odom0_relative: false
+    odom0_twist_rejection_threshold: 2.0
+
+    odom1: /laser/odom
+    odom1_config: [true, true, false,
+                   false, false, false,
+                   true, true, false,
+                   false, false, false,
+                   false, false, false]
+    odom1_queue_size: 10
+    odom1_differential: false
+    odom1_relative: false
+    odom1_twist_rejection_threshold: 2.0
+
+    imu0: /imu/data/filtered
+    imu0_config: [false, false, false,
+                  false, false, true,
+                  false, false, false,
+                  false, false, true,
+                  false, false, false]
+    imu0_queue_size: 20
+    imu0_differential: false
+    imu0_relative: true
+    imu0_remove_gravitational_acceleration: true
+    imu0_twist_rejection_threshold: 1.5
+
+    # Yaw (index 5) and yaw-rate (index 11) process noise are raised above the
+    # slam_toolbox/robot_localization defaults. Process noise bounds how fast
+    # the filter allows the state to change per cycle; too low here made
+    # /odometry/filtered lag several seconds behind a real, immediate step in
+    # /wheel/odom's yaw rate (e.g. a commanded spin start) and then keep
+    # publishing the old rate briefly after the wheels stopped — which is what
+    # makes slam_toolbox's map lurch and snap back during a turn. Do not lower
+    # these back toward the defaults without addressing that lag. The other
+    # axes are untouched: this is the yaw axis only, vx/vy track correctly.
+    #
+    # NOT a claim about imu0: the BNO085 is not connected, imu0 publishes
+    # nothing, and it remains an un-ruled-out candidate for the same symptom.
+    process_noise_covariance: [0.08, 0.08, 1.0,
+                               1.0, 1.0, 0.15,
+                               0.05, 0.05, 1.0,
+                               1.0, 1.0, 0.50,
+                               0.2, 0.2, 1.0]
+
+    initial_estimate_covariance: [1e-3, 1e-3, 1.0,
+                                  1.0, 1.0, 1e-3,
+                                  1e-3, 1e-3, 1.0,
+                                  1.0, 1.0, 1e-3,
+                                  0.5, 0.5, 1.0]
+
+slam_toolbox:
+  ros__parameters:
+    use_sim_time: true
+    
+    # mode: 'mapping' builds the map and keeps extending it; 'localization' uses
+    # a saved map read-only, at much lower CPU. Switch to 'localization' once
+    # mapping is complete.
+    mode: mapping
+    
+    odom_frame: odom
+    map_frame: map
+    base_frame: base_footprint
+    scan_topic: /scan
+    scan_queue_size: 1
+    use_map_saver: true
+    
+    # Map cell size in metres. Lower = finer map at exponentially higher
+    # RAM/CPU; higher = blockier map, lighter on CPU, may close off doorways.
+    resolution: 0.05
+
+    # Seconds between /map publishes. Visual update rate only — does not
+    # affect internal tracking accuracy; lower costs more CPU.
+    map_update_interval: 0.5 # 2.0
+
+    # Seconds between map -> odom TF publishes. Keep matched to the EKF
+    # frequency (ekf_filter_node) to avoid tf extrapolation errors.
+    transform_publish_period: 0.02
+    tf_buffer_duration: 30.0
+
+    # Minimum seconds between processed LiDAR scans; caps ingest rate to keep
+    # the node from choking if the LiDAR outruns this.
+    minimum_time_interval: 0.05 # 0.1
+
+    # Maximum trusted LiDAR range in metres; points beyond are ignored.
+    #
+    # NO min_laser_range HERE, and that is not an oversight — slam_toolbox does
+    # not declare that parameter (`ros2 param list /slam_toolbox` has no such
+    # key), so setting it here would be silently inert.
+    #
+    # The problem such a filter would solve is real and stays OPEN: the LD06
+    # (LiDAR) reports from 2 cm, and the arm/gripper sit permanently in the
+    # scan plane behind the sensor, so slam_toolbox matches against and maps
+    # the robot's own structure (dense near-returns concentrated at
+    # 140-220 deg, nothing between 0.10 and 0.35 m). The costmaps are already
+    # guarded via nav2.yaml's obstacle_min_range/raytrace_min_range = 0.10; the
+    # SLAM MAP is not. Fixing that needs a filter node between /scan and
+    # slam_toolbox (e.g. laser_filters LaserScanRangeFilter), which nothing in
+    # this stack runs yet.
+    max_laser_range: 12.0
+    
+    # Distance in metres the robot must move before processing a new scan.
+    # Lower = denser, more accurate map at higher CPU cost; higher saves CPU
+    # but can make map updates jerky.
+    minimum_travel_distance: 0.05 #0.10
+
+    # Rotation in radians (0.05 rad ~= 2.8 deg) before processing a new scan;
+    # same trade-off as minimum_travel_distance.
+    minimum_travel_heading: 0.05 #0.10
+
+    use_scan_matching: true
+    use_scan_barycenter: true
+    
+    # If true, search history for a revisit of a previously mapped area and
+    # snap the map together to correct long-term drift. Finding a loop causes
+    # a temporary CPU spike.
+    do_loop_closing: true
+    
+    # Consecutive matching scans needed to confirm a loop closure. Lower is
+    # more aggressive (risks hallucinating loops in identical-looking
+    # corridors); higher is safer but may miss a fast pass through an area.
+    loop_match_minimum_chain_size: 10
+
+    # Search radius in metres for candidate loop closures. Must exceed the
+    # odometry drift accumulated over the loop, or a real loop is never found;
+    # larger costs more CPU.
+    loop_search_maximum_distance: 6.0
+
+    # Search-box size in metres the scan matcher shifts a new scan within,
+    # around the odometry-predicted pose, to find the best fit. Small values
+    # only work with accurate wheel odometry; larger tolerates more wheel
+    # slip at higher CPU cost.
+    correlation_search_space_dimension: 0.5
+    
+    correlation_search_space_resolution: 0.01
+    correlation_search_space_smear_deviation: 0.1
+
+    # distance/angle_variance_penalty penalise a scan-match solution for
+    # deviating from the ODOMETRY pose — raised above the slam_toolbox
+    # defaults (0.5 / 1.0) to trust the wheels more and let the laser refine
+    # rather than decide, during rotation.
+    #
+    # Why rotation needs this: the LD06 (LiDAR, 10 Hz, scan_time 0.0999 s) scan
+    # is not an instant snapshot, so a fast turn smears one scan's points
+    # across several degrees of robot orientation, which slam_toolbox's
+    # snapshot model reads as match error. The encoders don't have this
+    # problem — they follow the rotation continuously.
+    #
+    # Deliberately raised only 2x, no further: the wheel odometry's own yaw is
+    # itself measurably wrong (imu0 would normally correct this, but the
+    # BNO085 is not connected on the real robot), so trusting the wheels
+    # further would let that yaw error author the map with confidence. Revisit
+    # once an IMU is connected.
+    #
+    # NOT A CURE — the scan smear itself isn't addressed here; that needs a
+    # lower max_vel_theta or de-skewing the scan against odometry before
+    # matching, neither of which this stack currently does.
+    distance_variance_penalty: 0.8
+    angle_variance_penalty: 2.0
+    fine_search_angle_offset: 0.00349
+    coarse_search_angle_offset: 0.349
+    coarse_angle_resolution: 0.0349
+    minimum_angle_penalty: 0.9
+    minimum_distance_penalty: 0.5
+    solver_plugin: solver_plugins::CeresSolver
+    ceres_linear_solver: SPARSE_NORMAL_CHOLESKY
+    ceres_preconditioner: SCHUR_JACOBI
+    ceres_trust_strategy: LEVENBERG_MARQUARDT
+    ceres_dogleg_type: TRADITIONAL_DOGLEG
+    ceres_loss_function: None
+
+navsat_transform_node:
+  ros__parameters:
+    use_sim_time: true
+    frequency: 10.0
+    delay: 0.0
+    magnetic_declination_radians: 0.0
+    yaw_offset: 0.0
+    zero_altitude: true
+    broadcast_utm_transform: false
+    publish_filtered_gps: false
+    use_odometry_yaw: true
+    wait_for_datum: false
+    # gps_topic / imu_topic / odometry_topic / datum are NOT declared parameters
+    # on this node — setting them here is silently inert. The real topics are
+    # wired by REMAPPING in localization.launch.py (/imu, /gps/fix,
+    # /odometry/filtered -> /wheel/odom). Do not reintroduce them as parameters.
+
+map_server:
+  ros__parameters:
+    use_sim_time: true
+    topic_name: /map
+    frame_id: map
+    yaml_filename: ""
+
+amcl:
+  ros__parameters:
+    use_sim_time: true
+    alpha1: 0.2
+    alpha2: 0.2
+    alpha3: 0.2
+    alpha4: 0.2
+    alpha5: 0.2
+    base_frame_id: base_footprint
+    beam_skip_distance: 0.5
+    beam_skip_error_threshold: 0.9
+    beam_skip_threshold: 0.3
+    do_beamskip: false
+    global_frame_id: map
+    lambda_short: 0.1
+    laser_likelihood_max_dist: 2.0
+    laser_max_range: 12.0
+    laser_min_range: 0.0
+    laser_model_type: likelihood_field
+    max_beams: 80
+    max_particles: 2000
+    min_particles: 500
+    odom_frame_id: odom
+    pf_err: 0.05
+    pf_z: 0.99
+    recovery_alpha_fast: 0.0
+    recovery_alpha_slow: 0.0
+    resample_interval: 1
+    robot_model_type: nav2_amcl::OmniMotionModel
+    save_pose_rate: 0.5
+    scan_topic: /scan
+    set_initial_pose: true
+    initial_pose.x: -0.0
+    initial_pose.y: 0.0
+    initial_pose.z: 0.0
+    initial_pose.yaw: 0.0
+    sigma_hit: 0.2
+    tf_broadcast: true
+    transform_tolerance: 0.3
+    update_min_a: 0.05
+    update_min_d: 0.1
+    z_hit: 0.5
+    z_max: 0.05
+    z_rand: 0.45
+    z_short: 0.05

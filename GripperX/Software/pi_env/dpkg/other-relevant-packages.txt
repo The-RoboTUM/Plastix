@@ -1,0 +1,54 @@
+ii  ros-jazzy-gz-cmake-vendor                        0.0.11-1noble.20260225.124345           arm64        Vendor package for: gz-cmake3 3.5.6 Gazebo CMake : CMake Modules for Gazebo Projects
+ii  ros-jazzy-gz-common-vendor                       0.0.9-1noble.20260422.181330            arm64        Vendor package for: gz-common5 5.8.0 Gazebo Common : AV, Graphics, Events, and much more.
+ii  ros-jazzy-gz-fuel-tools-vendor                   0.0.6-1noble.20260422.182935            arm64        Vendor package for: gz-fuel_tools9 9.1.1 Gazebo Fuel Tools: Classes and tools for interacting with Gazebo Fuel
+ii  ros-jazzy-gz-gui-vendor                          0.0.5-1noble.20260422.185303            arm64        Vendor package for: gz-gui8 8.4.0 Gazebo GUI : Graphical interfaces for robotics applications
+ii  ros-jazzy-gz-math-vendor                         0.0.9-1noble.20260422.164834            arm64        Vendor package for: gz-math7 7.6.0 Gazebo Math : Math classes and functions for robot applications
+ii  ros-jazzy-gz-msgs-vendor                         0.0.6-1noble.20260422.181330            arm64        Vendor package for: gz-msgs10 10.3.2 Gazebo Messages: Protobuf messages and functions for robot applications
+ii  ros-jazzy-gz-physics-vendor                      0.0.7-1noble.20260604.221416            arm64        Vendor package for: gz-physics7 7.6.0 Gazebo Physics : Physics classes and functions for robot applications
+ii  ros-jazzy-gz-plugin-vendor                       0.0.5-1noble.20260225.131206            arm64        Vendor package for: gz-plugin2 2.0.4 Gazebo Plugin : Cross-platform C++ library for dynamically loading plugins.
+ii  ros-jazzy-gz-rendering-vendor                    0.0.7-1noble.20260422.182442            arm64        Vendor package for: gz-rendering8 8.2.3 Gazebo Rendering: Rendering library for robot applications
+ii  ros-jazzy-gz-ros2-control                        1.2.19-1noble.20260612.163226           arm64        Gazebo ros2_control package allows to control simulated robots using ros2_control framework.
+ii  ros-jazzy-gz-sensors-vendor                      0.0.6-1noble.20260604.221407            arm64        Vendor package for: gz-sensors8 8.2.2 Gazebo Sensors : Sensor models for simulation
+ii  ros-jazzy-gz-sim-vendor                          0.0.10-1noble.20260605.052554           arm64        Vendor package for: gz-sim8 8.11.0 Gazebo Sim : A Robotic Simulator
+ii  ros-jazzy-gz-tools-vendor                        0.0.7-1noble.20260225.130014            arm64        Vendor package for: gz-tools2 2.0.3 Gazebo Tools: Entrypoint to Gazebo's command line interface
+ii  ros-jazzy-gz-transport-vendor                    0.0.7-1noble.20260422.182952            arm64        Vendor package for: gz-transport13 13.5.0 Gazebo Transport: Provides fast and efficient asynchronous message passing, services, and data logging.
+ii  ros-jazzy-gz-utils-vendor                        0.0.5-1noble.20260225.125927            arm64        Vendor package for: gz-utils2 2.2.1 Gazebo Utils : Classes and functions for robot applications
+ii  ros-jazzy-nav2-amcl                              1.3.12-1noble.20260614.075224           arm64        amcl is a probabilistic localization system for a robot moving in 2D.
+ii  ros-jazzy-nav2-behavior-tree                     1.3.12-1noble.20260614.075451           arm64        Nav2 behavior tree wrappers, nodes, and utilities
+ii  ros-jazzy-nav2-behaviors                         1.3.12-1noble.20260614.095313           arm64        Nav2 behavior server
+ii  ros-jazzy-nav2-bringup                           1.3.12-1noble.20260615.095620           arm64        Bringup scripts and configurations for the Nav2 stack
+ii  ros-jazzy-nav2-bt-navigator                      1.3.12-1noble.20260614.082455           arm64        Nav2 BT Navigator Server
+ii  ros-jazzy-nav2-collision-monitor                 1.3.12-1noble.20260614.080819           arm64        Collision Monitor
+ii  ros-jazzy-nav2-common                            1.3.12-1noble.20260612.161656           arm64        Common support functionality used throughout the navigation 2 stack
+ii  ros-jazzy-nav2-constrained-smoother              1.3.12-1noble.20260614.102802           arm64        Ceres constrained smoother
+ii  ros-jazzy-nav2-controller                        1.3.12-1noble.20260614.102844           arm64        Controller action interface
+ii  ros-jazzy-nav2-core                              1.3.12-1noble.20260614.082157           arm64        A set of headers for plugins core to the Nav2 stack
+ii  ros-jazzy-nav2-costmap-2d                        1.3.12-1noble.20260614.075323           arm64        This package provides an implementation of a 2D costmap that takes in sensor data from the world, builds a 2D or 3D occupancy grid of the data (depending on whether a voxel based implementation is used), and inflates costs in a 2D costmap based on the occupancy grid and a user specified inflation radius.
+ii  ros-jazzy-nav2-dwb-controller                    1.3.12-1noble.20260615.082603           arm64        ROS2 controller (DWB) metapackage
+ii  ros-jazzy-nav2-graceful-controller               1.3.12-1noble.20260614.095754           arm64        Graceful motion controller
+ii  ros-jazzy-nav2-lifecycle-manager                 1.3.12-1noble.20260614.095313           arm64        A controller/manager for the lifecycle nodes of the Navigation 2 system
+ii  ros-jazzy-nav2-map-server                        1.3.12-1noble.20260614.103023           arm64        Refactored map server for ROS2 Navigation
+ii  ros-jazzy-nav2-minimal-tb3-sim                   1.0.1-1noble.20260614.084159            arm64        Nav2 Minimum TurtleBot3 Simulation
+ii  ros-jazzy-nav2-minimal-tb4-description           1.0.1-1noble.20260614.092213            arm64        Nav2's minimum Turtlebot4 Description package
+ii  ros-jazzy-nav2-minimal-tb4-sim                   1.0.1-1noble.20260614.092522            arm64        Nav2 Minimum TurtleBot4 Simulation
+ii  ros-jazzy-nav2-mppi-controller                   1.3.12-1noble.20260614.082708           arm64        nav2_mppi_controller
+ii  ros-jazzy-nav2-msgs                              1.3.12-1noble.20260612.162307           arm64        Messages and service files for the Nav2 stack
+ii  ros-jazzy-nav2-navfn-planner                     1.3.12-1noble.20260614.083041           arm64        Nav2 NavFn planner
+ii  ros-jazzy-nav2-planner                           1.3.12-1noble.20260614.083147           arm64        Nav2 planner server package
+ii  ros-jazzy-nav2-regulated-pure-pursuit-controller 1.3.12-1noble.20260614.095312           arm64        Regulated Pure Pursuit Controller
+ii  ros-jazzy-nav2-rotation-shim-controller          1.3.12-1noble.20260614.103424           arm64        Rotation Shim Controller
+ii  ros-jazzy-nav2-route                             1.3.12-1noble.20260614.083322           arm64        A Route Graph planner to compliment the Planner Server
+ii  ros-jazzy-nav2-rviz-plugins                      1.3.12-1noble.20260614.105134           arm64        Navigation 2 plugins for rviz
+ii  ros-jazzy-nav2-simple-commander                  1.3.12-1noble.20260612.163820           arm64        An importable library for writing mobile robot applications in python3
+ii  ros-jazzy-nav2-smac-planner                      1.3.12-1noble.20260614.083338           arm64        Smac global planning plugin: A*, Hybrid-A*, State Lattice
+ii  ros-jazzy-nav2-smoother                          1.3.12-1noble.20260614.102914           arm64        Smoother action interface
+ii  ros-jazzy-nav2-theta-star-planner                1.3.12-1noble.20260614.083440           arm64        Theta* Global Planning Plugin
+ii  ros-jazzy-nav2-util                              1.3.12-1noble.20260614.074750           arm64        Nav2 utilities
+ii  ros-jazzy-nav2-velocity-smoother                 1.3.12-1noble.20260614.103113           arm64        Nav2's Output velocity smoother
+ii  ros-jazzy-nav2-voxel-grid                        1.3.12-1noble.20260612.161953           arm64        voxel_grid provides an implementation of an efficient 3D voxel grid.
+ii  ros-jazzy-nav2-waypoint-follower                 1.3.12-1noble.20260614.082453           arm64        A waypoint follower navigation server
+ii  ros-jazzy-ros-gz-bridge                          1.0.22-1noble.20260612.145221           arm64        Bridge communication between ROS and Gazebo Transport
+ii  ros-jazzy-ros-gz-image                           1.0.22-1noble.20260614.051950           arm64        Image utilities for Gazebo simulation with ROS.
+ii  ros-jazzy-ros-gz-interfaces                      1.0.22-1noble.20260612.091939           arm64        Message and service data structures for interacting with Gazebo from ROS2.
+ii  ros-jazzy-ros-gz-sim                             1.0.22-1noble.20260614.054729           arm64        Tools for using Gazebo Sim simulation with ROS.
+ii  ros-jazzy-slam-toolbox                           2.8.5-1noble.20260614.104642            arm64        This package provides a sped up improved slam karto with updated SDK and visualization and modification toolsets

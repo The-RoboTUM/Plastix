@@ -1,0 +1,18 @@
+# /etc/systemd/system/gripperx-navigation.service
+[Unit]
+Description=GripperX Navigation (nav2)
+After=gripperx-mapping.service network-online.target
+Requires=gripperx-mapping.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Environment=HOME=/home/ubuntu
+ExecStartPre=/bin/sleep 15
+ExecStart=/usr/local/bin/gripperx-navigation.sh
+Restart=on-failure
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

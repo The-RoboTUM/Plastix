@@ -1,0 +1,16 @@
+# /etc/systemd/system/gripperx-wifi.timer
+[Unit]
+Description=GripperX WiFi Reconnect every 30s
+After=network.target
+
+[Timer]
+# Fix 8 (#12): intervals increased (20s/15s -> 45s/30s), so the
+# wpa_supplicant connection setup (handshake + DHCP) has enough time on boot
+# or after a reconnect before the next check fires.
+# Together with the state filter in gripperx-wifi.sh, this fixes the
+# timer flapping (see there).
+OnBootSec=45
+OnUnitInactiveSec=30
+
+[Install]
+WantedBy=timers.target

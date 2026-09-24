@@ -1,0 +1,24 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>gripperx_geometry</name>
+  <version>0.0.0</version>
+  <description>
+    Single source of truth for GripperX robot geometry. Declares each geometric
+    quantity once in config/geometry.yaml, proves every consumer in the
+    workspace agrees with it, and generates the derived artefacts. Runtime-free:
+    no nodes, no launch files, nothing on the robot depends on it.
+  </description>
+  <maintainer email="theoblaesse@gmail.com">Theo Blaesse</maintainer>
+  <license>TODO: License declaration</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <exec_depend>python3-yaml</exec_depend>
+
+  <test_depend>python3-pytest</test_depend>
+
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>
