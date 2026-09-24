@@ -39,6 +39,18 @@ WHAT IT VERIFIES, AND WHY EACH ONE EXISTS
                flowing, so the LINK stays healthy and the correlation input
                freezes. The three F-13 gates must refuse on the stale list
                instead of re-asking it and getting the same confident answer.
+``line_cal``   The Octopus line calibration, process level: no dispatch before
+               the posts are clicked; the dispatched object sits where the
+               ROTATED calibration puts their coordinates; a recalibration and
+               a replaced /map publisher (= slam_toolbox restart) each cancel
+               the goal in flight.
+
+EVERY OTHER SCENARIO RUNS ON THE IDENTITY LINE
+==============================================
+The gateway refuses every goal without a line calibration, so ``start_gateway``
+also starts ``line_calibration_node`` plus ``fake_map_and_clicks.py`` and clicks
+``FIXTURE_LINE`` - an identity (origin at the map origin, +x = map +x), so every
+other scenario keeps meaning what it meant before the calibration existed.
 
 HOW IT OBSERVES
 ===============
@@ -69,12 +81,33 @@ _PKG = os.path.dirname(_HERE)
 TWIN_DOMAIN = "221"
 NS = "/gripperx/external"
 
-#: NOT A MEASUREMENT. A rectangle big enough to contain the fake's targets, so
-#: that the geofence stops being the thing under test.
-FIXTURE_GEOFENCE = ("-8.0", "8.0", "-8.0", "8.0")
+# NO FIXTURE GEOFENCE ANY MORE: since 2026-09-24 the geofence is the square of
+# side L around the line midpoint (user decision), so on FIXTURE_LINE below it
+# is |x|, |y| <= LINE_HALF in map - which contains the fake's targets.
+
+def _twin_shared_params():
+    """The `/**` section of the twin config - the keys the calibration node AND
+    the gateway both read. Passed to both below, so nothing here is a copy."""
+    import yaml
+    with open(os.path.join(_PKG, "config", "octopus_link_twin.yaml")) as f:
+        return yaml.safe_load(f)["/**"]["ros__parameters"]
+
+
+SHARED_PARAMS = _twin_shared_params()
+LINE_RANGE = (float(SHARED_PARAMS["expected_length_min_m"]),
+              float(SHARED_PARAMS["expected_length_max_m"]))
+#: Half the post spacing of every fixture line: the middle of the configured
+#: range, so the pair is accepted. NOT A MEASUREMENT.
+LINE_HALF = 0.25 * (LINE_RANGE[0] + LINE_RANGE[1])
+#: Post A and post B for the identity line frame: midpoint at the map origin,
+#: A->B along map +x, so line metres == map metres.
+FIXTURE_LINE = ((-LINE_HALF, 0.0), (LINE_HALF, 0.0))
 
 _failures: List[str] = []
 _procs: List["Proc"] = []
+#: Process groups of every child this suite started (== their pids, since each
+#: runs in its own session). Teardown kills these and nothing else.
+_own_pgids: set = set()
 
 
 def check(condition: bool, label: str, detail: str = "") -> bool:
@@ -145,6 +178,7 @@ class Proc:
             env=env,
             start_new_session=True,
         )
+        _own_pgids.add(self.proc.pid)
         self._read = open(self.path, "r", errors="replace")
         _procs.append(self)
 
@@ -355,7 +389,35 @@ def start_link(name: str = "octopus_link_node", **overrides) -> Proc:
     return Proc(name, argv, env_for())
 
 
-def start_gateway(name: str = "goal_gateway_node", **overrides) -> Proc:
+_line_cal: Optional[Proc] = None
+_fake_map: Optional[Proc] = None
+
+
+def start_line_calibration(line=FIXTURE_LINE, click: bool = True):
+    """The calibration node plus the fake map/operator. Once per scenario."""
+    global _line_cal, _fake_map
+    if _line_cal is None or _line_cal.proc.poll() is not None:
+        argv = [os.path.join(_INSTALL, "line_calibration_node"), "--ros-args",
+                "-r", f"__ns:={NS}", "-r", "__node:=line_calibration_node",
+                "-p", f"expected_domain_id:={TWIN_DOMAIN}", "-p", "use_sim_time:=false"]
+        for key, value in SHARED_PARAMS.items():
+            argv += ["-p", f"{key}:={value}"]
+        _line_cal = Proc("line_calibration_node", argv, env_for())
+    if _fake_map is None or _fake_map.proc.poll() is not None:
+        _fake_map = start_fake_map(line if click else None)
+    return _line_cal, _fake_map
+
+
+def start_fake_map(line=None, name: str = "fake_map_and_clicks") -> Proc:
+    argv = [sys.executable, os.path.join(_HERE, "fake_map_and_clicks.py")]
+    if line is not None:
+        argv += ["--a", str(line[0][0]), str(line[0][1]),
+                 "--b", str(line[1][0]), str(line[1][1])]
+    return Proc(name, argv, env_for(), stdin_pipe=True)
+
+
+def start_gateway(name: str = "goal_gateway_node", calibrate: bool = True,
+                  **overrides) -> Proc:
     """Start the gateway. ``use_sim_time`` defaults to FALSE, and that is a
     statement about this harness rather than about the twin (SAFETY.md F-24).
 
@@ -379,10 +441,6 @@ def start_gateway(name: str = "goal_gateway_node", **overrides) -> Proc:
         "auto_pick": "true",
         "arming.max_duration_sec": "600.0",
         "arming.max_consecutive_aborts": "3",
-        "geofence.min_x_m": FIXTURE_GEOFENCE[0],
-        "geofence.max_x_m": FIXTURE_GEOFENCE[1],
-        "geofence.min_y_m": FIXTURE_GEOFENCE[2],
-        "geofence.max_y_m": FIXTURE_GEOFENCE[3],
         # The user's specification, passed through unchanged. NOT a measurement.
         "grasp.offset_x_m": "0.360",
         "grasp.offset_y_m": "0.000",
@@ -392,11 +450,14 @@ def start_gateway(name: str = "goal_gateway_node", **overrides) -> Proc:
         "dispatch_rate_hz": "2.0",
         "link_lost_sec": "5.0",
     }
+    params.update({k: str(v) for k, v in SHARED_PARAMS.items()})
     params.update(overrides)
     argv = [os.path.join(_INSTALL, "goal_gateway_node"), "--ros-args",
             "-r", f"__ns:={NS}", "-r", "__node:=goal_gateway_node"]
     for key, value in params.items():
         argv += ["-p", f"{key}:={value}"]
+    if calibrate:
+        start_line_calibration()
     return Proc(name, argv, env_for())
 
 
@@ -436,31 +497,38 @@ def set_arming(arm: bool, duration: float = 120.0, by: str = "stage3-check") -> 
 
 
 def teardown() -> None:
+    global _line_cal, _fake_map
     for proc in reversed(_procs):
         proc.stop()
     _procs.clear()
+    _line_cal = _fake_map = None
     # Belt and braces: verified by counting, not assumed. A leftover node on
-    # this domain does not fail the next scenario, it CORRUPTS it.
+    # this domain does not fail the next scenario, it CORRUPTS it - and an
+    # orphaned sim_clock.py silently supplies the very /clock the `clock`
+    # scenario proves the absence of.
+    #
+    # ONLY OUR OWN CHILDREN. Every Proc runs in its own session, so its process
+    # group id is its pid and survives the wrapper; those groups are what is
+    # checked and killed here. This used to `pgrep -f` the node names across
+    # the whole machine, which killed any other session's gateway, link node or
+    # fixtures, whatever domain they ran on.
     deadline = time.time() + 15
     while time.time() < deadline:
-        alive = subprocess.run(
-            ["pgrep", "-f", "gripperx_external/(goal_gateway_node|octopus_link_node)"],
-            capture_output=True, text=True,
-        ).stdout.split()
-        alive += subprocess.run(
-            # sim_clock.py belongs in this list for the same reason the others
-            # do, and more so: an orphaned /clock publisher does not merely
-            # falsify the next scenario, it silently supplies the very thing the
-            # `clock` scenario proves the absence of.
-            ["pgrep", "-f", "mock_motion_servers.py|fake_octopus.py|sim_clock.py"],
-            capture_output=True, text=True,
-        ).stdout.split()
+        alive = []
+        for pgid in list(_own_pgids):
+            try:
+                os.killpg(pgid, 0)
+                alive.append(pgid)
+            except ProcessLookupError:
+                _own_pgids.discard(pgid)
+            except PermissionError:
+                alive.append(pgid)
         if not alive:
             return
-        for pid in alive:
+        for pgid in alive:
             try:
-                os.kill(int(pid), signal.SIGKILL)
-            except (ProcessLookupError, ValueError):
+                os.killpg(pgid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
                 pass
         time.sleep(1)
     print("  [WARN] processes survived teardown; the next scenario is unreliable")
@@ -2681,6 +2749,85 @@ def scenario_clock_forward() -> None:
     _forward_jump_race("G3", jumps=8, jump_sec=120.0, spacing_sec=12.0)
 
 
+def scenario_line_cal() -> None:
+    print("=" * 78)
+    print("line_cal - the Octopus line calibration gates, rotates and cancels")
+    print("=" * 78)
+    fake = start_fake()
+    mock = start_mock(nav_duration_sec=40.0, pick_duration_sec=1.0)
+    link = start_link()
+    cal, fmap = start_line_calibration(click=False)
+    gateway = start_gateway()
+    gateway.wait_for(r"navigate_to_pose is available", 40)
+    set_arming(True, 300.0)
+    refused = gateway.wait_for(r"rejected \(NO_LINE_CALIBRATION\)", 20)
+    check(refused is not None, "armed but NOT calibrated: the goal is refused, and says why",
+          (refused or "")[-90:])
+    time.sleep(3)
+    check(gateway.count(r"DISPATCHING target") == 0, "  ... and nothing is dispatched")
+
+    # A ROTATED line, NOT A MEASUREMENT: A=(0.5,-h) B=(0.5,h) -> origin (0.5, 0),
+    # +x = map +y, +y = map -x. Their (x, y) lands at map (0.5 - y, x).
+    h = LINE_HALF
+    pair = f"pair 0.5 {-h} 0.5 {h}"
+    fmap.send("pair 0.5 -0.9 0.5 0.9")
+    check(cal.wait_for(r"REJECTED \(LENGTH_OUT_OF_RANGE\): L = 1\.800 m", 30) is not None,
+          "a pair OUTSIDE the configured length range is refused (L = 1.800 m)")
+    time.sleep(3)
+    check(gateway.count(r"DISPATCHING target") == 0, "  ... and still nothing is dispatched")
+    fmap.send(pair)
+    check(cal.wait_for(rf"LINE CALIBRATED - calibration #1: L = {2 * h:.3f} m", 30) is not None,
+          "two clicks calibrate, and L is logged to the millimetre")
+    line = gateway.wait_for(r"DISPATCHING target (\S+) .*object at \((\S+), (\S+)\)", 30)
+    check(line is not None, "calibrated: the goal is dispatched", (line or "")[-110:])
+    if line is not None:
+        m = re.search(r"DISPATCHING target (\S+) .*object at \(([-\d.]+), ([-\d.]+)\)", line)
+        tid, ox, oy = m.group(1), float(m.group(2)), float(m.group(3))
+        added = fake.wait_for(rf"target {re.escape(tid)} added at map \(([-\d.]+), ([-\d.]+)\)", 5)
+        m2 = re.search(r"added at map \(([-\d.]+), ([-\d.]+)\)", added or "")
+        if m2:
+            tx, ty = float(m2.group(1)), float(m2.group(2))
+            want = (0.5 - ty, tx)
+            check(abs(ox - want[0]) < 0.02 and abs(oy - want[1]) < 0.02,
+                  "the dispatched object is THEIR point through the ROTATED line",
+                  f"theirs ({tx}, {ty}) -> expected ({want[0]:.3f}, {want[1]:.3f}), got ({ox}, {oy})")
+        else:
+            check(False, "the fake's own position for the dispatched target was found")
+
+    # Recalibration while the goal is in flight (nav_duration 40 s).
+    fmap.send(f"click 0.5 {-h}")
+    check(gateway.wait_for(r"CANCELLING target \S+ \(LINE_CALIBRATION_LOST", 15) is not None,
+          "a new first click (recalibration) CANCELS the goal in flight")
+    fmap.send(f"click 0.5 {h}")
+    check(cal.wait_for(r"calibration #2", 15) is not None, "  ... and the second click completes #2")
+    deadline = time.time() + 30
+    while time.time() < deadline and gateway.count(r"DISPATCHING target") < 2:
+        time.sleep(0.5)
+    check(gateway.count(r"DISPATCHING target") >= 2,
+          "  ... after which the goal is dispatched again on the new calibration")
+
+    # A slam_toolbox restart: the /map publisher is replaced by a new process.
+    fmap.stop()
+    time.sleep(1.0)
+    fmap2 = start_fake_map(None, name="fake_map_and_clicks_2")
+    lost = gateway.wait_for(
+        r"CANCELLING target \S+ \((MAP_SESSION_CHANGED|LINE_CALIBRATION_\w+)", 30)
+    check(lost is not None, "a NEW /map publisher (slam restart) cancels the goal in flight",
+          (lost or "")[-110:])
+    check(cal.wait_for(r"DISCARDED \(MAP_SESSION_CHANGED\)", 15) is not None,
+          "  ... and the calibration node discards the calibration itself")
+    time.sleep(4)
+    n = gateway.count(r"DISPATCHING target")
+    time.sleep(4)
+    check(gateway.count(r"DISPATCHING target") == n,
+          "  ... and nothing is re-dispatched until the posts are clicked again")
+    fmap2.send(pair)
+    check(cal.wait_for(r"calibration #3", 30) is not None, "re-clicking on the new map calibrates #3")
+    check(gateway.wait_for(r"accepted - calibration #3", 15) is not None,
+          "  ... and the gateway accepts it on the new map session")
+    teardown()
+
+
 SCENARIOS = {
     "permissive": scenario_permissive,
     "clock": scenario_clock,
@@ -2693,6 +2840,7 @@ SCENARIOS = {
     "link_reset": scenario_link_reset,
     "triggers": scenario_triggers,
     "sr9": scenario_sr9,
+    "line_cal": scenario_line_cal,
 }
 
 

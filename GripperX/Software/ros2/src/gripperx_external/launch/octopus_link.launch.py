@@ -14,6 +14,19 @@ Both nodes live in the namespace ``/gripperx/external``, which is where SR-15
 puts the arming service (``/gripperx/external/set_arming``) and where the config
 files key their parameters.
 
+AFTER EVERY START: CLICK THE TWO POSTS
+======================================
+The gateway refuses every goal (``NO_LINE_CALIBRATION``) until the operator has
+clicked frame post A, then post B, with RViz's "Publish Point" tool in the fixed
+frame ``map`` (``rviz/octopus_goals.rviz`` has the tool and the markers). The
+measured length L is logged and drawn; it is entered on the drone side. See
+``documentation/OCTOPUS_LINE_CALIBRATION.md``.
+
+``line_calibration_node`` is deliberately NOT started here. It is started by
+``gripperx_localization/launch/localization.launch.py`` (the gripperx-mapping
+service), so it lives and dies with slam_toolbox, whose map frame the clicks
+are taken in. It still reads its parameters from ``octopus_link_{env}.yaml``.
+
 NOTHING HERE CAN ARM ANYTHING
 =============================
 There is deliberately no ``arm`` or ``allow_arm`` launch argument. SR-15 rule 4:

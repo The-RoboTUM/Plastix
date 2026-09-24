@@ -20,6 +20,9 @@
   <exec_depend>nav2_map_server</exec_depend>
   <exec_depend>rclpy</exec_depend>
   <exec_depend>gripperx_control</exec_depend>
+  <!-- localization.launch.py starts gripperx_external's line_calibration_node
+       and loads its config, so the dependency runs localization -> external. -->
+  <exec_depend>gripperx_external</exec_depend>
   <exec_depend>robot_localization</exec_depend>
   <exec_depend>rviz2</exec_depend>
   <exec_depend>sensor_msgs</exec_depend>

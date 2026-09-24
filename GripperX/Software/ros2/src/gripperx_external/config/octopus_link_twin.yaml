@@ -116,31 +116,26 @@
     arming.max_duration_sec: 600.0
     arming.max_consecutive_aborts: 3
 
-    # GEOFENCE: a separate rectangle covering the demo area, deliberately NOT
-    # the Octopus detection footprint and not a margin around it.
-    # RUNTIME-ADJUSTABLE by requirement:
-    #   ros2 param set /gripperx/external/goal_gateway_node geofence.min_x_m -2.0
-    # takes effect on the NEXT validation, without a node restart, and is NOT
-    # an arming event. While unset the gateway refuses to validate.
+    # GEOFENCE - NO PARAMETERS HERE ANY MORE (user decision 2026-09-24). It is
+    # the square of side L centred on the line midpoint and aligned with the
+    # line (x, y in [-L/2, +L/2] in octopus_line), derived by the gateway from
+    # the LIVE line calibration: one source, and it moves with every
+    # recalibration. No calibration -> no geofence -> every goal is refused.
     #
-    # TWIN ONLY: 1.25 m in every direction under the drone, i.e. a
-    # 2.50 x 2.50 m square centred on map (0,0) - a DECISION about the twin's
-    # play area, not a measurement of any demo site. The real robot's
-    # geofence stays `TO-VERIFY` in `octopus_link_real.yaml` and is NOT
-    # discharged by this. FR-12 SS10.1 item 6 is unchanged.
+    # WHAT IT BOUNDS is unchanged: the CHOSEN ROBOT POSE, not the object
+    # (validation.py check_pose, step 9). A target outside the square may still
+    # be served when its standoff pose falls inside; a target inside may be
+    # refused when every approach candidate lands outside. It bounds the GOAL
+    # only, never the PATH: Nav2 may drive outside the square on the way.
     #
-    # WHAT IT BOUNDS: the CHOSEN ROBOT POSE, not the object (validation.py
-    # check_pose, step 9). A target may lie outside this square and still be
-    # served when its standoff pose falls inside, and a target inside may be
-    # refused when every one of the 12 approach candidates lands outside -
-    # that asymmetry is the point of a standoff, not a defect.
-    #
-    # It also bounds the GOAL only, never the PATH: Nav2 may plan and drive
-    # outside this square on the way. The geofence is not a containment fence.
-    geofence.min_x_m: -1.25
-    geofence.max_x_m: 1.25
-    geofence.min_y_m: -1.25
-    geofence.max_y_m: 1.25
+    # The camera sees more than this - an operational hazard, not harmless
+    # surplus. A target whose every approach pose falls outside is refused AT
+    # VALIDATION: it never becomes a mission, never counts an attempt, never
+    # reaches the blacklist. The Octopus only advances on trash_goal_done and has
+    # no failure channel, so an out-of-bounds target DEADLOCKS their mission.
+    # Until they bound detection or add a failure channel, the whole CAMERA
+    # FIELD - not just this square - must stay clear of anything the detector
+    # fires on.
 
     # GRASP OFFSET - bench measurement on the real robot, blocks stage 5. The
     # point in base_footprint where the fixed, unaimable pick sequence
@@ -278,8 +273,54 @@
 
     map_frame: "map"
     base_frame: "base_footprint"
+    # The Octopus line calibration this gateway gates on (line_calibration_node,
+    # started by gripperx-mapping via localization.launch.py). Its range, frame
+    # name, map topic and map-session grace are in the `/**` section at the end
+    # of this file - shared with that node, one source. No calibration -> no
+    # dispatch (NO_LINE_CALIBRATION).
+    line_calibration_topic: "line_calibration"
     costmap_topic: "/global_costmap/costmap"
     odom_topic: "/odometry/filtered"
     # SUBSCRIBED ONLY. Nothing in this package publishes /teleop/set_mode or any
     # motion-chain topic, under any condition (SR-15 rules 6 and 9).
     teleop_mode_topic: "/teleop/active_mode"
+
+# The shared reference line: the operator clicks frame post A, then post B, in
+# RViz (Publish Point, fixed frame map). Nothing is persisted - it is clicked
+# again at every start, and it dies by itself when the SLAM map session ends.
+# Convention and interface: documentation/OCTOPUS_LINE_CALIBRATION.md.
+#
+# This node is NOT started by octopus_link.launch.py: it is started by
+# gripperx_localization/launch/localization.launch.py (gripperx-mapping), which
+# loads THIS file for it, so it lives and dies with slam_toolbox.
+/gripperx/external/line_calibration_node:
+  ros__parameters:
+    use_sim_time: true
+    expected_domain_id: 220
+    map_frame: "map"
+    clicked_point_topic: "/clicked_point"
+    map_session_check_period_sec: 1.0
+    tf_rate_hz: 10.0
+
+# SHARED by line_calibration_node AND goal_gateway_node (audit H1): both read
+# these very keys, so the node that accepts a calibration and the gateway that
+# converts goals with it cannot disagree. The gateway applies ITS copy; the
+# range a status carries is informational and is ignored.
+/**:
+  ros__parameters:
+    line_frame_id: "octopus_line"
+    map_topic: "/map"
+    # User-stated range for the post spacing - a plausibility bound, not a
+    # measurement. CHANGED 2026-09-24 by the user during the first real-robot
+    # test, from 2.5-3.0 m to 2.20-2.80 m; still not a measurement. A clicked pair whose L falls outside it is
+    # REJECTED (no transform, no 'calibrated' status, a red marker in RViz) and
+    # the operator re-clicks: it catches a wrong post or a stray click before it
+    # can reach a goal. Also the side of the geofence square. Read by
+    # check_line_calibration.py from THIS file.
+    expected_length_min_m: 2.2
+    expected_length_max_m: 2.8
+    # How long the map topic may show NO publisher before the calibration
+    # counts as lost (audit M2). Unmeasured: while TO-VERIFY an empty read
+    # counts at once - the calibration node drops the calibration, the gateway
+    # cancels a goal in flight and blocks new dispatch.
+    map_session_grace_sec: "TO-VERIFY"

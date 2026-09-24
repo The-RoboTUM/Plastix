@@ -145,6 +145,26 @@ a motion event under SR-1.
 one is enough to make `deploy_check.sh --ref <branch>` report DRIFT even though nothing functional
 differs — keep the unit's comments and `Description=` text in sync too, not just `ExecStart=`.
 
+**Trap, found 2026-09-24:** the `gripperx-*.sh` glob above **does not cover two of the installed
+scripts** — `gripperx-stack-stop` (no extension; it is the one script the HWR-40 button and the three
+operator commands call) and `gripperx-button-daemon.py`. Both live in the same repository directory and
+both are installed under `/usr/local/bin`, so `deploy_check.sh` compares them, but the copy command
+above silently skips them. After changing either, install it by name:
+
+```bash
+sudo install -m 0755 -o root -g root \
+  ~/ws/Software/pi_env/systemd/scripts/gripperx-stack-stop /usr/local/bin/gripperx-stack-stop
+sudo install -m 0755 -o root -g root \
+  ~/ws/Software/pi_env/systemd/scripts/gripperx-button-daemon.py /usr/local/bin/gripperx-button-daemon.py
+```
+
+Installing `gripperx-stack-stop` restarts nothing and moves nothing: it is executed on demand — by the
+button daemon, by an operator, and by `gripperx-bringup.service`'s `ExecStop=` — so a new copy takes effect
+at the **next invocation**, with no service action at all. `gripperx-button-daemon.py` is different: it is a
+resident process (`gripperx-button.service`), so it keeps executing the OLD copy until that unit is
+restarted. Restarting `gripperx-button.service` is not a motion event — the daemon only reads a GPIO line —
+but it does mean the button is briefly dead, so do it deliberately rather than as a side effect.
+
 ---
 
 ## 1. Clean-teardown bringup restart procedure (binding)
@@ -156,8 +176,13 @@ every future bringup restart**.
 
 **Never restart `gripperx-bringup.service` (or do a full stack restart) without this sequence:**
 
-1. **Stop services** — in reverse dependency order (navigation → mapping → bringup → agent), via
-   the normal `systemctl stop gripperx-*.service` path.
+1. **Stop services** — in reverse dependency order (**external** → navigation → mapping → bringup →
+   agent), via the normal `systemctl stop gripperx-*.service` path.
+
+   *`gripperx-external.service` (the FR-12 Octopus link, §3.3) joined this list on 2026-09-24 and goes
+   FIRST. It only `Wants=` navigation, so no stop propagates to it from anything, and stopping it while
+   Nav2 is still up is what lets the gateway's own shutdown path cancel a goal in flight — a cancel is
+   worth nothing once `/navigate_to_pose` has already vanished.*
 2. **`docker stop mros_agent`** — if the micro-ROS agent runs as a Docker container, a plain
    `systemctl stop` of the wrapping service does **not** kill the container (`docker run --rm`
    semantics; the container survives service stop and becomes a DDS zombie). This step is
@@ -184,7 +209,13 @@ every future bringup restart**.
    - `ros2 daemon stop` — clears any stale ROS 2 daemon discovery state left over from the previous
      session, independent of the process-level zombie check above.
 5. **Start in strict order, waiting for each stage to fully come up before starting the next:**
-   `agent` → `bringup` → `mapping` → `navigation`.
+   `agent` → `bringup` → `mapping` → `navigation` → `external`.
+
+   *`external` last: it is the only consumer of the whole stack (`/navigate_to_pose`, the
+   `map` → `base_footprint` TF, `/odometry/filtered`, `/teleop/active_mode`) and nothing consumes it.
+   It is the one stage you do **not** have to wait for — the gateway treats a missing Nav2 as the
+   `NAV2_UNAVAILABLE` state, reports it and repairs itself when discovery matches, so starting it early
+   degrades to telemetry-only instead of failing (§3.3).*
 
    **This order is yours to keep — systemd only enforces part of it.** Checked against the unit
    files 2026-08-24: `gripperx-mapping.service` has `Requires=`/`After=gripperx-bringup.service`
@@ -194,6 +225,11 @@ every future bringup restart**.
    and the network, and nothing makes `bringup` wait for it. On a boot the agent and the bringup
    race. Starting the agent first by hand, as this step says, is therefore a real instruction and
    not a restatement of what the units already guarantee.
+   `gripperx-external.service` (added 2026-09-24) is `After=`/`Wants=gripperx-navigation.service`
+   (+`ExecStartPre=/bin/sleep 15`), so its **order** is enforced but its **dependency is not**:
+   `Wants=` is deliberate, because a failed Nav2 must not take the external link down with it — the
+   link is then the only thing still reporting to the Octopus, and their side has no failure channel
+   (§3.1, last bullet).
 
 Every SSH action against the robot should use a retry loop, not a single attempt — the connection
 (commonly over an iPhone-hotspot link when the LAN cable isn't practical) is **unstable** ("No route
@@ -349,12 +385,19 @@ deploying or touching this part of the system, not what an auditor would look fo
   >   rosbridge_server rosbridge_websocket` with the globs as **quoted strings**.
   >
   > The authoritative page is `documentation/OCTOPUS_ROSBRIDGE_SETUP.md` §3.
-- **Status of the constraint, confirmed 2026-08-21, not re-verified since.** The Octopus team
-  confirmed on 2026-08-21 that rosbridge runs on host `ITQLM125` at `ws://10.42.0.158:9090`, bound
-  `0.0.0.0`, version **2.0.7 built from source**, with the three globs above, and that verification
-  steps 5a–5d passed (`OCTOPUS_ROSBRIDGE_SETUP.md` §8). **Nobody has re-checked this endpoint since,
-  and the shared subnet has moved twice in the meantime (`LOCAL_ENV.md` §2) — do not treat this
-  address as current without re-verifying what is actually running on the Octopus host.** That
+- **Status of the constraint — endpoint MEASURED 2026-09-24, on a new address.** The link is
+  `ws://192.168.50.30:9090` on host `ITQLM125`, and this is the first time the endpoint has been
+  reached **from the robot** rather than reported: ping and a TCP connect to 9090 from the Pi, then a
+  subscribe that returned live frames on all three inbound topics at ~1 Hz. The earlier value
+  `ws://10.42.0.158:9090` — Octopus team reply of 2026-08-21, rosbridge **2.0.7 built from source**,
+  bound `0.0.0.0`, steps 5a–5d passed (`OCTOPUS_ROSBRIDGE_SETUP.md` §8) — was **never once reachable
+  from this robot** and had gone stale by the time it was written down.
+  **Why it should now stay put:** the segment used to be a developer laptop's NetworkManager *shared*
+  connection on `10.42.0.0/24`, that range being NetworkManager's default, so two machines on "the same
+  range" were routinely on two different networks. Since 2026-09-24 a TL-WR840N owns
+  `192.168.50.0/24` with one DHCP reservation per MAC (`LOCAL_ENV.md` §2). **Still re-verify before a
+  session** — not the address now, but what is actually running on their host: the two caveats below
+  are from the 2026-08-21 check and were not re-examined on 2026-09-24. That
   verification requirement is also what caught the `params_glob` error described above: a deployer must
   **verify against what is actually running on their host** rather than trusting any document — this
   one included — as proof of what is deployed. Two more caveats as of the same 2026-08-21 check,
@@ -365,7 +408,9 @@ deploying or touching this part of the system, not what an auditor would look fo
   link node exits non-zero (exit code 2, e.g. on a sim-time misconfiguration under SR-15 rule 12, or
   any other startup refusal), what the Octopus operator sees is a link that simply never appears —
   not a reason. Consequence for whoever deploys the link node: check the link node's own exit status
-  and journal (`journalctl -u <octopus-link-service>`) directly after every deploy or restart. Do not
+  and journal (`systemctl status gripperx-external.service`, then
+  `journalctl -u gripperx-external.service -b --no-pager` — the unit exists since 2026-09-24, see
+  §3.3) directly after every deploy or restart. Do not
   infer link health from the Octopus side ("no goals arriving" does not mean "not running", and "the
   Octopus dashboard shows a connection" does not mean the last restart succeeded cleanly). Do not
   report the link healthy to the Octopus team without having read its log yourself.
@@ -399,6 +444,124 @@ deploying or touching this part of the system, not what an auditor would look fo
   to prevent (internal safety audit §6.6, not in this repository). The current membership of the set is deliberate and was reviewed
   after that near-miss; the next change to it needs the same scrutiny, not less because "it worked
   last time."
+
+
+### 3.3 `gripperx-external.service` — the link as a service (autostart and Mode R)
+
+**Added 2026-09-24. Before this, `gripperx_external` was built and installed on the Pi but had no unit:
+it only ever ran from a manual `ros2 launch`, so it was absent after every boot and after every Mode R
+restart — and absent is exactly the state the Octopus cannot distinguish from "running but silent"
+(§3.1, last bullet).**
+
+| | |
+|---|---|
+| Unit | `Software/pi_env/systemd/units/gripperx-external.service` → `/etc/systemd/system/` |
+| Script | `Software/pi_env/systemd/scripts/gripperx-external.sh` → `/usr/local/bin/` |
+| Starts | `ros2 launch gripperx_external octopus_link.launch.py env:=real goal_ingress:=true dry_run:=false use_sim_time:=false url:=<read from the config>` — two nodes, `octopus_link_node` (transport) and `goal_gateway_node` (judgement), both in namespace `/gripperx/external` |
+| Rollout stage | **1 — telemetry only.** No goal ingress, gateway disarmed, dry-run. See below. |
+| Ordering | `After=`/`Wants=gripperx-navigation.service` + `ExecStartPre=/bin/sleep 15` |
+| Boot | covered by `systemctl enable` (`WantedBy=multi-user.target`) |
+| Mode R restart | covered by `gripperx-stack-stop`'s `STOP_ORDER`/`START_ORDER` — **not** by being enabled |
+
+**Rollout stage 3 — user decision 2026-09-24, during the first real-robot test.** The launch file
+defines three stages: 1 = telemetry only (its defaults), 2 = `goal_ingress:=true` with the gateway
+disarmed and in dry-run, 3 = additionally `dry_run:=false`. The unit runs **stage 3**: the link node
+subscribes the Octopus goal topics, the gateway validates each goal against the line calibration
+(`documentation/OCTOPUS_LINE_CALIBRATION.md`) and its geofence, and dispatch is not blocked by dry-run.
+**The only remaining block is arming** — the `SetArming` service on the robot's own domain, nothing
+else, and it expires by itself (SR-15 rules 3 and 4). Arming is therefore a motion approval under SR-1.
+*(Superseded 2026-09-24: this section used to run stage 1 and to state that `dry_run:=false` is never
+set by an autostart script. The user overrode that deliberately, knowing that FR-12 §10.1 — the items
+owed before the real robot — is not yet met. Stepping back is a one-token edit of
+`gripperx-external.sh` (`dry_run:=true` → stage 2, `goal_ingress:=false` → stage 1) plus a reinstall
+(§0) plus a restart of this unit.)*
+
+**Starting or restarting this unit is not a motion event under SR-1.** It starts two pure-python rclpy
+nodes that publish no command topic and hold no hardware interface; their only route to an actuator is a
+Nav2 or `/pick_plastic` goal, which the gateway sends only while armed — and it always starts disarmed.
+That is *not* a statement about `gripperx-bringup.service`, whose restart remains a motion event.
+
+**Install step** (after the repository is on the Pi; the unit and script are new files, so
+`deploy_check.sh` reports them `MISSING` until this has run):
+
+```bash
+sudo install -m 0755 -o root -g root \
+  ~/ws/Software/pi_env/systemd/scripts/gripperx-external.sh /usr/local/bin/gripperx-external.sh
+sudo install -m 0644 -o root -g root \
+  ~/ws/Software/pi_env/systemd/units/gripperx-external.service /etc/systemd/system/gripperx-external.service
+sudo systemctl daemon-reload
+sudo systemctl enable gripperx-external.service
+```
+
+`daemon-reload` restarts nothing (verified 2026-09-21, §0) and `enable` starts nothing — the unit comes
+up at the next boot, or immediately if it is started by hand. Do **not** forget
+`/usr/local/bin/gripperx-stack-stop`: the Mode R coverage lives in that script, and the §0 glob does not
+match it (see the trap there).
+
+**Where to look when it does not come up.** The journal is the only path: the gateway's `/diagnostics`
+and `/gripperx/external/status` exist only while it runs, which is precisely the failure this section is
+about.
+
+```bash
+systemctl status gripperx-external.service
+journalctl -u gripperx-external.service -b --no-pager
+```
+
+- **`status=78/EX_CONFIG`** — a **deliberate refusal**, caught by the script's pre-flight SR-8 probe
+  before `ros2 launch` is started at all: the live `ROS_DOMAIN_ID` does not match the
+  `expected_domain_id` in `octopus_link_real.yaml`. `RestartPreventExitStatus=78` means systemd does
+  **not** retry this; the unit stays `failed` until somebody fixes the configuration.
+- **`Result: exit-code`, or "Start request repeated too quickly" in the journal** — the launch tree kept
+  ending on its own. `StartLimitIntervalSec=300`/`StartLimitBurst=4` bound that to four attempts in five
+  minutes, then the unit latches `failed`. The reason is in the nodes' own `FATAL`/`ERROR` lines, most
+  likely the `use_sim_time` refusal (F-24) or a missing dependency.
+- **`active (running)` but the Octopus sees nothing** — that is the link itself (wrong `url`,
+  unreachable host, rosbridge not running on their side), not the unit. The link node logs its
+  connection attempts and backoff; §3.1 covers the endpoint.
+- Every **stop** of this unit logs systemd's own verdict (`ExecStopPost`:
+  `[stop] result=… code=… status=…`), so the journal distinguishes a requested stop from a self-exit
+  without anybody having been logged in at the time.
+
+**Why the unit tolerates a missing Nav2 instead of requiring it.** `Wants=`, not `Requires=`: the
+gateway polls `server_is_ready()` on every dispatch tick, never the blocking `wait_for_server`, and
+reports a missing `/navigate_to_pose` as the `NAV2_UNAVAILABLE` auto-disarm trigger with no grace
+period. So it starts and runs without Nav2, degraded to telemetry-only, and repairs itself when
+discovery matches. Taking the link down on a Nav2 failure would replace a *reported* degradation with
+the silence §3.1 warns about. The consequence to know: `systemctl stop gripperx-bringup` takes
+navigation and mapping with it (via `Requires=`) and **leaves this unit running**. That is intended; for
+a whole-stack teardown use `gripperx-stack-stop --mode=stop`, which lists it explicitly.
+
+**`Restart=always` is deliberate and is not the lazy choice.** `ros2 launch` returns 0 unless the launch
+service itself raises — a child that exits non-zero does not set its return code — so both nodes exiting
+`FATAL` with code 2, which is the *designed* response to an SR-8 or F-24 misconfiguration, produces an
+idle launch service and a clean exit 0. For this unit a clean exit 0 **is** a failure, because the only
+reason launch has nothing left to supervise is that its children are gone; `Restart=on-failure` would
+leave the unit `inactive (dead)` with the word "successfully" in the journal. `always` does not restart
+after a stop that systemd or the Mode R sequence requested, so a deliberate stop stays stopped.
+
+**The `url:=` argument is a workaround for a launch-file defect, found 2026-09-24 — read this before
+debugging a connection.** `octopus_link.launch.py` builds the link node's parameters as
+`parameters=[params_file, dict(overrides, url=url)]`, and `url` is a launch argument whose
+`default_value` is `ws://127.0.0.1:9090`. A later entry in that list wins, so **the launch argument's
+default silently overrides `url:` in `octopus_link_real.yaml`**: a start that passes no `url:=` connects
+to localhost — the `test/fake_octopus.py` fixture's address — whatever the config says. The twin never
+noticed, because on a laptop `127.0.0.1:9090` is exactly where the fixture listens; on the robot it is
+nothing. `gripperx-external.sh` therefore reads the address out of the same installed config file the
+nodes load and hands it straight back as `url:=`, which makes the override a no-op. **The script
+contains no address of its own** and works with whatever ends up in the YAML. Two consequences:
+
+- The config file really is the one place the Octopus address is set — but only *because* the wrapper
+  does this. A manual `ros2 launch` without `url:=` still goes to localhost.
+- The durable fix belongs in the launch file (do not override `url` unless the argument was given
+  explicitly). That file is shared with the twin and the acceptance harness, so it is a deliberate
+  change, and it **has not been made**. Until it is, do not remove the `url:=` forwarding from the
+  wrapper.
+
+**Known gap, not closed by this unit (TO-VERIFY):** if only **one** of the two nodes dies, `ros2 launch`
+keeps running the other, so the unit stays `active` with half the interface dead. Closing that means
+`on_exit=Shutdown()` or `respawn=True` in `octopus_link.launch.py`, which is shared with the twin and the
+acceptance harness — a deliberate change to that launch file, not a deployment setting, and it has not
+been made.
 
 ---
 

@@ -193,8 +193,25 @@ APPROVE_MOTION=0 # see the SR-1 guard in main()
 FROM_UNIT=0      # ExecStop= caller: phase 1 only, no unit actions (see header)
 
 # Unit order comes from documentation/DEPLOYMENT.md §1 (binding), not invented here.
-STOP_ORDER=(gripperx-navigation gripperx-mapping gripperx-bringup gripperx-agent)
-START_ORDER=(gripperx-agent gripperx-bringup gripperx-mapping gripperx-navigation)
+#
+# gripperx-external ADDED 2026-09-24, and adding it here is the ONLY thing that
+# makes the Octopus external-goal link (FR-12) survive a Mode R short press.
+# `systemctl enable` covers a BOOT; a Mode R restart is this script, and this
+# script starts an explicit list. A unit that is enabled but missing from these
+# two arrays comes back on a reboot and NOT after a button press -- and the
+# failure is silent, because the Octopus side has no failure channel and cannot
+# tell "no goals arriving" from "not running" (internal safety audit F-10).
+#
+# FIRST on the way down, LAST on the way up. It is the outermost consumer: it
+# needs /navigate_to_pose (navigation), the map->base_footprint TF and
+# /odometry/filtered (mapping) and /teleop/active_mode (bringup), and it holds
+# nothing anybody else needs. Down first means its own shutdown path can still
+# CANCEL a goal in flight while Nav2 is there to receive the cancel; up last
+# means it never waits for anything -- the gateway tolerates a missing Nav2 by
+# design (`server_is_ready()`, the NAV2_UNAVAILABLE trigger, no grace period) and
+# repairs itself when discovery matches.
+STOP_ORDER=(gripperx-external gripperx-navigation gripperx-mapping gripperx-bringup gripperx-agent)
+START_ORDER=(gripperx-agent gripperx-bringup gripperx-mapping gripperx-navigation gripperx-external)
 
 # Wall-clock ceilings for the ros2 CLI calls in phase 1 and the docker/daemon
 # calls in phase 4. EVERY external call in this script is bounded, because a
@@ -372,10 +389,19 @@ phase1_stop_commanding() {
 #    source of a non-zero twist on the service path, and it lives entirely in
 #    gripperx-navigation.service, so stopping that unit silences it. systemctl,
 #    not ros2 -- no DDS cost.
-#  * The FR-12 external goal link (gripperx_external/octopus_link_node) has NO
-#    systemd unit and is not on the bringup path. It publishes GOALS, never
-#    /cmd_vel: it can only reach the drive through Nav2, so it is silenced by
-#    the same step and needs no action of its own.
+#  * The FR-12 external goal link (gripperx_external) DOES have a systemd unit
+#    since 2026-09-24 -- gripperx-external.service -- and this comment used to
+#    say it had none, which is why it is called out rather than quietly edited.
+#    It still publishes GOALS and never /cmd_vel, so it is not a /cmd_vel source
+#    and stopping Nav2 would indeed silence it. It is nevertheless stopped FIRST,
+#    BEFORE Nav2, and that is an ordering choice with a reason: the gateway's own
+#    shutdown path sends a CANCEL for a goal in flight, and a cancel is only
+#    worth anything while /navigate_to_pose still exists to receive it. Stopping
+#    Nav2 first would instead make the action server VANISH under a live goal --
+#    the gateway would report NAV2_UNAVAILABLE and disarm, which is correct but
+#    is the absence path, not the commanded one. HWR-40 criterion 6 asks for the
+#    commanded stop to be the mechanism and the timeout to be the backstop; this
+#    is the same rule one level up the chain.
 #  * teleop_mux_node is NOT silenced, and that is deliberate rather than an
 #    omission. It cannot be stopped without stopping bringup (it is a child of
 #    that launch), and it must not be: when no source is fresh it publishes a
@@ -391,6 +417,19 @@ phase1_silence_sources() {
         # ahead of bringup (Requires=+After=). Enqueueing a unit job from inside
         # a running stop transaction risks blocking until TimeoutStopSec, so
         # this reports and does not act. See the --from-unit note in the header.
+        #
+        # gripperx-external is only ordered After= navigation and only Wants= it,
+        # so a stop does NOT propagate to it along Requires=: in this context it
+        # is normally still RUNNING, and deliberately so. It cannot reach an
+        # actuator with Nav2 gone, and it is the only thing still telling the
+        # Octopus anything (F-10). Reported, not acted on -- same reason as Nav2
+        # below.
+        if systemctl is-active --quiet gripperx-external.service; then
+            log "phase 1: NOTE gripperx-external still active inside an ExecStop run --"
+            log "         left running on purpose (no Requires= link, and with Nav2 down it"
+            log "         has nothing to dispatch to). Use gripperx-stack-stop --mode=stop"
+            log "         for a whole-stack teardown."
+        fi
         if systemctl is-active --quiet gripperx-navigation.service; then
             log "phase 1: WARN gripperx-navigation still active inside an ExecStop run --"
             log "         NOT stopping it from here (deadlock risk). Nav2 may still be"
@@ -399,6 +438,19 @@ phase1_silence_sources() {
             log "phase 1: Nav2 already down (systemd stopped it ahead of bringup)"
         fi
         return 0
+    fi
+
+    # The external GOAL source goes first, so its shutdown cancel still reaches a
+    # live /navigate_to_pose (see the third bullet above). Phase 3 would stop it
+    # anyway -- it is first in STOP_ORDER -- and will then skip it as inactive,
+    # which is not an error.
+    if systemctl is-active --quiet gripperx-external.service; then
+        log "phase 1: stopping gripperx-external (external goal source; its shutdown"
+        log "         cancels a goal in flight while Nav2 can still receive the cancel)"
+        systemctl stop gripperx-external.service \
+            || log "phase 1: WARN stop gripperx-external returned non-zero"
+    else
+        log "phase 1: gripperx-external not active -- no external goal source to silence"
     fi
 
     if systemctl is-active --quiet gripperx-navigation.service; then
@@ -650,6 +702,9 @@ AGENT_STOPPED_AT=""
 #   * Requires=+After= already stop navigation and mapping ahead of bringup, so
 #     stopping bringup alone is ordered correctly. The agent is NOT covered and
 #     is stopped explicitly (last), which is also why gripperx.target exists.
+#     gripperx-external is not covered either -- it only Wants= navigation, so no
+#     stop propagates to it -- and is likewise stopped explicitly, but FIRST
+#     rather than last; the reason is at STOP_ORDER above.
 #     "Agent last" is load-bearing under Option 0: stopping it IS the trigger for
 #     the ESP's own teardown, and the link must stay alive until then.
 #   * STEERING END STATE (Q-SD5, DECIDED 2026-08-19 -- v1: LIMP AT THE LAST

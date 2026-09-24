@@ -904,12 +904,15 @@ class OctopusLinkNode(Node):
     # -- outbound telemetry -------------------------------------------------
     def _on_telemetry(self, msg: RobotTelemetry) -> None:
         """Typed telemetry in, external JSON out. No decision is taken here."""
+        # The pose the Octopus gets is the LINE-frame one (their frame), never
+        # `map_x/map_y`, which are our own map and mean nothing to them.
+        line_live = msg.line_calibration_id >= 0
         payload = proto.build_device_status(
             latitude_deg=msg.latitude_deg if msg.latlon_valid else None,
             longitude_deg=msg.longitude_deg if msg.latlon_valid else None,
-            map_x=msg.map_x if msg.pose_valid else None,
-            map_y=msg.map_y if msg.pose_valid else None,
-            yaw_deg=msg.yaw_deg if msg.pose_valid else None,
+            map_x=msg.line_x if msg.line_valid else None,
+            map_y=msg.line_y if msg.line_valid else None,
+            yaw_deg=msg.line_yaw_deg if msg.line_valid else None,
             nav_state=msg.nav_state,
             active_goal_id=msg.active_goal_id or None,
             armed=msg.armed,
@@ -918,8 +921,8 @@ class OctopusLinkNode(Node):
             battery_status=msg.battery_status,
             battery_reason=msg.battery_reason,
             battery_percent=msg.battery_percent if msg.battery_percent_valid else None,
-            pose_status="available" if msg.pose_valid else "unavailable",
-            pose_reason=msg.pose_reason,
+            pose_status="available" if msg.line_valid else "unavailable",
+            pose_reason=msg.line_reason,
             latlon_status="available" if msg.latlon_valid else "unavailable",
             latlon_reason=msg.latlon_reason,
             nav_state_reason=msg.nav_state_reason,
@@ -948,6 +951,12 @@ class OctopusLinkNode(Node):
             # (SR-15 rule 3: telemetry is outbound only and carries no control
             # semantics).
             octopus_transform=self._transform_telemetry_block(),
+            line_calibration={
+                "status": "available" if line_live else "unavailable",
+                "reason": "" if line_live else "NO_LINE_CALIBRATION",
+                "id": int(msg.line_calibration_id) if line_live else None,
+                "length_m": float(msg.line_length_m) if line_live else None,
+            },
         )
         if self._telemetry_json_pub is not None:
             debug = String()

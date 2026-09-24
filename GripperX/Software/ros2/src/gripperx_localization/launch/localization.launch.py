@@ -4,10 +4,11 @@ from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, RegisterEventHandler
 from launch.conditions import IfCondition, UnlessCondition
-from launch.substitutions import LaunchConfiguration, PythonExpression
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import LifecycleNode, Node
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.actions import LifecycleTransition
+from launch_ros.substitutions import FindPackageShare
 from lifecycle_msgs.msg import Transition
 
 
@@ -39,6 +40,8 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     use_rviz = LaunchConfiguration("use_rviz")
     rviz_config = LaunchConfiguration("rviz_config")
+    enable_line_calibration = LaunchConfiguration("enable_line_calibration")
+    line_calibration_env = LaunchConfiguration("line_calibration_env")
     localization_params = str(localization_share / "config" / "localization.yaml")
     # DT-4: default points to the map generated via SLAM in the digital twin
     # for the new testworld_v1 (replaces the old, discarded arena_map.yaml).
@@ -293,6 +296,36 @@ def generate_launch_description():
         parameters=[localization_params, sim_time_param],
     )
 
+    # THE OCTOPUS LINE CALIBRATION (gripperx_external). Started HERE, next to
+    # slam_toolbox, so it lives and dies with the SLAM session whose map frame
+    # the operator's two clicks are expressed in: restarting gripperx-mapping
+    # restarts it, and a calibration cannot outlive its map (the gateway's own
+    # map-publisher check stays as the second line of defence).
+    #
+    # Its parameters are NOT duplicated here: it loads gripperx_external's
+    # octopus_link_<env>.yaml, the same file the gateway loads, whose `/**`
+    # section both nodes read (length range, frame name, map topic).
+    # `line_calibration_env` defaults from `use_sim_time`: false (the real
+    # robot, which is how gripperx-mapping.sh launches this) -> real, whose
+    # expected_domain_id is 20; true (the twin) -> twin, domain 220. A mismatch
+    # with ROS_DOMAIN_ID makes that one node exit (SR-8), nothing else.
+    line_calibration_params = PathJoinSubstitution(
+        [
+            FindPackageShare("gripperx_external"),
+            "config",
+            PythonExpression(["'octopus_link_' + '", line_calibration_env, "' + '.yaml'"]),
+        ]
+    )
+    line_calibration = Node(
+        package="gripperx_external",
+        executable="line_calibration_node",
+        name="line_calibration_node",
+        namespace="gripperx/external",
+        output="screen",
+        condition=IfCondition(enable_line_calibration),
+        parameters=[line_calibration_params, sim_time_param],
+    )
+
     rviz = Node(
         package="rviz2",
         executable="rviz2",
@@ -365,6 +398,29 @@ def generate_launch_description():
                 description="Start RViz with localization.rviz (map, scan, Nav2 goal).",
             ),
             DeclareLaunchArgument(
+                "enable_line_calibration",
+                default_value="true",
+                choices=["true", "false"],
+                description=(
+                    "Start gripperx_external's line_calibration_node (the Octopus "
+                    "reference line: two RViz clicks on the frame posts). Default "
+                    "true so that gripperx-mapping runs it on the real robot; it "
+                    "only waits for clicks and commands nothing. The Octopus "
+                    "gateway refuses every goal while it has no calibration."
+                ),
+            ),
+            DeclareLaunchArgument(
+                "line_calibration_env",
+                default_value=PythonExpression(
+                    ["'twin' if '", use_sim_time, "' == 'true' else 'real'"]
+                ),
+                choices=["twin", "real"],
+                description=(
+                    "Which gripperx_external config the calibration node loads "
+                    "(octopus_link_<env>.yaml). Defaults from use_sim_time."
+                ),
+            ),
+            DeclareLaunchArgument(
                 "rviz_config",
                 default_value=default_rviz_config,
                 description="Absolute path to the RViz config file.",
@@ -383,6 +439,7 @@ def generate_launch_description():
             map_server,
             amcl,
             lifecycle_manager_localization,
+            line_calibration,
             rviz,
         ]
     )

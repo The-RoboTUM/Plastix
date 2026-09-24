@@ -146,6 +146,12 @@ def latlon_to_map(
     otherwise detect. ``indoor_static_yaw_zero_rad`` is ``null`` and ``state``
     is not ``"ready"`` until the lock exists; both must be checked before any
     value from it is trusted.
+
+    **WHERE THE ALIGNMENT NOW LIVES (2026-09-24).** The shared reference line
+    of :mod:`line_frame`: both sides express their coordinates in the frame of
+    two clicked posts, so THEIR ``(x, y)`` returned here are LINE-frame metres,
+    and ``line_frame.LineCalibration.line_to_map`` is the rotation and offset
+    into our map. This function is unchanged by that, and must stay so.
     """
     if not is_finite_latlon(latitude_deg, longitude_deg):
         raise GeodesyError("LATLON_NOT_FINITE", f"lat={latitude_deg} lon={longitude_deg}")
