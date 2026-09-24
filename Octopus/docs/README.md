@@ -28,6 +28,7 @@ Verträge zwischen den Teilsystemen. Das braucht, wer etwas anschließt.
 | [`gripperx_rosbridge_link.md`](gripperx_rosbridge_link.md) | Der WebSocket-Transport zu GripperX: starten, prüfen, Fehlerbilder |
 | [`detector_posearray_bridge.md`](detector_posearray_bridge.md) | Umwandlung der Detektor-`PoseArray` in das Octopus-JSON-Format |
 | [`coordinate_frames.md`](coordinate_frames.md) | Frames und Achsenkonventionen, inklusive der Normalisiert-vs-Welt-Falle bei `PoseArray` |
+| [`line_calibration.md`](line_calibration.md) | Gemeinsame Referenzlinie mit GripperX: Frame `octopus_line` aus zwei Rahmenpfosten, Maßstab aus deren LiDAR-Abstand. Octopus-Seite von §1–§5 gebaut, Rest offen |
 
 ## Konzepte
 

@@ -34,6 +34,7 @@ pkill -f "camera_transform_status_backend_bridge_node" || true
 pkill -f "trash_gps_goal_node" || true
 pkill -f "device_status_backend_bridge_node" || true
 pkill -f "trash_targets_backend_bridge_node" || true
+pkill -f "line_calibration_node" || true
 pkill -f "rosbridge_websocket" || true
 pkill -f "eve_fake_gps_bridge_node" || true
 pkill -f "uvicorn api:app" || true
@@ -138,6 +139,13 @@ echo "Starting trash targets backend bridge node..."
 setsid ros2 run octopus_backend_bridge trash_targets_backend_bridge_node \
   > "$LOG_DIR/trash_targets_backend_bridge.log" 2>&1 &
 echo $! > "$LOG_DIR/trash_targets_backend_bridge.pid"
+
+# Reference line with GripperX. Observability only - it does not feed the
+# projection yet, see Octopus/docs/line_calibration.md.
+echo "Starting line calibration node..."
+setsid ros2 run octopus_camera_transform line_calibration_node \
+  > "$LOG_DIR/line_calibration.log" 2>&1 &
+echo $! > "$LOG_DIR/line_calibration.pid"
 
 # rosbridge carries the GripperX link: the contract topics in and out over
 # ws://<host>:9090. The arguments live in run_rosbridge.sh so this script, the

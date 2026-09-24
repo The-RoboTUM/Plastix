@@ -1269,6 +1269,79 @@ async def receive_local_camera_grid_patch(patch: dict):
     }
     return {"status": "ok"}
 
+# --- LINE CALIBRATION (shared reference line with GripperX) ---
+# Spec: Octopus/docs/line_calibration.md. Two endpoints, opposite directions:
+#
+#   /api/line_calibration         operator -> ROS. The two post marks and L.
+#                                 The dashboard will POST here once the marking
+#                                 UI exists; until then it is curl or ROS params.
+#   /api/line_calibration/status  ROS -> dashboard. The solved frame, published
+#                                 by line_calibration_node.
+#
+# In-memory on purpose: the spec says nothing is stored across restarts, the
+# calibration is redone at every start (section 7).
+line_calibration_marks = None
+latest_line_calibration_status = None
+
+
+@app.post("/api/line_calibration")
+async def set_line_calibration(payload: dict):
+    """Store the operator's two post marks. Shape checked, geometry is not.
+
+    Validating the pair is line_calibration_node's job and it reports the
+    verdict on its status topic - one place to reject, one place to explain.
+    """
+    global line_calibration_marks
+
+    if payload.get("clear"):
+        line_calibration_marks = None
+        return {"status": "ok", "line_calibration": None}
+
+    try:
+        marks = {
+            "pixel_a": [float(v) for v in payload["pixel_a"]],
+            "pixel_b": [float(v) for v in payload["pixel_b"]],
+            "length_m": float(payload["length_m"]),
+            "mirrored": bool(payload.get("mirrored", False)),
+            "source": str(payload.get("source", "dashboard")),
+            "set_at": datetime.now().isoformat(),
+        }
+    except (KeyError, TypeError, ValueError) as exc:
+        return {
+            "status": "error",
+            "message": f"need pixel_a [u,v], pixel_b [u,v] and length_m: {exc}",
+        }
+
+    if len(marks["pixel_a"]) != 2 or len(marks["pixel_b"]) != 2:
+        return {"status": "error", "message": "pixel_a and pixel_b must be [u, v]"}
+
+    line_calibration_marks = marks
+    return {"status": "ok", "line_calibration": marks}
+
+
+@app.get("/api/line_calibration")
+async def get_line_calibration():
+    return {"status": "ok", "line_calibration": line_calibration_marks}
+
+
+@app.post("/api/line_calibration/status")
+async def receive_line_calibration_status(payload: dict):
+    global latest_line_calibration_status
+    latest_line_calibration_status = {
+        "status": "ok",
+        "calibration": payload,
+        "received_at": datetime.now().isoformat(),
+    }
+    return {"status": "ok"}
+
+
+@app.get("/api/line_calibration/status")
+async def get_line_calibration_status():
+    if latest_line_calibration_status is None:
+        return {"status": "empty", "calibration": None, "received_at": None}
+    return latest_line_calibration_status
+
+
 @app.get("/api/local_camera_grid/latest")
 async def get_latest_local_camera_grid_patch():
     if latest_local_camera_grid_patch is None:
