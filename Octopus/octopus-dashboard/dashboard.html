@@ -1806,6 +1806,31 @@
     body.line-cal-arming #camera-debug-image { cursor: crosshair; }
     body.line-cal-arming .camera-debug-frame { outline: 2px solid #e37222; }
 
+    /* Its own body inside the camera panel, separated by a rule so it does not
+       read as more detection output. */
+    .line-cal-body {
+      border-top: 1px solid var(--border-subtle);
+      background: rgba(255, 255, 255, 0.02);
+    }
+
+    .line-cal-title {
+      font-size: 12px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      margin-bottom: 8px;
+    }
+
+    .line-cal-title span {
+      display: block;
+      font-size: 10.5px;
+      font-weight: 400;
+      letter-spacing: 0.02em;
+      text-transform: none;
+      color: var(--text-muted);
+      margin-top: 2px;
+    }
+
     .line-cal-row {
       display: flex;
       flex-wrap: wrap;
@@ -1821,15 +1846,46 @@
       letter-spacing: 0.06em;
     }
 
+    /* Deliberately bigger than the ghost buttons elsewhere: these are aimed at
+       while looking at the camera image, not read down a list. */
+    .line-cal-button {
+      padding: 8px 14px;
+      min-height: 34px;
+      border-radius: 9px;
+      border: 1px solid var(--border-subtle);
+      background: rgba(255, 255, 255, 0.05);
+      color: inherit;
+      font: inherit;
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .line-cal-button:hover { background: rgba(255, 255, 255, 0.10); }
+
+    .line-cal-button.primary {
+      border-color: rgba(227, 114, 34, 0.65);
+      background: rgba(227, 114, 34, 0.16);
+    }
+
+    /* The armed button is the only thing telling the operator that the next
+       click on the image counts. */
+    .line-cal-button.is-armed {
+      border-color: #e37222;
+      background: #e37222;
+      color: #0b1220;
+    }
+
     .line-cal-row input[type="number"] {
-      width: 92px;
-      padding: 5px 7px;
-      border-radius: 8px;
+      width: 100px;
+      padding: 7px 9px;
+      min-height: 34px;
+      border-radius: 9px;
       border: 1px solid var(--border-subtle);
       background: rgba(255, 255, 255, 0.04);
       color: inherit;
       font: inherit;
-      font-size: 12px;
+      font-size: 12.5px;
     }
 
     #line-cal-marks {
@@ -1913,10 +1969,31 @@ body.octopus-view-debug .camera-debug-panel {
   box-shadow: 0 18px 55px rgba(0, 0, 0, 0.55);
 }
 
+body[data-view="debug"] .camera-debug-panel,
+body.octopus-view-debug .camera-debug-panel {
+  display: flex;
+  flex-direction: column;
+}
+
+/* The image half scrolls, the controls keep their place at the bottom: arming a
+   mark must never require scrolling away from the picture you then have to
+   click. min-height:0 so the flex child may actually shrink. */
+body[data-view="debug"] #camera-debug-content,
+body.octopus-view-debug #camera-debug-content {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
 body[data-view="debug"] .camera-debug-panel .panel-body,
 body.octopus-view-debug .camera-debug-panel .panel-body {
   padding: 10px;
   overflow: auto;
+}
+
+body[data-view="debug"] .line-cal-body,
+body.octopus-view-debug .line-cal-body {
+  flex: 0 0 auto;
+  max-height: 46%;
 }
 
 body[data-view="debug"] .camera-debug-panel img,
@@ -2795,29 +2872,29 @@ body.octopus-view-debug .camera-debug-panel .item-card {
 
 
       <section class="panel debug-only camera-debug-panel">
-        <div class="panel-header"><div class="panel-title"><strong>Camera Debug</strong><span>detection inspector</span></div></div>
+        <div class="panel-header"><div class="panel-title"><strong>Camera Debug</strong><span>detection inspector &amp; line calibration</span></div></div>
         <div class="panel-body" id="camera-debug-content">Waiting for camera debug data...</div>
-      </section>
-
-      <section class="panel debug-only line-calibration-panel">
-        <div class="panel-header"><div class="panel-title"><strong>Line Calibration</strong><span>shared reference line with GripperX</span></div></div>
-        <div class="panel-body">
+        <!-- Second body, deliberately OUTSIDE #camera-debug-content: that div is
+             rebuilt wholesale every second, which would wipe the L field while
+             it is being typed into. Kept in this panel rather than its own so
+             arming a mark and clicking the image are the same glance - in the
+             debug view this panel is a fixed right-hand inspector, and controls
+             left in the normal flow ended up underneath it. -->
+        <div class="panel-body line-cal-body">
+          <div class="line-cal-title">Line calibration <span>shared reference frame with GripperX</span></div>
           <div class="line-cal-notice">
-            <strong>Does not change the map.</strong> The projection still uses the
-            configured height and the PX4 startup yaw. This panel measures the line and
-            compares it — nothing downstream reads it yet.
-            <br />
-            <strong>Click the foot of the post</strong>, where it meets the floor — not the
-            post you see. Eve hangs from these posts, so they run past the camera and a
-            click half a metre up inflates L by 25 %.
+            <strong>Does not change the map.</strong> The projection still uses the configured
+            height and the PX4 startup yaw — nothing downstream reads this yet.<br />
+            <strong>Click the foot of the post</strong>, where it meets the floor, not the post
+            you see: Eve hangs from them, so a click half a metre up inflates L by 25 %.
           </div>
           <div class="line-cal-row">
-            <button class="ghost-button" type="button" id="line-cal-mark-a">Mark A</button>
-            <button class="ghost-button" type="button" id="line-cal-mark-b">Mark B</button>
+            <button class="line-cal-button" type="button" id="line-cal-mark-a">Mark A</button>
+            <button class="line-cal-button" type="button" id="line-cal-mark-b">Mark B</button>
             <label for="line-cal-length">L (m)</label>
             <input type="number" id="line-cal-length" step="0.001" min="0" placeholder="2.800" />
-            <button class="ghost-button" type="button" id="line-cal-apply">Apply</button>
-            <button class="ghost-button" type="button" id="line-cal-clear">Clear</button>
+            <button class="line-cal-button primary" type="button" id="line-cal-apply">Apply</button>
+            <button class="line-cal-button" type="button" id="line-cal-clear">Clear</button>
           </div>
           <div id="line-cal-marks">No marks set.</div>
           <div id="line-cal-status">Waiting for line_calibration_node...</div>
@@ -2831,6 +2908,6 @@ body.octopus-view-debug .camera-debug-panel .item-card {
     </section>
   </main>
 
-  <script src="live_data.js?v=line-cal-1"></script>
+  <script src="live_data.js?v=line-cal-2"></script>
 </body>
 </html>

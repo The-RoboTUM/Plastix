@@ -4761,6 +4761,12 @@ function positionLineCalibrationMarks() {
 function setLineCalArmed(which) {
   LINE_CAL_STATE.armed = which;
   document.body.classList.toggle("line-cal-arming", which !== null);
+  // The button carries the armed state too, not just the image border - the
+  // operator is looking at the buttons when deciding, at the image afterwards.
+  [["a", "line-cal-mark-a"], ["b", "line-cal-mark-b"]].forEach(([key, id]) => {
+    const button = $(id);
+    if (button) button.classList.toggle("is-armed", which === key);
+  });
   renderLineCalibration();
 }
 

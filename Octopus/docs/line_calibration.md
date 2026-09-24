@@ -38,7 +38,7 @@ Maßstabseingabe dieser Seite.
 | Eingabe Operator → ROS | `POST/GET /api/line_calibration` |
 | Status ROS → Dashboard | `POST/GET /api/line_calibration/status` |
 | Tests | `Octopus/ros2_ws/src/octopus_camera_transform/test/test_line_frame.py` |
-| Markier-UI | Panel „Line Calibration" in `dashboard.html`, Logik in `live_data.js` (Ansicht *System / Debug*) |
+| Markier-UI | Unterer Teil des Panels **Camera Debug**, Ansicht *System / Debug*; Logik in `live_data.js` |
 
 Das Topic liegt unter `/octopus/*`, die rosbridge-Glob deckt es also bereits ab — GripperX kann
 es lesen, ohne dass etwas freigeschaltet werden muss.
@@ -84,7 +84,9 @@ curl -s http://127.0.0.1:8000/api/line_calibration/status | python3 -m json.tool
 Löschen: `-d '{"clear":true}'`. Alternativ ohne Backend über Parameter
 `pixel_a`, `pixel_b`, `length_m`, `mirrored` am Node.
 
-Bequemer über das Dashboard, Ansicht **System / Debug**, Panel **Line Calibration**:
+Bequemer über das Dashboard, Ansicht **System / Debug** (Auswahlfeld oben in der Topbar),
+Panel **Camera Debug**, unterer Abschnitt *Line calibration* — direkt unter dem Kamerabild,
+damit Scharfschalten und Klicken im selben Blickfeld liegen:
 *Mark A* drücken, den **Fuß** von Pfosten A im Kamerabild anklicken, dasselbe für B, L
 eintragen, *Apply*. Die gesetzten Marken werden als Punkte mit Verbindungslinie über das
 Bild gelegt, *Clear* verwirft sie. Escape bricht eine scharfgeschaltete Markierung ab.
