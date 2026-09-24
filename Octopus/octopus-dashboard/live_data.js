@@ -3420,6 +3420,7 @@ function renderCameraDebug() {
             ? `<img id="camera-debug-image" src="${image.data_url}" alt="Latest detector debug camera frame with bounding boxes" />`
             : `<div class="camera-debug-placeholder">Waiting for /detector_node/debug_image/compressed</div>`
           }
+          <div class="line-cal-overlay" id="line-cal-overlay"></div>
         </div>
       </div>
       <div>
@@ -3439,6 +3440,10 @@ function renderCameraDebug() {
       </div>
     </div>
   `;
+
+  // The panel is rebuilt wholesale every second, so the marks have to be drawn
+  // again from state rather than kept in the DOM.
+  positionLineCalibrationMarks();
 }
 
 function mergeDetectionCluster(items) {
@@ -4648,6 +4653,271 @@ function localReadoutChips() {
   return { context: chips, trash };
 }
 
+// -----------------------------------------------------------------------------
+// Line calibration — marking the two reference posts in the camera image
+//
+// Spec: Octopus/docs/line_calibration.md (sections 1-5 of the GripperX draft).
+// This is the marking, NOT the procedure: two clicks and L, no guided flow, no
+// tolerance checks, no fail-closed behaviour. Sections 6+ are still moving.
+//
+// The marks are stored in FULL-frame sensor pixels, because that is the space
+// the intrinsics (fx, cx) and line_frame.py live in. What the panel displays may
+// be a cut-down frame — Eve can send only the crop — so a click is converted
+// back through effectiveCameraCrop() before it is stored. That also means a
+// crop changed after marking does not silently move the marks.
+// -----------------------------------------------------------------------------
+
+const LINE_CAL_STATE = { armed: null, a: null, b: null, message: null };
+
+// Click position -> full-frame sensor pixel, or null outside the picture.
+function lineCalPixelFromEvent(event, img) {
+  const rect = img.getBoundingClientRect();
+  const natW = img.naturalWidth;
+  const natH = img.naturalHeight;
+  if (!natW || !natH || !rect.width || !rect.height) return null;
+
+  // object-fit: contain — the picture is letterboxed inside the element box, so
+  // the element rect is not the picture rect.
+  const scale = Math.min(rect.width / natW, rect.height / natH);
+  const dispW = natW * scale;
+  const dispH = natH * scale;
+  const offX = rect.left + (rect.width - dispW) / 2;
+  const offY = rect.top + (rect.height - dispH) / 2;
+
+  let a = (event.clientX - offX) / dispW;
+  let b = (event.clientY - offY) / dispH;
+  // Tolerance, then clamp: a click on the very edge of the picture lands a
+  // rounding step outside and would otherwise be silently dropped - which reads
+  // as "clicking the border does nothing". A post near the frame edge is normal.
+  const EDGE_EPS = 1e-6;
+  if (a < -EDGE_EPS || a > 1 + EDGE_EPS || b < -EDGE_EPS || b > 1 + EDGE_EPS) return null; // letterbox bar
+  a = clamp(a, 0, 1);
+  b = clamp(b, 0, 1);
+
+  const crop = effectiveCameraCrop();
+  const uNorm = crop.preCropped ? crop.left + a * crop.kx : a;
+  const vNorm = crop.preCropped ? crop.top + b * crop.ky : b;
+  return [uNorm * OCTOPUS_HBVCAM_640X480.image_width, vNorm * OCTOPUS_HBVCAM_640X480.image_height];
+}
+
+// The inverse, for drawing a stored mark back onto whatever is on screen now.
+function lineCalFractionFromPixel(pixel) {
+  const crop = effectiveCameraCrop();
+  let uNorm = safeNumber(pixel[0], NaN) / OCTOPUS_HBVCAM_640X480.image_width;
+  let vNorm = safeNumber(pixel[1], NaN) / OCTOPUS_HBVCAM_640X480.image_height;
+  if (crop.preCropped) {
+    uNorm = (uNorm - crop.left) / crop.kx;
+    vNorm = (vNorm - crop.top) / crop.ky;
+  }
+  return { a: uNorm, b: vNorm };
+}
+
+function positionLineCalibrationMarks() {
+  const overlay = $("line-cal-overlay");
+  const img = $("camera-debug-image");
+  if (!overlay) return;
+  overlay.innerHTML = "";
+  if (!img || !img.naturalWidth) return;
+
+  const frameRect = overlay.getBoundingClientRect();
+  const rect = img.getBoundingClientRect();
+  const scale = Math.min(rect.width / img.naturalWidth, rect.height / img.naturalHeight);
+  const dispW = img.naturalWidth * scale;
+  const dispH = img.naturalHeight * scale;
+  const offX = rect.left + (rect.width - dispW) / 2 - frameRect.left;
+  const offY = rect.top + (rect.height - dispH) / 2 - frameRect.top;
+
+  const placed = {};
+  [["a", LINE_CAL_STATE.a], ["b", LINE_CAL_STATE.b]].forEach(([label, pixel]) => {
+    if (!pixel) return;
+    const frac = lineCalFractionFromPixel(pixel);
+    if (!Number.isFinite(frac.a) || !Number.isFinite(frac.b)) return;
+    // A mark can sit outside the frame currently on screen once the crop moved.
+    if (frac.a < 0 || frac.a > 1 || frac.b < 0 || frac.b > 1) return;
+    const x = offX + frac.a * dispW;
+    const y = offY + frac.b * dispH;
+    placed[label] = { x, y };
+    const dot = document.createElement("div");
+    dot.className = "line-cal-mark";
+    dot.dataset.label = label.toUpperCase();
+    dot.style.left = `${x}px`;
+    dot.style.top = `${y}px`;
+    overlay.appendChild(dot);
+  });
+
+  if (placed.a && placed.b) {
+    const dx = placed.b.x - placed.a.x;
+    const dy = placed.b.y - placed.a.y;
+    const line = document.createElement("div");
+    line.className = "line-cal-line";
+    line.style.left = `${placed.a.x}px`;
+    line.style.top = `${placed.a.y}px`;
+    line.style.width = `${Math.hypot(dx, dy)}px`;
+    line.style.transform = `rotate(${Math.atan2(dy, dx)}rad)`;
+    overlay.appendChild(line);
+  }
+}
+
+function setLineCalArmed(which) {
+  LINE_CAL_STATE.armed = which;
+  document.body.classList.toggle("line-cal-arming", which !== null);
+  renderLineCalibration();
+}
+
+function onCameraDebugClick(event) {
+  if (!LINE_CAL_STATE.armed) return;
+  const img = event.target.closest("#camera-debug-image");
+  if (!img) return;
+
+  const pixel = lineCalPixelFromEvent(event, img);
+  if (!pixel) {
+    LINE_CAL_STATE.message = "Click landed outside the picture.";
+    renderLineCalibration();
+    return;
+  }
+
+  LINE_CAL_STATE[LINE_CAL_STATE.armed] = pixel;
+  LINE_CAL_STATE.message = null;
+  setLineCalArmed(null);
+  positionLineCalibrationMarks();
+}
+
+async function applyLineCalibration() {
+  const input = $("line-cal-length");
+  const length = safeNumber(input?.value, NaN);
+
+  if (!LINE_CAL_STATE.a || !LINE_CAL_STATE.b) {
+    LINE_CAL_STATE.message = "Mark both posts first.";
+    renderLineCalibration();
+    return;
+  }
+  if (!Number.isFinite(length) || length <= 0) {
+    // The node judges whether L is plausible; the panel only insists on a number.
+    LINE_CAL_STATE.message = "Enter L, the post distance GripperX measured.";
+    renderLineCalibration();
+    return;
+  }
+
+  try {
+    const response = await fetch("/api/line_calibration", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        pixel_a: LINE_CAL_STATE.a,
+        pixel_b: LINE_CAL_STATE.b,
+        length_m: length,
+        source: "dashboard",
+      }),
+    });
+    const result = await response.json();
+    LINE_CAL_STATE.message = result.status === "ok" ? null : result.message || "Backend refused the marks.";
+    if (result.status === "ok") addTimeline(`Line calibration sent: L = ${length.toFixed(3)} m`, "success");
+  } catch (error) {
+    LINE_CAL_STATE.message = `Could not reach the backend: ${error.message}`;
+  }
+  renderLineCalibration();
+}
+
+async function clearLineCalibration() {
+  LINE_CAL_STATE.a = null;
+  LINE_CAL_STATE.b = null;
+  LINE_CAL_STATE.message = null;
+  setLineCalArmed(null);
+  try {
+    await fetch("/api/line_calibration", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ clear: true }),
+    });
+  } catch (error) {
+    LINE_CAL_STATE.message = `Could not reach the backend: ${error.message}`;
+  }
+  positionLineCalibrationMarks();
+  renderLineCalibration();
+}
+
+async function refreshLineCalibration() {
+  try {
+    const data = await apiGet("/api/line_calibration/status");
+    OCTOPUS.latest.lineCalibration = data.status === "ok" ? data.calibration : null;
+  } catch (error) {
+    OCTOPUS.latest.lineCalibration = null;
+  }
+  renderLineCalibration();
+}
+
+// Text only. The inputs are static markup and are never rebuilt, so typing into
+// the L field survives the 1 Hz refresh.
+function renderLineCalibration() {
+  const marksEl = $("line-cal-marks");
+  const statusEl = $("line-cal-status");
+  if (!marksEl || !statusEl) return;
+
+  const fmt = (pixel) => (pixel ? `${pixel[0].toFixed(1)} / ${pixel[1].toFixed(1)} px` : "not set");
+  const armed = LINE_CAL_STATE.armed
+    ? `<span class="accent">Click the foot of post ${LINE_CAL_STATE.armed.toUpperCase()} in the camera image.</span><br />`
+    : "";
+  const message = LINE_CAL_STATE.message
+    ? `<br /><span class="accent">${escapeHtml(LINE_CAL_STATE.message)}</span>`
+    : "";
+  marksEl.innerHTML = `${armed}A: ${fmt(LINE_CAL_STATE.a)} &nbsp;·&nbsp; B: ${fmt(LINE_CAL_STATE.b)}${message}`;
+
+  const cal = OCTOPUS.latest.lineCalibration;
+  if (!cal) {
+    statusEl.innerHTML = `<div class="item-card"><div class="item-title">No status</div><div class="item-meta">line_calibration_node is not reporting.</div></div>`;
+    return;
+  }
+
+  if (!cal.calibrated) {
+    const state = cal.state === "rejected" ? "error" : "warning";
+    statusEl.innerHTML = `${statusPill(escapeHtml(cal.state || "unknown"), state)}
+      <div class="item-meta">${escapeHtml(cal.reason || "")}</div>`;
+    return;
+  }
+
+  // Positive deviation: the line says the camera hangs higher than the
+  // projection assumes, so the pipeline reports distances that are too short.
+  const deviation = safeNumber(cal.scale_deviation_percent, 0);
+  const deviationState = Math.abs(deviation) < 2 ? "fresh" : Math.abs(deviation) < 10 ? "warning" : "error";
+  statusEl.innerHTML = `
+    ${statusPill("calibrated", "fresh")}
+    ${statusPill(`scale ${deviation >= 0 ? "+" : ""}${deviation.toFixed(1)} %`, deviationState)}
+    <table class="camera-debug-table" style="margin-top:8px;">
+      <tbody>
+        <tr><td>L (from GripperX)</td><td>${safeNumber(cal.length_m, 0).toFixed(3)} m</td></tr>
+        <tr><td>separation</td><td>${safeNumber(cal.pixel_separation, 0).toFixed(1)} px</td></tr>
+        <tr><td>scale</td><td>${(safeNumber(cal.metres_per_pixel, 0) * 1000).toFixed(2)} mm/px</td></tr>
+        <tr><td>implied height</td><td>${safeNumber(cal.implied_camera_height_m, 0).toFixed(3)} m</td></tr>
+        <tr><td>configured height</td><td>${safeNumber(cal.configured_height_m, 0).toFixed(3)} m</td></tr>
+        <tr><td>line angle in image</td><td>${safeNumber(cal.image_angle_deg, 0).toFixed(1)}&deg;</td></tr>
+        <tr><td>applied to projection</td><td>${cal.applied_to_projection ? "yes" : "<strong>no</strong>"}</td></tr>
+      </tbody>
+    </table>`;
+}
+
+function bindLineCalibration() {
+  // Delegated: #camera-debug-image is replaced on every camera refresh, the
+  // panel body around it is not.
+  const host = $("camera-debug-content");
+  if (host) host.addEventListener("click", onCameraDebugClick);
+
+  const markA = $("line-cal-mark-a");
+  const markB = $("line-cal-mark-b");
+  const apply = $("line-cal-apply");
+  const clear = $("line-cal-clear");
+  if (markA) markA.addEventListener("click", () => setLineCalArmed(LINE_CAL_STATE.armed === "a" ? null : "a"));
+  if (markB) markB.addEventListener("click", () => setLineCalArmed(LINE_CAL_STATE.armed === "b" ? null : "b"));
+  if (apply) apply.addEventListener("click", applyLineCalibration);
+  if (clear) clear.addEventListener("click", clearLineCalibration);
+
+  document.addEventListener("keydown", (event) => {
+    if (event.key === "Escape" && LINE_CAL_STATE.armed) setLineCalArmed(null);
+  });
+
+  // The marks are positioned in pixels, so a resize moves them.
+  window.addEventListener("resize", positionLineCalibrationMarks);
+}
+
 async function refreshCameraDebug() {
   try {
     const data = await apiGet("/api/camera_debug/latest");
@@ -4666,6 +4936,7 @@ async function refreshCameraDebug() {
   // frame, which is the opposite of showing what the drone sees right now.
   renderKpis();
   renderMissionMap();
+  refreshLineCalibration();
 }
 
 function renderMapPatch() {
@@ -5419,6 +5690,15 @@ if (document.readyState === "loading") {
   initEveCameraControls();
 }
 // --- END OCTOPUS EVE CAMERA FRONTEND ---
+
+
+// Same pattern for the line calibration controls: the buttons and the L field
+// are static markup, so they are bound exactly once.
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", bindLineCalibration);
+} else {
+  bindLineCalibration();
+}
 
 
 // --- ABORT: ALLES STOPPEN ---

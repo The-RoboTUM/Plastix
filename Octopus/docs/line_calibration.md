@@ -38,6 +38,7 @@ Maßstabseingabe dieser Seite.
 | Eingabe Operator → ROS | `POST/GET /api/line_calibration` |
 | Status ROS → Dashboard | `POST/GET /api/line_calibration/status` |
 | Tests | `Octopus/ros2_ws/src/octopus_camera_transform/test/test_line_frame.py` |
+| Markier-UI | Panel „Line Calibration" in `dashboard.html`, Logik in `live_data.js` (Ansicht *System / Debug*) |
 
 Das Topic liegt unter `/octopus/*`, die rosbridge-Glob deckt es also bereits ab — GripperX kann
 es lesen, ohne dass etwas freigeschaltet werden muss.
@@ -56,8 +57,9 @@ ist das Dokument noch in Bewegung; diese Teile fehlen absichtlich:
   Vertragsänderung, die GripperX, das Dashboard und `trash_gps_goal_node` gleichzeitig trifft
   — nichts, was man umlegt, solange das Dokument „Draft" sagt und die Demo auf dem jetzigen
   Verhalten läuft. Siehe [`octopus_to_robot_interface.md`](octopus_to_robot_interface.md#das-datum).
-- **Keine Markier-UI im Dashboard** (§7 Schritt 6). Die Eingabe geht heute per `curl` oder
-  ROS-Parameter; der Endpunkt ist so geschnitten, dass die UI später nur noch dort POSTen muss.
+- **Kein Assistent für die Prozedur** (§7). Die Markier-UI gibt es (siehe unten), sie führt
+  aber nicht durch die Reihenfolge, prüft keine Toleranzen und kennt die Nullbewegungs-Probe
+  nicht — genau die Teile, die sich noch ändern.
 - **Kein Fail-Closed-Verhalten** (§8). Laufende Ziele werden bei Rekalibrierung nicht
   abgebrochen. Das gehört in `trash_gps_goal_node` und setzt voraus, dass §8 steht.
 - **Keine `TO-VERIFY`-Werte geraten.** Die Plausibilitätsgrenze 2,5–3,0 m ist als Parameter
@@ -81,6 +83,16 @@ curl -s http://127.0.0.1:8000/api/line_calibration/status | python3 -m json.tool
 
 Löschen: `-d '{"clear":true}'`. Alternativ ohne Backend über Parameter
 `pixel_a`, `pixel_b`, `length_m`, `mirrored` am Node.
+
+Bequemer über das Dashboard, Ansicht **System / Debug**, Panel **Line Calibration**:
+*Mark A* drücken, den **Fuß** von Pfosten A im Kamerabild anklicken, dasselbe für B, L
+eintragen, *Apply*. Die gesetzten Marken werden als Punkte mit Verbindungslinie über das
+Bild gelegt, *Clear* verwirft sie. Escape bricht eine scharfgeschaltete Markierung ab.
+
+Die Marken werden in **Vollbild-Sensorpixeln** gespeichert, nicht in Anzeigekoordinaten —
+dort leben `fx`/`cx` und `line_frame.py`. Liefert Eve nur den Ausschnitt, rechnet die UI
+über `effectiveCameraCrop()` zurück; ein nachträglich geänderter Crop verschiebt die
+Marken dadurch nicht.
 
 Eine fehlerhafte Eingabe wird abgewiesen und lässt eine bestehende gültige Kalibrierung
 stehen — sie wird nicht stillschweigend gelöscht.

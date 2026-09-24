@@ -1762,6 +1762,104 @@
       font-size: 13px;
     }
 
+    /* --- LINE CALIBRATION (shared reference line with GripperX) --- */
+    /* The overlay sits inside .camera-debug-frame, which is already
+       position:relative. Marks are placed in JS because object-fit:contain
+       letterboxes the picture, so a percentage of the frame is not a
+       percentage of the image. */
+    .line-cal-overlay {
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+    }
+
+    .line-cal-mark {
+      position: absolute;
+      width: 18px;
+      height: 18px;
+      margin: -9px 0 0 -9px;
+      border: 2px solid #e37222;
+      border-radius: 50%;
+      box-shadow: 0 0 0 1px rgba(0, 0, 0, 0.6);
+    }
+
+    .line-cal-mark::after {
+      content: attr(data-label);
+      position: absolute;
+      left: 21px;
+      top: -3px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #e37222;
+      text-shadow: 0 0 3px #000;
+    }
+
+    .line-cal-line {
+      position: absolute;
+      height: 0;
+      border-top: 2px dashed #e37222;
+      transform-origin: 0 0;
+    }
+
+    /* Arming the operator for a click is the only state the image itself
+       shows, so it has to be unmistakable. */
+    body.line-cal-arming #camera-debug-image { cursor: crosshair; }
+    body.line-cal-arming .camera-debug-frame { outline: 2px solid #e37222; }
+
+    .line-cal-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+    }
+
+    .line-cal-row label {
+      font-size: 11px;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .line-cal-row input[type="number"] {
+      width: 92px;
+      padding: 5px 7px;
+      border-radius: 8px;
+      border: 1px solid var(--border-subtle);
+      background: rgba(255, 255, 255, 0.04);
+      color: inherit;
+      font: inherit;
+      font-size: 12px;
+    }
+
+    #line-cal-marks {
+      font-size: 12px;
+      color: var(--text-muted);
+      margin-bottom: 10px;
+      line-height: 1.6;
+    }
+
+    #line-cal-status {
+      font-size: 12px;
+      line-height: 1.6;
+    }
+
+    /* Not decoration. The calibration changes nothing in the projection yet,
+       and a panel that looks authoritative while doing nothing is the failure
+       this notice exists to prevent. */
+    .line-cal-notice {
+      border-left: 3px solid #e37222;
+      padding: 7px 10px;
+      margin-bottom: 10px;
+      background: rgba(227, 114, 34, 0.08);
+      border-radius: 0 8px 8px 0;
+      font-size: 11.5px;
+      line-height: 1.55;
+      color: var(--text-muted);
+    }
+
+    .line-cal-notice strong { color: #e37222; }
+
     .camera-debug-meta {
       display: flex;
       flex-wrap: wrap;
@@ -2701,6 +2799,31 @@ body.octopus-view-debug .camera-debug-panel .item-card {
         <div class="panel-body" id="camera-debug-content">Waiting for camera debug data...</div>
       </section>
 
+      <section class="panel debug-only line-calibration-panel">
+        <div class="panel-header"><div class="panel-title"><strong>Line Calibration</strong><span>shared reference line with GripperX</span></div></div>
+        <div class="panel-body">
+          <div class="line-cal-notice">
+            <strong>Does not change the map.</strong> The projection still uses the
+            configured height and the PX4 startup yaw. This panel measures the line and
+            compares it — nothing downstream reads it yet.
+            <br />
+            <strong>Click the foot of the post</strong>, where it meets the floor — not the
+            post you see. Eve hangs from these posts, so they run past the camera and a
+            click half a metre up inflates L by 25 %.
+          </div>
+          <div class="line-cal-row">
+            <button class="ghost-button" type="button" id="line-cal-mark-a">Mark A</button>
+            <button class="ghost-button" type="button" id="line-cal-mark-b">Mark B</button>
+            <label for="line-cal-length">L (m)</label>
+            <input type="number" id="line-cal-length" step="0.001" min="0" placeholder="2.800" />
+            <button class="ghost-button" type="button" id="line-cal-apply">Apply</button>
+            <button class="ghost-button" type="button" id="line-cal-clear">Clear</button>
+          </div>
+          <div id="line-cal-marks">No marks set.</div>
+          <div id="line-cal-status">Waiting for line_calibration_node...</div>
+        </div>
+      </section>
+
       <section class="panel debug-only map-patch-panel">
         <div class="panel-header"><div class="panel-title"><strong>Latest Map Patch</strong><span>debug JSON</span></div></div>
         <div class="panel-body" id="map-patch-content">No map patch received yet.</div>
@@ -2708,6 +2831,6 @@ body.octopus-view-debug .camera-debug-panel .item-card {
     </section>
   </main>
 
-  <script src="live_data.js?v=camera-crop-1"></script>
+  <script src="live_data.js?v=line-cal-1"></script>
 </body>
 </html>
