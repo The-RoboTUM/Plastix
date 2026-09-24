@@ -3,8 +3,11 @@
 > **Pfade.** Alle Pfade relativ zur Repo-Wurzel.
 
 Octopus-Seite der Linienkalibrierung. Gegenstück und Quelle: `OCTOPUS_LINE_CALIBRATION.md`
-von der GripperX-Seite, **Draft vom 2026-09-24**, dort implementiert in
-`gripperx_external`, gegen das echte Octopus noch nicht getestet.
+von der GripperX-Seite, Fassung vom 2026-09-24 (dort weiterhin als *Draft* gekennzeichnet),
+implementiert in `gripperx_external`, gegen das echte Octopus noch nicht getestet.
+
+**Umgesetzt sind §1–§8.** Was nicht geht, steht unter „Offene Punkte" — das sind durchweg
+`TO-VERIFY`-Werte der Gegenseite oder Dinge, die sich nur am echten Aufbau klären lassen.
 
 Beide Seiten vermessen dieselben zwei Pfosten des Alurahmens, an dem Eve hängt, und drücken
 jede ausgetauschte Koordinate im Frame dieser Pfosten aus. Damit liegen die Meter beider
@@ -45,25 +48,58 @@ es lesen, ohne dass etwas freigeschaltet werden muss.
 
 Der Node startet mit `start_octopus_debug_stack.sh` mit.
 
+## §4: Ziele in Linien-Metern, Datum = Linienmittelpunkt
+
+Sobald die Kalibrierung vollständig ist (beide Marken **und** L), sind `x`/`y` in
+`/octopus/trash_gps` und die daraus gerechneten `lat`/`lon` **Linien-Frame-Meter**, und das
+Datum bezeichnet den Linienmittelpunkt statt der Drohne. Die Flat-Earth-Arithmetik bleibt
+unverändert — was sich ändert, ist die Bedeutung des Bezugspunkts.
+
+Die Map-Koordinaten laufen als `map_x`/`map_y` weiter mit, und `line_frame` im selben JSON
+sagt, welcher Frame gerade gilt (`octopus_line` oder `map_legacy`). Ohne vollständige
+Kalibrierung bleibt alles wie vorher — eine unkalibrierte Demo verschiebt sich nicht
+stillschweigend.
+
+**Hier wird der Maßstabsfehler tatsächlich herausgerechnet.** `metres_per_map_unit` ist
+GripperX' L geteilt durch den projizierten Pfostenabstand. Im Messlauf oben: L = 2,800 m
+gegen 2,848 projizierte Map-Einheiten, also Faktor **0,9833** — unsere Karte meldet Distanzen
+rund 1,7 % zu groß, und genau um diesen Faktor korrigiert die Ausgabe.
+
+Zwei Folgefehler, die der Frame-Wechsel eingeführt hätte und die mitbehoben sind:
+`max_radius_m` und die Zielauswahl `nearest` messen ab **Datum**, nicht mehr ab Map (0,0) —
+sonst läge der Reichweitenkreis um die Drohne statt um den Roboterstart.
+
+## §5/§6: Abgleich mit GripperX' Telemetrie
+
+GripperX schickt `line_calibration` `{status, reason, id, length_m}` auf
+`/octopus/devices/gripperx/status`. `line_calibration_node` liest das über
+`/api/devices/status` und vergleicht es mit dem eingetippten L: `length_delta_m`,
+`length_match` (Toleranz `length_tolerance_m`, Default 1 cm — sie melden Millimeter) und ihre
+`id`. Bei Abweichung eine Warnung im Log, einmal pro Änderung, nicht im Sekundentakt.
+
+Die manuelle Eingabe bleibt: sie ist die Gegenprobe, nicht eine Formalität.
+
+## §8: unsere Rekalibrierung erkennbar machen
+
+§8 führt „Octopus-seitige Rekalibrierung ist für GripperX nicht beobachtbar" als offenen
+Punkt für beide Teams. Unsere Hälfte ist erledigt: `/octopus/line_calibration/status` trägt
+eine `calibration_id`, die sich bei jeder Änderung an Marken, L oder `mirrored` ändert. Das
+Topic liegt unter `/octopus/*` und damit bereits in ihrer rosbridge-Glob — es braucht keinen
+neuen Kanal, nur einen Subscriber. Dass sie so etwas schon tun, zeigt ihr `octopus_transform`-
+Block, der unsere Yaw-Relocks mitzählt.
+
 ## Was bewusst NICHT gebaut ist
 
-Umgesetzt sind **§1–§5** des Drafts, also Frame, Pixel-Meter-Transformation und Maßstab. Ab §6
-ist das Dokument noch in Bewegung; diese Teile fehlen absichtlich:
-
-- **Die Kalibrierung speist die Projektion nicht.** `flight_camera_transform_node` benutzt
-  unverändert `manual_height_above_ground_m` und den PX4-Startup-Yaw. Der Node macht die
-  Linie nur *sichtbar*, damit sich die Zahlen vergleichen lassen, bevor etwas umgehängt wird.
-- **Das Datum bleibt der Eve-Marker.** §4 macht den Linienmittelpunkt zum Datum. Das ist eine
-  Vertragsänderung, die GripperX, das Dashboard und `trash_gps_goal_node` gleichzeitig trifft
-  — nichts, was man umlegt, solange das Dokument „Draft" sagt und die Demo auf dem jetzigen
-  Verhalten läuft. Siehe [`octopus_to_robot_interface.md`](octopus_to_robot_interface.md#das-datum).
-- **Kein Assistent für die Prozedur** (§7). Die Markier-UI gibt es (siehe unten), sie führt
-  aber nicht durch die Reihenfolge, prüft keine Toleranzen und kennt die Nullbewegungs-Probe
-  nicht — genau die Teile, die sich noch ändern.
-- **Kein Fail-Closed-Verhalten** (§8). Laufende Ziele werden bei Rekalibrierung nicht
-  abgebrochen. Das gehört in `trash_gps_goal_node` und setzt voraus, dass §8 steht.
-- **Keine `TO-VERIFY`-Werte geraten.** Die Plausibilitätsgrenze 2,5–3,0 m ist als Parameter
-  `min_length_m`/`max_length_m` abgebildet, nicht als Konstante.
+- **Die Kalibrierung speist die *Projektion* nicht.** `flight_camera_transform_node` rechnet
+  weiter mit `manual_height_above_ground_m` und dem PX4-Startup-Yaw. Der Maßstabsfehler wird
+  am Ausgang herausgerechnet (§4 oben), nicht in der Projektion selbst. Das ist bewusst: die
+  Projektion ist der kritische Pfad der Demo, und das Ergebnis ist dasselbe.
+- **Kein Assistent für die Prozedur** (§7). Die Markier-UI gibt es, sie führt aber nicht durch
+  die Reihenfolge und kennt die Nullbewegungs-Probe nicht — deren Toleranz ist `TO-VERIFY`.
+- **Kein Abbruch laufender Ziele bei Rekalibrierung** (§8). Auf unserer Seite gibt es kein
+  „goal in flight", das man abbrechen könnte; der Vertrag kennt nur `trash_goal_done`.
+- **Keine `TO-VERIFY`-Werte geraten.** Die Plausibilitätsgrenze 2,5–3,0 m ist Parameter
+  (`min_length_m`/`max_length_m`), nicht Konstante.
 
 ## Benutzung heute
 
@@ -137,9 +173,19 @@ Ziel, das der Roboter bei der Validierung ablehnt, blockiert sonst die Warteschl
 | Filter | `trash_gps_goal_node`, Parameter `use_line_geofence` (Default an) |
 | Sichtbar im Vertrag | Block `geofence` in `/octopus/trash_gps` |
 
+Das deckt sich mit §5a der Endfassung: Quadrat der Seite L, zentriert auf dem
+Linienmittelpunkt, an der Linie ausgerichtet.
+
 **Der Geofence braucht L nicht.** Die beiden Marken allein legen Mitte, Richtung und
 Seitenlänge fest; L liefert nur den metrischen Maßstab. Solange GripperX den Wert nicht
 gemeldet hat, steht die Kalibrierung auf `awaiting_length`, der Geofence ist aber schon aktiv.
+
+**§5a begrenzt die Standposition des Roboters, nicht das Objekt.** Ein Objekt knapp außerhalb
+kann bedient werden, wenn es dafür eine Standposition innerhalb gibt, und eines knapp innerhalb
+kann abgelehnt werden, wenn es keine gibt. Unser Geofence ist deshalb kein exakter Prädiktor
+der Annahme, sondern die von §5a empfohlene Gegenmaßnahme („keep detections inside the square,
+or bound the detector to it") — weil ein abgelehntes Ziel mangels Fehlerkanal die Mission
+blockiert.
 
 **Warum das Quadrat in Map-Metern und nicht aus L gebaut wird.** Die beiden markierten
 Pfosten laufen durch **dieselbe Projektion wie die Detektionen** (`detection_to_world_ned`,
@@ -175,8 +221,11 @@ dorthin.
 
 Zusätzlich zu den `TO-VERIFY`-Punkten in §9 des Drafts:
 
-**1. Welcher Punkt am Pfosten im Bild angeklickt wird, ist nicht dasselbe wie beim LiDAR — und
-der Fehler ist groß.** Das LiDAR sieht den Pfosten in seiner Scanebene, also praktisch am Boden.
+**1. §2 regelt links/rechts, aber nicht oben/unten.** Die Endfassung entscheidet, dass beide
+Seiten die *sichtbare Kante* ohne Korrektur markieren, und beziffert den Restfehler mit der
+Querschnittsdiagonale — vernachlässigbar gegen 0,5 m Sigma. Das betrifft die horizontale
+Mehrdeutigkeit. Die vertikale bleibt offen und ist größer:
+Das LiDAR sieht den Pfosten in seiner Scanebene, also praktisch am Boden.
 Die Kamera blickt von oben: ein Pfosten, der nicht genau unter der Drohne steht, erscheint als
 Linie, die vom Bildmittelpunkt nach außen zeigt. Ein Punkt in Höhe `z` am Pfosten fällt auf
 denselben Pixel wie ein Bodenpunkt im Radius `r · H/(H−z)`. Bei Kamera 2,5 m und Pfostenfuß
@@ -191,9 +240,17 @@ denselben Pixel wie ein Bodenpunkt im Radius `r · H/(H−z)`. Bei Kamera 2,5 m 
 
 Da Eve *an* dem Rahmen hängt, reichen die Pfosten von unten bis über die Kamera — der optisch
 naheliegende Klick auf den gut sichtbaren Teil des Pfostens ist also der falsche. **Angeklickt
-werden muss der Pfostenfuß, dort wo der Pfosten den Boden trifft**, nicht die Mitte des
-sichtbaren Pfostens. §2 des Drafts sagt „Mitte des Querschnitts", was für das LiDAR eindeutig
-ist, für das Bild aber die Höhe offenlässt. Das sollte dort präzisiert werden.
+werden muss der Pfostenfuß, dort wo der Pfosten den Boden trifft.** Anders als der
+Kante-gegen-Mitte-Fehler ist das kein Rauschen, sondern ein systematischer Maßstabsfehler, und
+bei 0,5 m Klickhöhe mit 25 % deutlich größer als die 0,5 m Sigma, mit denen §2 argumentiert.
+Die UI sagt es an der Stelle, an der geklickt wird; im Dokument fehlt es.
+
+**1a. `implied_camera_height_m` und `metres_per_map_unit` müssen nicht übereinstimmen.**
+Ersteres kommt aus dem einfachen Lochkameramodell in `line_frame.py`, letzteres aus der echten
+Projektion mit Verzeichnung und Neigung. Im Messlauf oben: 2,515 m gegen einen Korrekturfaktor
+von 0,9833, was in die andere Richtung zeigt. Verlassen sollte man sich auf
+`metres_per_map_unit` — das ist der Faktor, der die Ausgabe tatsächlich korrigiert; die
+implizite Höhe ist eine grobe Gegenprobe.
 
 **2. Rekalibrierung auf unserer Seite ist für GripperX nicht beobachtbar** — offener Punkt in
 §8 des Drafts, auf unserer Seite ebenfalls offen. Das Status-Topic wäre der natürliche Ort:

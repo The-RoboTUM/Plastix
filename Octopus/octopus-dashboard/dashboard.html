@@ -2885,8 +2885,10 @@ body.octopus-view-debug .camera-debug-panel .item-card {
           <div class="line-cal-notice">
             <strong>Does not change the map.</strong> The projection still uses the configured
             height and the PX4 startup yaw — nothing downstream reads this yet.<br />
-            <strong>Click the foot of the post</strong>, where it meets the floor, not the post
-            you see: Eve hangs from them, so a click half a metre up inflates L by 25 %.
+            <strong>Mark the post's visible edge</strong> — no offset towards its centre
+            (spec §2). <strong>Click where it meets the floor</strong>: Eve hangs from these
+            posts, so they run past the camera, and a click half a metre up the post inflates
+            L by 25 %.
           </div>
           <div class="line-cal-row">
             <button class="line-cal-button" type="button" id="line-cal-mark-a">Mark A</button>
@@ -2908,6 +2910,6 @@ body.octopus-view-debug .camera-debug-panel .item-card {
     </section>
   </main>
 
-  <script src="live_data.js?v=line-cal-2"></script>
+  <script src="live_data.js?v=line-cal-3"></script>
 </body>
 </html>

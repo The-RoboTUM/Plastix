@@ -91,7 +91,7 @@ class TrashGpsGoalNode(Node):
         # Independent of max_radius_m above: that one is a circle around the
         # datum for reach, this one is the agreed area. Both may be on.
         self.declare_parameter("use_line_geofence", True)
-        self.declare_parameter("line_geofence_topic", "/octopus/line_geofence")
+        self.declare_parameter("line_frame_topic", "/octopus/line_frame")
         self.declare_parameter("target_ttl_sec", 0.0)
         self.declare_parameter("publish_period_sec", 1.0)
         self.declare_parameter("frame_id", "map")
@@ -114,7 +114,7 @@ class TrashGpsGoalNode(Node):
         self.update_datum(self.datum_lat, self.datum_lon)
 
         self.use_line_geofence = bool(self.get_parameter("use_line_geofence").value)
-        self.line_geofence = None
+        self.line_frame = None
 
         self.targets = []  # ordered by first detection
         self.out_of_range_count = 0
@@ -140,8 +140,8 @@ class TrashGpsGoalNode(Node):
         self.create_subscription(String, self.input_topic, self.detections_callback, 10)
         self.create_subscription(
             String,
-            str(self.get_parameter("line_geofence_topic").value),
-            self.line_geofence_callback,
+            str(self.get_parameter("line_frame_topic").value),
+            self.line_frame_callback,
             10,
         )
         self.create_subscription(
@@ -201,12 +201,12 @@ class TrashGpsGoalNode(Node):
         # with it. Republish immediately instead of waiting for the next tick.
         self.publish_all()
 
-    def line_geofence_callback(self, msg: String):
+    def line_frame_callback(self, msg: String):
         try:
             payload = json.loads(msg.data)
         except json.JSONDecodeError:
             return
-        self.line_geofence = payload if payload.get("available") else None
+        self.line_frame = payload if payload.get("available") else None
 
     def inside_line_geofence(self, x, y):
         """Is this map point inside the agreed square? (distance along, distance across).
@@ -214,21 +214,81 @@ class TrashGpsGoalNode(Node):
         Returns None for both distances when there is no fence to test against -
         no fence means no filtering, never "reject everything".
         """
-        fence = self.line_geofence
+        fence = self.line_frame
         if not self.use_line_geofence or fence is None:
             return True, None, None
 
-        cx, cy = fence["center"]
-        ex, ey = fence["axis"]
         half = float(fence["half_side_m"])
-
-        dx, dy = float(x) - float(cx), float(y) - float(cy)
-        along = dx * float(ex) + dy * float(ey)
-        across = dx * float(ey) - dy * float(ex)
+        along, across = self.map_to_line_units(x, y)
         return abs(along) <= half and abs(across) <= half, along, across
 
+    def map_to_line_units(self, x, y):
+        """Map point -> (along, across) in MAP units, relative to the line midpoint.
+
+        `across` is positive to the LEFT of A->B seen from above, matching the
+        spec's +y: with the map frame right-handed (+x right, +y forward, z up),
+        left is the axis turned +90 deg counter-clockwise, i.e. (-ey, ex).
+
+        Whether that ends up on the same side as GripperX's +y is NOT settled
+        here. Section 9 lists the image handedness as unverified, so the
+        operator's `mirrored` flag flips it and the zero-motion check of section
+        7 step 7 is what decides. Getting this wrong mirrors the frame, which is
+        the failure the spec warns about twice.
+        """
+        frame = self.line_frame
+        cx, cy = frame["center"]
+        ex, ey = frame["axis"]
+        dx, dy = float(x) - float(cx), float(y) - float(cy)
+        along = dx * float(ex) + dy * float(ey)
+        across = -dx * float(ey) + dy * float(ex)
+        if frame.get("mirrored"):
+            across = -across
+        return along, across
+
+    def distance_from_datum_m(self, x, y):
+        """Distance from the datum in metres.
+
+        The datum is the line midpoint once the calibration is complete and map
+        (0, 0) - the drone - before that, so this cannot be a plain hypot on the
+        map coordinates any more. Both the reach bound and "nearest goal" are
+        defined against where the ROBOT started, which is the datum, not the
+        drone; measuring from the wrong point silently reorders the queue and
+        moves the reach circle by the distance between the two.
+        """
+        line = self.map_to_line_metres(x, y)
+        if line is not None:
+            return math.hypot(line[0], line[1])
+        return math.hypot(float(x), float(y))
+
+    def map_to_line_metres(self, x, y):
+        """Line-frame metres, or None while the metric scale is unknown.
+
+        The scale is GripperX's L over the projected post distance, so this is
+        also where our projection's own scale error is divided out - the reason
+        section 4 wants goals expressed in this frame in the first place.
+        """
+        frame = self.line_frame
+        if frame is None:
+            return None
+        scale = frame.get("metres_per_map_unit")
+        if not scale:
+            return None
+        along, across = self.map_to_line_units(x, y)
+        return along * float(scale), across * float(scale)
+
     def local_to_latlon(self, x_m, y_m):
-        """Map meters (x = east, y = north) to WGS84 around the datum."""
+        """Position to WGS84 around the datum, with the flat-earth arithmetic
+        both sides share (spec section 4).
+
+        The arithmetic never changes; what the datum MEANS does. With a complete
+        line calibration the datum is the line midpoint and x/y are line-frame
+        metres, which is what GripperX inverts. Without one we fall back to the
+        old behaviour - datum at map (0, 0), i.e. the drone - so an uncalibrated
+        demo keeps working exactly as before instead of silently shifting.
+        """
+        line = self.map_to_line_metres(x_m, y_m)
+        if line is not None:
+            x_m, y_m = line
         lat = self.datum_lat + y_m / METERS_PER_DEGREE_LAT
         lon = self.datum_lon + x_m / self.meters_per_degree_lon
         return lat, lon
@@ -253,10 +313,10 @@ class TrashGpsGoalNode(Node):
             if confidence is not None and confidence < self.min_confidence:
                 continue
 
-            # Distance from the datum, which is map (0, 0) by construction, so
-            # this is literally "within max_radius_m of where the robot started".
+            # "Within max_radius_m of where the robot started", and the robot
+            # starts at the datum - see distance_from_datum_m.
             if self.max_radius_m > 0.0:
-                radius = math.hypot(x, y)
+                radius = self.distance_from_datum_m(x, y)
                 if radius > self.max_radius_m:
                     self.note_out_of_range(x, y, radius, now)
                     continue
@@ -372,9 +432,9 @@ class TrashGpsGoalNode(Node):
             return None
         if self.goal_selection == "first":
             return candidates[0]
-        # Map (0, 0) is by construction the datum, so distance from the map origin
-        # is distance from where Eve — and with her the robot — started.
-        return min(candidates, key=lambda t: math.hypot(t["x"], t["y"]))
+        # Nearest to the datum, i.e. to where the robot started - which is the
+        # line midpoint once calibrated, not the map origin.
+        return min(candidates, key=lambda t: self.distance_from_datum_m(t["x"], t["y"]))
 
     def navsatfix(self, lat, lon):
         msg = NavSatFix()
@@ -430,13 +490,20 @@ class TrashGpsGoalNode(Node):
         entries = []
         for target in self.targets:
             lat, lon = self.local_to_latlon(target["x"], target["y"])
+            # Section 4: what we hand over are line-frame metres. Until the
+            # calibration is complete there is no such thing, and the map
+            # coordinates go out as before rather than a wrong-scale guess.
+            line = self.map_to_line_metres(target["x"], target["y"])
+            out_x, out_y = line if line is not None else (target["x"], target["y"])
             entries.append({
                 "id": target["id"],
                 "class_name": target["class_name"],
                 "lat": lat,
                 "lon": lon,
-                "x": target["x"],
-                "y": target["y"],
+                "x": out_x,
+                "y": out_y,
+                "map_x": target["x"],
+                "map_y": target["y"],
                 "confidence": target["confidence"],
                 "collected": target["collected"],
                 "is_goal": bool(goal and goal["id"] == target["id"]),
@@ -446,7 +513,7 @@ class TrashGpsGoalNode(Node):
         # Say what was filtered out and by what. A consumer that sees an empty
         # list needs to be able to tell "nothing detected" from "everything was
         # outside the fence", and so does anyone watching the dashboard.
-        fence = self.line_geofence if self.use_line_geofence else None
+        fence = self.line_frame if self.use_line_geofence else None
         geofence_payload = {
             "enabled": bool(self.use_line_geofence),
             "active": fence is not None,
@@ -459,11 +526,23 @@ class TrashGpsGoalNode(Node):
                 "side_m": fence.get("side_m"),
             })
 
+        # Which frame the x/y above are in. A consumer must not have to guess,
+        # and the difference is a whole coordinate system, not a detail.
+        scaled = self.line_frame is not None and self.line_frame.get("metres_per_map_unit")
+        frame_payload = {
+            "name": "octopus_line" if scaled else "map_legacy",
+            "datum_is": "line midpoint" if scaled else "drone / map (0, 0)",
+            "length_m": (self.line_frame or {}).get("length_m"),
+            "metres_per_map_unit": (self.line_frame or {}).get("metres_per_map_unit"),
+            "mirrored": bool((self.line_frame or {}).get("mirrored", False)),
+        }
+
         self.targets_pub.publish(String(data=json.dumps({
             "source_id": "trash_gps_goal_node",
             "frame_id": self.frame_id,
             "timestamp": time.time(),
             "geofence": geofence_payload,
+            "line_frame": frame_payload,
             "datum": {
                 "lat": self.datum_lat,
                 "lon": self.datum_lon,

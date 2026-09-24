@@ -4861,7 +4861,7 @@ function renderLineCalibration() {
 
   const fmt = (pixel) => (pixel ? `${pixel[0].toFixed(1)} / ${pixel[1].toFixed(1)} px` : "not set");
   const armed = LINE_CAL_STATE.armed
-    ? `<span class="accent">Click the foot of post ${LINE_CAL_STATE.armed.toUpperCase()} in the camera image.</span><br />`
+    ? `<span class="accent">Click post ${LINE_CAL_STATE.armed.toUpperCase()} in the camera image: its visible edge, at the floor.</span><br />`
     : "";
   const message = LINE_CAL_STATE.message
     ? `<br /><span class="accent">${escapeHtml(LINE_CAL_STATE.message)}</span>`

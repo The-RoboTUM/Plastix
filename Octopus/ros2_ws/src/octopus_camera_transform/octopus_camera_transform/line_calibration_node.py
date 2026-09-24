@@ -27,6 +27,7 @@ the same payload to the backend. Under ``/octopus/*``, so the rosbridge glob
 already covers it and GripperX can read it without a new topic being allowed.
 """
 
+import hashlib
 import json
 import time
 import urllib.request
@@ -62,6 +63,16 @@ class LineCalibrationNode(Node):
         self.declare_parameter("length_m", 0.0)
         self.declare_parameter("mirrored", False)
 
+        # Section 5/6: GripperX reports the live calibration's id and its L in
+        # its telemetry so the value our operator typed in can be checked
+        # against the one their LiDAR measured. The manual entry stays - this is
+        # the cross-check, not a replacement for it.
+        self.declare_parameter("devices_url", "http://127.0.0.1:8000/api/devices/status")
+        self.declare_parameter("gripperx_device_id", "gripperx")
+        # They report millimetre precision, so a centimetre is a generous
+        # "the operator typed the right number".
+        self.declare_parameter("length_tolerance_m", 0.01)
+
         self.declare_parameter("min_length_m", DEFAULT_MIN_LENGTH_M)
         self.declare_parameter("max_length_m", DEFAULT_MAX_LENGTH_M)
 
@@ -77,6 +88,9 @@ class LineCalibrationNode(Node):
         self.log_period_sec = float(self.get_parameter("log_period_sec").value)
         self.fx = float(self.get_parameter("fx").value)
         self.configured_height_m = float(self.get_parameter("configured_height_m").value)
+        self.devices_url = str(self.get_parameter("devices_url").value)
+        self.gripperx_device_id = str(self.get_parameter("gripperx_device_id").value)
+        self.length_tolerance_m = float(self.get_parameter("length_tolerance_m").value)
         self.min_length_m = float(self.get_parameter("min_length_m").value)
         self.max_length_m = float(self.get_parameter("max_length_m").value)
 
@@ -89,6 +103,7 @@ class LineCalibrationNode(Node):
 
         self.last_error_log_time = 0.0
         self.last_signature = None
+        self.last_gripperx_signature = None
 
         self.get_logger().info("Line calibration node started")
         self.get_logger().info(f"Reading operator marks from: {self.input_url}")
@@ -111,6 +126,32 @@ class LineCalibrationNode(Node):
 
         marks = payload.get("line_calibration")
         return marks if isinstance(marks, dict) else None
+
+    def read_gripperx(self):
+        """GripperX's own view of the calibration, from its telemetry.
+
+        Read through the backend rather than the ROS graph because that is where
+        the robot's status already lands (device_status_backend_bridge_node),
+        and because GripperX speaks to us over rosbridge, not DDS.
+        """
+        try:
+            with urllib.request.urlopen(
+                self.devices_url, timeout=self.request_timeout_sec
+            ) as response:
+                payload = json.loads(response.read().decode("utf-8", errors="replace"))
+        except Exception:
+            # Not an error worth logging every second: no robot connected is the
+            # normal state for most of the setup.
+            return None
+
+        # Read at call time, not at construction: the robot id is the one
+        # parameter an operator plausibly retunes on a running system.
+        device_id = str(self.get_parameter("gripperx_device_id").value)
+        device = (payload.get("devices") or {}).get(device_id)
+        if not isinstance(device, dict):
+            return None
+        block = device.get("line_calibration")
+        return block if isinstance(block, dict) else None
 
     def read_parameters(self):
         pixel_a = [float(v) for v in self.get_parameter("pixel_a").value]
@@ -159,6 +200,22 @@ class LineCalibrationNode(Node):
             else:
                 self.get_logger().warn(f"No line calibration: {payload.get('reason')}")
             self.last_signature = signature
+
+        gripperx = payload.get("gripperx") or {}
+        mismatch_signature = (gripperx.get("id"), gripperx.get("length_match"))
+        if gripperx.get("length_match") is False and mismatch_signature != self.last_gripperx_signature:
+            self.get_logger().warn(
+                "L disagrees with GripperX: entered {ours:.3f} m, they measured "
+                "{theirs:.3f} m (delta {delta:+.3f} m, calibration {cid}). "
+                "Re-enter L or re-click on their side - the two frames are not "
+                "the same size.".format(
+                    ours=payload.get("length_m", float("nan")),
+                    theirs=gripperx.get("length_m", float("nan")),
+                    delta=gripperx.get("length_delta_m", float("nan")),
+                    cid=gripperx.get("id"),
+                )
+            )
+        self.last_gripperx_signature = mismatch_signature
 
     def solve(self, marks):
         base = {
@@ -221,6 +278,7 @@ class LineCalibrationNode(Node):
 
         implied = calibration.implied_camera_height_m(self.fx)
         base.update(calibration.as_dict())
+        base["calibration_id"] = self.calibration_id(calibration)
         base.update({
             "state": "calibrated",
             "reason": None,
@@ -231,7 +289,49 @@ class LineCalibrationNode(Node):
             # that are too short by this fraction.
             "scale_deviation_percent": (implied / self.configured_height_m - 1.0) * 100.0,
         })
+        base["gripperx"] = self.compare_with_gripperx(calibration.length_m)
         return base
+
+    @staticmethod
+    def calibration_id(calibration):
+        """A short id that changes whenever the frame changes.
+
+        Section 8 lists "Octopus-side recalibration is not observable by
+        GripperX" as an open point for both teams. This is our half of it: the
+        id rides on /octopus/line_calibration/status, which is under /octopus/*
+        and therefore already inside their rosbridge glob - so they can detect a
+        new frame without us inventing a signalling channel.
+        """
+        seed = json.dumps([
+            calibration.pixel_a, calibration.pixel_b,
+            round(calibration.length_m, 6), calibration.mirrored,
+        ], sort_keys=True)
+        return hashlib.sha1(seed.encode("utf-8")).hexdigest()[:12]
+
+    def compare_with_gripperx(self, our_length_m):
+        """Did the operator type in the L that GripperX actually measured?"""
+        block = self.read_gripperx()
+        if block is None:
+            return {"reported": False, "reason": "no line_calibration in GripperX telemetry"}
+
+        status = block.get("status")
+        their_length = block.get("length_m")
+        result = {
+            "reported": True,
+            "status": status,
+            "reason": block.get("reason"),
+            "id": block.get("id"),
+            "length_m": their_length,
+        }
+
+        if status != "ok" or not isinstance(their_length, (int, float)):
+            result["length_match"] = None
+            return result
+
+        delta = float(our_length_m) - float(their_length)
+        result["length_delta_m"] = delta
+        result["length_match"] = abs(delta) <= self.length_tolerance_m
+        return result
 
     def post_status(self, body):
         try:

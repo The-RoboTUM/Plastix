@@ -126,7 +126,7 @@ class FlightCameraTransformNode(Node):
         # Taking GripperX's metric L instead would mix two frames and reintroduce
         # exactly the error the line was introduced to remove.
         self.declare_parameter("line_calibration_topic", "/octopus/line_calibration/status")
-        self.declare_parameter("line_geofence_topic", "/octopus/line_geofence")
+        self.declare_parameter("line_frame_topic", "/octopus/line_frame")
         # 0.0 = square side equals the projected post distance, i.e. the line
         # spans one full edge. A positive value overrides it with an absolute
         # length in map metres and is then subject to any scale error.
@@ -194,8 +194,9 @@ class FlightCameraTransformNode(Node):
         )
 
         self.line_marks = None
-        self.line_geofence_pub = self.create_publisher(
-            String, str(self.get_parameter("line_geofence_topic").value), 10
+        self.line_length_m = None
+        self.line_frame_pub = self.create_publisher(
+            String, str(self.get_parameter("line_frame_topic").value), 10
         )
         self.line_calibration_sub = self.create_subscription(
             String,
@@ -384,12 +385,33 @@ class FlightCameraTransformNode(Node):
         pixel_a = payload.get("pixel_a")
         pixel_b = payload.get("pixel_b")
         if payload.get("marks_set") and is_finite_list(pixel_a) and is_finite_list(pixel_b):
-            self.line_marks = {"pixel_a": list(pixel_a), "pixel_b": list(pixel_b)}
+            self.line_marks = {
+                "pixel_a": list(pixel_a),
+                "pixel_b": list(pixel_b),
+                "mirrored": bool(payload.get("mirrored", False)),
+            }
         else:
             self.line_marks = None
+        # L exists only once the operator has entered GripperX's measurement.
+        # Without it the frame has an origin and a direction but no metric
+        # scale - which is exactly the distinction the two states encode.
+        length = payload.get("length_m") if payload.get("calibrated") else None
+        self.line_length_m = float(length) if isinstance(length, (int, float)) and length > 0 else None
 
-    def line_geofence_payload(self):
-        """The demo-area square in map metres, or why there is none."""
+    def line_frame_payload(self):
+        """The reference frame in map metres: origin, direction, scale, square.
+
+        Everything is expressed in MAP units by projecting the two marked posts
+        through the same path the detections take. That is what makes it usable
+        both as a filter and as a frame conversion while the projection's own
+        scale is still wrong: posts and detections are wrong by the same factor.
+
+        `metres_per_map_unit` is where that factor cancels. The posts are L
+        metres apart physically (GripperX measured it) and
+        `projected_post_distance_m` map units apart here, so the ratio turns map
+        units into true metres - the number section 4 needs to express goals in
+        line-frame metres.
+        """
         base = {
             "source_id": "flight_camera_transform_node",
             "frame_id": "map",
@@ -422,9 +444,18 @@ class FlightCameraTransformNode(Node):
         override = float(self.get_parameter("line_geofence_side_m").value)
         side = override if override > 0.0 else span
 
+        # Section 5a: GripperX's square has side L in metres. Its image in our
+        # map is `span` map units, because span IS the projection of L. Putting
+        # L here instead would shrink or grow the square by exactly the scale
+        # error the line exists to survive.
+        metres_per_map_unit = (self.line_length_m / span) if self.line_length_m else None
+
         base.update({
             "available": True,
             "reason": None,
+            "length_m": self.line_length_m,
+            "metres_per_map_unit": metres_per_map_unit,
+            "mirrored": bool(self.line_marks.get("mirrored", False)),
             # Square centred on the line midpoint, one axis along A->B, so the
             # line is its mirror axis in both directions.
             "center": [(ax + bx) / 2.0, (ay + by) / 2.0],
@@ -598,15 +629,15 @@ class FlightCameraTransformNode(Node):
             self.output_pub.publish(out)
 
     def publish_status(self):
-        geofence = self.line_geofence_payload()
-        geofence_msg = String()
-        geofence_msg.data = json.dumps(geofence)
-        self.line_geofence_pub.publish(geofence_msg)
+        line_frame = self.line_frame_payload()
+        line_frame_msg = String()
+        line_frame_msg.data = json.dumps(line_frame)
+        self.line_frame_pub.publish(line_frame_msg)
 
         pose_state = self.get_pose_state()
 
         payload = {
-            "line_geofence": geofence,
+            "line_frame": line_frame,
             "mode": "flight_pose_ground_plane",
             "transform_mode": str(self.get_parameter("transform_mode").value),
             "indoor_static_origin_x": float(self.get_parameter("indoor_static_origin_x").value),
