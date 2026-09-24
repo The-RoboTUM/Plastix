@@ -1,32 +1,28 @@
 // Encoder-based drive-motor stall detection and the tier-1 response — HWR-30a.
 //
-// WHERE THIS LIVES, AND WHY IT IS NOT IN THE FIRMWARE.
-// HWR-30's written text places the cut-off in the ESP32 drive firmware. The
-// user DECIDED 2026-08-20 to build HWR-30a on the ROS2 side instead, without
-// current measurement, so that it does not wait on HWR-30b and the outstanding
-// GB37-50 stall-current measurement (WIRING_PLAN §8.5). That is a recorded
-// DEVIATION from HWR-30, not an oversight.
+// Not in firmware: HWR-30's written text places the cut-off in the ESP32
+// drive firmware; this is a recorded DEVIATION, built on the ROS2 side
+// instead, without current measurement, so it does not wait on HWR-30b and
+// the outstanding GB37-50 stall-current measurement (WIRING_PLAN §8.5).
 //
-// WHERE THIS LIVES INSIDE ROS2, AND WHY IT IS NOT IN THE HARDWARE INTERFACE.
-// GripperXInterface is replaced by gz_ros2_control/GazeboSimSystem in the twin
-// (§3.1.6), so a detector placed there would be structurally UNTESTABLE in
-// simulation — which is the whole reason ROS2 was chosen over firmware in the
-// first place. In the controller it runs identically in sim and on the robot,
-// and it shares its provenance gate -- and its subscription -- with the wheel
-// velocity regulator (wheel_regulator.hpp), which now exists as structure and is
-// disabled by default.
+// Not in the hardware interface: GripperXInterface is replaced by
+// gz_ros2_control/GazeboSimSystem in the twin (§3.1.6), so a detector placed
+// there would be structurally UNTESTABLE in simulation. In the controller it
+// runs identically in sim and on the robot, and shares its provenance gate
+// and subscription with the wheel velocity regulator (wheel_regulator.hpp),
+// which exists as structure and is disabled by default.
 //
-// WHAT THIS IS NOT: it is NOT a wheel velocity regulator, and it did not become
-// one when the regulator was built. No error term, no integrator, no gain acts on
-// the measured wheel velocity HERE. The control law stays open-loop feedforward
-// unless wheel_regulator_enabled is turned on (FR-11 item 2, NFR-10 acceptance
-// 10). The only thing this class can do to a wheel command is replace it with
-// EXACTLY ZERO -- and it is the LAST stage in the chain, after the regulator, so
-// that zero is never trimmed by anything (SwerveController::write_wheel_commands).
+// WHAT THIS IS NOT: not a wheel velocity regulator. No error term, integrator
+// or gain acts on the measured wheel velocity HERE. The control law stays
+// open-loop feedforward unless wheel_regulator_enabled is turned on (FR-11
+// item 2, NFR-10 acceptance 10). The only thing this class can do to a wheel
+// command is replace it with EXACTLY ZERO — the LAST stage in the chain, after
+// the regulator, so that zero is never trimmed by anything
+// (SwerveController::write_wheel_commands).
 //
 // NO rclcpp IN THIS HEADER OR ITS .cpp, on purpose — the same property
-// swerve_kinematics and steering_limits have, and the reason the whole state
-// machine is unit-checkable without a running stack (test/test_stall_detector.cpp).
+// swerve_kinematics and steering_limits have, and why the whole state machine
+// is unit-checkable without a running stack (test_stall_detector.cpp).
 
 #ifndef GRIPPERX_SWERVE_CONTROLLER__STALL_DETECTOR_HPP_
 #define GRIPPERX_SWERVE_CONTROLLER__STALL_DETECTOR_HPP_
@@ -148,14 +144,33 @@ public:
   /// wheel_command_multipliers); `position` is the accumulated wheel POSITION
   /// state in rad and `position_valid` says whether that sample could be read
   /// and is finite.
+  ///
+  /// `drive_withheld` is the one fact this class cannot derive for itself: that
+  /// something between the control law and the actuator has already replaced
+  /// the wheel commands with EXACTLY 0.0 on this cycle, so `requested` is not
+  /// what the motor is getting. Today the only such stage is the steering
+  /// alignment gate (alignment_gate.hpp, stage 2 of
+  /// SwerveController::write_wheel_commands), which reports it as
+  /// AlignmentGateResult::withheld. While it is true, every wheel is treated
+  /// exactly as it is treated under a command below min_command_rad_s: the
+  /// dwell window does not accumulate and nothing can trip. The full rationale
+  /// is at arming gate (d) in stall_detector.cpp.
+  ///
+  /// IT IS A REQUIRED ARGUMENT — no default, and not a setter. A default or a
+  /// setter can be forgotten by a call site, and forgetting it does not fail to
+  /// compile, it silently re-creates the defect this parameter exists to close.
+  /// The type is a plain bool rather than an AlignmentGateStatus on purpose:
+  /// what the detector needs to know is that its premise is false, not which
+  /// stage falsified it, and a status would invite this class to make policy
+  /// over gate states it should not know about.
   StallDetectorResult update(
     double now_sec, const std::array<double, kNumWheels> & requested,
     const std::array<double, kNumWheels> & position,
-    const std::array<bool, kNumWheels> & position_valid);
+    const std::array<bool, kNumWheels> & position_valid, bool drive_withheld);
 
   bool latched(std::size_t wheel) const { return latched_[wheel]; }
   uint32_t trip_count(std::size_t wheel) const { return trip_count_[wheel]; }
-  /// Whether the three arming conditions were satisfied on the last update —
+  /// Whether the arming conditions were all satisfied on the last update —
   /// i.e. whether this wheel is currently being watched at all. Published so
   /// that "the detector is asleep" can never look like "the detector is happy".
   bool armed(std::size_t wheel) const { return armed_[wheel]; }

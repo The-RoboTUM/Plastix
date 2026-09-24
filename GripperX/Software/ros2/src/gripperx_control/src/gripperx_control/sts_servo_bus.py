@@ -229,9 +229,9 @@ def calibrated_counts_to_rad(
 # --- Per-direction (asymmetric) calibration model ----------------------------
 #
 # The steering range is mechanically asymmetric: a wheel can swing much further
-# away from the chassis than towards it (100 deg / 30 deg, measured by the user
-# 2026-08-13). A single shared limit cannot express that — see the module-level
-# discussion in steer_servo_node.py.
+# away from the chassis than towards it. A single shared limit cannot express
+# that — current outward/inward values are in steer_servo.yaml, and the
+# module-level discussion is in steer_servo_node.py.
 #
 # These two functions deliberately know nothing about "outward"/"inward". They
 # work purely on the SIGN of the joint angle: one limit and one recorded

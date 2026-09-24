@@ -10,15 +10,12 @@ individual run; an approval relayed by an agent does not satisfy it.
 
 OP-29 spin half -- the YAW-RATE SHORTFALL, replacing the withdrawn chirality test.
 
-WHY THE OLD TEST IS GONE. DEPLOY_2026-08-21.md section 2 asked for a 2-vs-2
-split of the contact radii (0.15470 / 0.26585, ratio 1.718) that MIRRORS when
-omega reverses. That premise assumed the king-pin -> wheel offset points the
-same way on all four corners. It does not: gripperx_v1.core.xacro L303-306 has
-+0.055572 / +0.055572 / -0.055571 / -0.055372, i.e. MIRRORED, outboard on every
-corner -- and the tape settles it (predicted width over the tyre outer faces
-408.4 mm, measured on the robot 2026-08-19: 409 mm; a same-side offset would
-predict 297 mm). A mirror-symmetric contact set in a mirror-symmetric pose
-cannot be chiral. All four contact radii come out at 0.2666 +- 0.0002 m.
+WHY THE OLD TEST IS GONE. The withdrawn test assumed the king-pin -> wheel
+offset points the same way on all four corners; it does not -- the offset is
+MIRRORED, outboard on every corner (confirmed by tape measurement of the tyre
+outer-face width against the two competing predictions). A mirror-symmetric
+contact set in a mirror-symmetric pose cannot be chiral. All four contact
+radii come out at 0.2666 +- 0.0002 m.
 
 WHAT SURVIVES IS UNIFORM AND TESTABLE. The controller commands each wheel
 omega * |r_kingpin| while the contact point needs omega * |r_contact|, so the
@@ -51,17 +48,18 @@ R = 0.070                 # wheel radius
 A_HALF, B_HALF = 0.1809, 0.1087   # geometry SoT (gripperx_geometry/config/geometry.yaml)
 R_KINGPIN = math.hypot(A_HALF, B_HALF)        # 0.210950 -- what the controller uses
 R_CONTACT = 0.266571                          # audit, from the URDF offsets
-# SPIN_DEG derived from the geometry single source of truth, NOT hand-written.
-# 2026-08-25: the CAD pair (a=0.1809, b=0.1087, GQ-1/GQ-4) moved the commanded spin pose
-# 58.570 -> 58.999 deg. The old literal was 0.429 deg off against --align-tol-deg 0.6, i.e.
-# 71 % of the tolerance budget, and would have aborted this run as a false misalignment.
-# R_KINGPIN and R_CONTACT above shift by < 0.05 % under the same change and are left as they
-# are; R_CONTACT is pose-dependent (the contact offset rotates with the steer angle) and was
-# re-derived as correct, not stale.
-_SPIN_POSE_DEG = math.degrees(math.atan2(A_HALF, B_HALF))   # 58.999 with the SoT pair
+# SPIN_DEG is derived from the geometry single source of truth, NOT hand-written:
+# a hand-written literal drifts silently whenever geometry.yaml changes and can
+# abort a run as a false misalignment once the drift exceeds --align-tol-deg.
+# R_KINGPIN and R_CONTACT are not similarly SoT-derived: R_CONTACT is
+# pose-dependent (the contact offset rotates with the steer angle) and is a
+# separate audit figure from the URDF offsets, not a function of a/b.
+_SPIN_POSE_DEG = math.degrees(math.atan2(A_HALF, B_HALF))
 SPIN_DEG = [-_SPIN_POSE_DEG, +_SPIN_POSE_DEG, +_SPIN_POSE_DEG, -_SPIN_POSE_DEG]  # FL, FR, BL, BR
-# steering_outward_sign [-1,+1,+1,-1]: outward limit 100 deg, inward 35 deg
-WINDOW_DEG = [(-100.0, 35.0), (-35.0, 100.0), (-35.0, 100.0), (-100.0, 35.0)]
+# steering_outward_sign [-1,+1,+1,-1]. Limits: see
+# gripperx_control/config/steer_servo.yaml, the source of truth -- do not
+# restate the numbers here, read them off that config.
+WINDOW_DEG = [(-125.0, 35.0), (-35.0, 125.0), (-35.0, 125.0), (-125.0, 35.0)]
 LABELS = ["FL", "FR", "BL", "BR"]
 STATUS = {0: "DISABLED", 1: "ACTIVE", 2: "AT_LIMIT", 3: "OFF_PROVENANCE",
           4: "OFF_NO_MEAS", 5: "OFF_STALE", 6: "OFF_STALL", 7: "OFF_BELOW_FLOOR"}

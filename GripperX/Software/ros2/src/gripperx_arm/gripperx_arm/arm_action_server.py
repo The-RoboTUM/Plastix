@@ -31,25 +31,25 @@ ADDR_TORQUE     = 40
 POS_TOLERANCE   = 80   # ticks — target position is considered reached within this value
 
 # 2 Hz instead of 20 Hz: each tick reads 6 servos blocking over serial (the SDK
-# busy-polls without sleep) — at 20 Hz this cost an entire CPU core (97%, audit 2026-07-02).
+# busy-polls without sleep); at 20 Hz this saturates a full CPU core.
 JOINT_STATE_RATE_HZ = 2.0
 
 # These Feetech servos ignore MOVE_TIME/GOAL_SPEED in practice and always move
-# at a fixed internal speed (verified 2026-07-06). Speed is therefore enforced
-# via a software ramp: many small intermediate setpoints instead of a single
-# jump to the target position.
+# at a fixed internal speed. Speed is therefore enforced via a software ramp:
+# many small intermediate setpoints instead of a single jump to the target
+# position.
 #
-# CONSEQUENCE OF THE 2026-08-25 SPEED-UP, worth knowing before shortening these times
-# further: step_delay is 1/MOVE_STEP_HZ regardless of duration, so a shorter move_time
-# means FEWER setpoints over the same travel, not faster setpoints. The servo still runs
-# at its own fixed internal speed. Once the setpoints advance faster than the servo can
-# follow, the ramp stops setting the speed and _move() simply returns while the arm is
-# still catching up — _verify_positions would then warn (it only warns, it does not fail
+# CONSEQUENCE, worth knowing before shortening these times further: step_delay is
+# 1/MOVE_STEP_HZ regardless of duration, so a shorter move_time means FEWER setpoints
+# over the same travel, not faster setpoints. The servo still runs at its own fixed
+# internal speed. Once the setpoints advance faster than the servo can follow, the
+# ramp stops setting the speed and _move() simply returns while the arm is still
+# catching up — _verify_positions would then warn (it only warns, it does not fail
 # the action). The wait_extra_ms settle times are the margin against that.
 MOVE_STEP_HZ = 30.0
 
-# Fallback poses, in IDS order. These are the values recorded before the 2026-08-13
-# rework and are only used when no parameter file is loaded. The live values come from
+# Fallback poses, in IDS order — used only when no parameter file is loaded, and
+# older than the current mechanical assembly. The live values come from
 # config/arm_poses.yaml — re-record with `arm_pose_teach` after any mechanical change
 # instead of editing them here.
 DEFAULT_HOME_POS   = [2069, 963, 3077, 1031, 2042, 1356]
@@ -147,19 +147,15 @@ class ArmActionServer(Node):
 
         # Sequence: (step_name, positions_dict, move_time_ms, wait_extra_ms)
         #
-        # SPEED, 2026-08-25: every move_time in this node was shortened to 2/3 of its
-        # previous value — arm motion 50 % faster, on user instruction. The six values
-        # (5067 / 4267 / 4000 / 2400 / 2400 / 1333 ms) were scaled AS A SET; if the speed
-        # is changed again, change them together, or the sequence loses its shape.
+        # The six move_time values (5067 / 4267 / 4000 / 2400 / 2400 / 1333 ms) were
+        # scaled AS A SET from a slower baseline; if the speed is changed again, change
+        # them together, or the sequence loses its shape.
         #
-        # grip_close was 3600 ms and is now 2400. It had been set slow DELIBERATELY
-        # (instead of 800 ms) because a short move_time forces the servo to reach the
-        # target in a short time -> high current spike while gripping, and slower movement
-        # reduces the current draw. That trade-off was put to the user and the speed-up was
-        # confirmed for the whole arm including this step. 2400 ms is still far above the
-        # 800 ms the original comment warned about, but the current draw while gripping HAS
-        # NOT BEEN MEASURED at the new value. If gripping starts browning out the rail or
-        # tripping the servo, this is the first number to put back.
+        # grip_close is deliberately slower than the others (2400 ms): a short move_time
+        # forces the servo to reach the target quickly, which means a higher current
+        # spike while gripping, and slower movement reduces the current draw. Current
+        # draw at 2400 ms HAS NOT BEEN MEASURED. If gripping starts browning out the rail
+        # or tripping the servo, this is the first number to put back.
         #
         # wait_extra_ms is NOT scaled: it is settle time, not motion. It is the margin that
         # lets the servos catch up before _verify_positions reads them, and shorter moves

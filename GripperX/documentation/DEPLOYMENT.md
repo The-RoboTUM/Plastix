@@ -7,19 +7,10 @@
 > unrecorded state: the only description of what the robot executes then lives in a working tree
 > that nobody can diff, review, or reproduce.
 >
-> **This is not precautionary. It cost hours on 2026-08-21.** The Nav2 track went to deploy and
-> found the Pi working tree carrying **49 modified files and 14 untracked ones — 3117 insertions,
-> none committed anywhere.** Deployment had been done by file copy. The consequences were all
-> avoidable:
->
-> - `git pull` was impossible without risking work that had no second copy — including the only
->   instance of the OP-29 spin repair that had been confirmed on hardware.
-> - Nobody could say which of the changes were already in the repository and which were unique to
->   the machine. Answering that took a rescue commit, a file-by-file comparison against the laptop
->   HEAD, and a review of every diverging line. **38 of the 49 turned out to be identical to
->   already-committed content** — hours spent establishing that nothing was at stake.
-> - The robot's actual state could not be reconstructed from any commit, so no reviewer could check
->   what it was running against what it was supposed to run.
+> **This is not precautionary.** A dirty Pi working tree makes `git pull` unsafe (uncommitted work
+> has no second copy anywhere), makes it impossible to tell which changes are already in the
+> repository and which are unique to the machine, and means the robot's actual running state cannot
+> be reconstructed from any commit.
 >
 > **What to do instead, always:**
 >
@@ -32,8 +23,8 @@
 >    nothing. **But a clean tree is not a finished deploy** — the systemd service scripts live
 >    outside the repository and a `git pull` does not touch them. See §0.
 >
-> If you find a dirty tree on the Pi, **commit it before you touch anything else** — that is what
-> `82c13c2` on the robot is. Rescue first, merge second; the reverse order destroys evidence.
+> If you find a dirty tree on the Pi, **commit it before you touch anything else.** Rescue first,
+> merge second; the reverse order destroys evidence.
 >
 > ## RULE — NEVER BUILD ON THE PI WITH `--symlink-install`
 >
@@ -51,7 +42,7 @@
 >
 > `steer_servo_node` and `teleop_mux_node` then died on every start, systemd restarted the bringup,
 > they died again — **a restart loop with the drive stack down**, and nothing in the symptom points
-> at the build that caused it. This happened on 2026-08-21.
+> at the build that caused it.
 >
 > **Recovery:** stop the service, delete `build/<pkg>` and `install/<pkg>` for the affected packages,
 > rebuild with plain `colcon build`, then start the service. Verify the metadata came back:
@@ -62,42 +53,9 @@
 > discovering.
 
 
-**Status:** 2026-07-15 · Consolidated from internal journal/handover entries (sessions #14–#16,
-tracked internally, not in this repository) by `gripperx-specification`. This document did not
-exist before; the procedure and lessons below were previously scattered across the internal
-session handover and journal-archive records, and fragments in two internal dated one-off
-documents ("watchdog deploy" and "FR-wheel motor repair", both tracked internally, not in this
-repository). **Updated 2026-08-20** (`gripperx-specification`, worktree `~/gripperx_ws_octopus`,
-branch `Theo-octopus-stage3`): added §3, the two Octopus-link deployment constraints from the
-internal safety audit, §6.4 items 2 and 6 (internal requirements document, FR-12 §10.1 items 3 and
-7 — both tracked internally, not in this repository). This addition **records** the two items where
-a deployer will read them — it does **not** mark either pre-real-robot item done; that closure is
-the user's call, tracked internally against FR-12 §10.1. §3 concerns the Octopus external-goal link
-(FR-12): twin stage only, accepted 2026-08-20; real-robot deployment of the link is not yet
-approved — see the internal requirements document, FR-12 §10.1, for what is still owed before it
-is.
+**Status:** binding operational runbook for the real robot; see the banner below for current state.
 
-**Same-day follow-up (still 2026-08-20):** corrected §3.1's wrong claim that the Octopus interface
-document does not exist (it does — `documentation/OCTOPUS_INTERFACE_PROPOSAL.md`). **Further
-same-day follow-up:** added §4, deployment constraints reported by the Nav2 integration track
-(worktree `~/gripperx_ws_nav2`). *(**Updated 2026-08-21 at the `Theo` merge: that Nav2 work HAS now
-landed** — `gripperx_bringup/launch/navigation.launch.py` and its `nav2_params.yaml` are deleted,
-and `gripperx_planning/launch/navigation.launch.py` plus the new `gripperx_behaviors` plugin package
-are present in this tree. §4 therefore applies NOW, not conditionally. The earlier wording "§4
-applies only once that merge lands, and as of this edit it has not" is **stale and withdrawn**.)*
-
-*(**Banner note, 2026-08-21 — merge resolution.** The banner below is `Theo`'s correction of
-2026-08-19, and it is the one that stands. This branch had independently written its own correction
-of the same stale "completely disassembled" claim on 2026-08-20; both said the claim was wrong, and
-carrying both would have left the document correcting one claim twice. `Theo`'s is kept because it
-is the factually current one — it states the live condition bindingly, and the hardware runs of
-2026-08-20 recorded in the internal requirements document (rev 20; two user-conducted SR-1 runs,
-on blocks and on the floor under load — tracked internally, not in this repository) confirm it
-rather than qualify it. What this branch's version carried **in
-addition** — the hand-launched-bringup hazard and the verify-before-you-deploy caution — was not a
-rival correction and is **kept**, immediately below the banner.)*
-
-> ## Applies to the REAL robot — LIVE and in use (banner corrected 2026-08-19)
+> ## Applies to the REAL robot — LIVE and in use
 > **This runbook is current and binding.** The robot is reassembled and in daily use: firmware is
 > flashed and running, bringup is started routinely, and deployment to real hardware happens — most
 > recently 2026-08-18/19 (FR-10, FR-11 provenance, `center_on_startup`, the SR-14 activation gate).
@@ -105,32 +63,34 @@ rival correction and is **kept**, immediately below the banner.)*
 > arm/gripper without explicit user approval *per test*, and a bringup restart is itself such an
 > event.
 >
-> **Superseded — the previous banner said the opposite and was stale.** From the 2026-07-09 course
-> change until reassembly the robot was completely disassembled (chassis, power supply,
-> wiring/electronics rebuild — Section 10 `HWR-*`/`HWA-*` of the internal requirements document
-> (tracked internally, not in this repository), `documentation/ASBUILT.md`), and
-> this document carried a "no deployment is happening right now, do not execute the steps below"
-> notice. That notice outlived the condition it described by weeks and was still in place while the
-> procedures below were being executed daily — a runbook that tells its reader not to use it is worse
-> than one that is merely out of date. The rework record itself is not superseded; only the claim
-> about the *current* state is. For simulation-based (digital twin) work see
-> the internal digital-twin plan (tracked internally, not in this repository) §9 — the rules there are analogous but for the sim, not the real robot.
+> For simulation-based (digital twin) work, see the internal digital-twin plan (tracked internally,
+> not in this repository) §9 — the rules there are analogous but for the sim, not the real robot.
 >
-> ### Before you execute anything below — two cautions (added 2026-08-20, kept at the 2026-08-21 merge)
+> ### Before you execute anything below — two cautions
 > These do not weaken the banner above; they say what to check first.
 >
-> - **Do not assume the systemd unit is what is running.** The internal session handover record
->   (tracked in `journal/`, not in this repository) reports session
->   state at **2026-08-19 ~18:08, untouched since per that source**: actuator power **ON**, and
->   bringup **hand-launched** via `setsid --fork gripperx-bringup.sh` (PID 5555) — **not** the
->   systemd service. **Do not `systemctl restart gripperx-bringup.service`** (or run §1's procedure
->   assuming the systemd unit is what's live) **without first checking whether PID 5555 or its
->   successor is still the hand-launched instance** — a systemd restart on top of a hand-launched
->   process would double it rather than replace it. Confirm which instance is live via
->   `journalctl`/`ps`, **not** a live `ros2` CLI query (§2.1).
-> - **The live state is dated, not verified here.** Neither this edit nor the 2026-08-21 merge made
->   any Pi contact. Every state claim in this banner is attributed and dated; re-check current state
->   (`gripperx-diagnosis` or equivalent) before relying on it for an actual deployment.
+> - **Do not assume the systemd unit is what is running — verify it, don't inherit the last entry
+>   in this document.** Bringup was hand-launched in 2026-08 (`setsid --fork gripperx-bringup.sh`),
+>   which is the origin of this caution, but that state is gone: `journal/archive/2026-09-21_28b109e6.md:99`
+>   records a session verifying on the machine that bringup is **systemd-owned**, `MainPID 832`,
+>   single instance inside the unit cgroup. Re-measured by the coordinator on **2026-09-23 19:36
+>   CEST**, over read-only SSH (`systemctl show gripperx-bringup.service`): `ActiveState=active`,
+>   `SubState=running`, `MainPID=842`, `ExecMainStartTimestamp=Wed 2026-09-23 10:37:51 CEST`, and
+>   every node (`steer_servo_node`, `teleop_mux_node`, `robot_state_publisher`,
+>   `ros2_control_node`, …) sat inside the unit's cgroup — **no hand-launched instance exists as of
+>   that measurement.** The trap this caution exists to guard against is still real, in case
+>   bringup is ever hand-launched again for debugging: a `systemctl restart
+>   gripperx-bringup.service` on top of a hand-launched instance **doubles** the process rather
+>   than replacing it, because systemd starts a fresh one without ever having owned the old one.
+>   **Before any restart, establish which instance is live yourself** — `systemctl show
+>   gripperx-bringup.service` for `MainPID`/`ActiveState`, and `journalctl`/`ps` to check for a
+>   second, older process holding the same device or DDS participant — **not** a live `ros2` CLI
+>   query (§2.1).
+> - **The live state above is dated to its measurement, not evergreen.** Neither the 2026-08-21
+>   merge nor most other edits to this file made Pi contact; every state claim in this banner is
+>   attributed and dated. Re-check current state (`gripperx-diagnosis` or the `systemctl show`
+>   command above) before relying on it for an actual deployment — this document is not a live
+>   status page.
 
 ---
 
@@ -141,20 +101,12 @@ scripts in `Software/pi_env/systemd/scripts/`. Nothing connects the two.** Pulli
 a directory no unit ever reads. The running script is whatever was last copied into
 `/usr/local/bin/`.
 
-Added 2026-08-24 by the operations-document audit. Verified by reading all five service units in
-`Software/pi_env/systemd/units/` (the sixth file there is `gripperx-wifi.timer`, which has no
-`ExecStart`); before this edit **no document in this cluster contained a copy
-step at all**, and the only mention of `/usr/local/bin` anywhere described the repository copies as
-a *backup of* the live files — the opposite of a deploy direction.
-
 **Why this is not a footnote.** The rule at the top of this document says to change it in the
 repository, commit, and `git pull` onto the Pi, and defines a finished deploy as a clean `git
 status`. For anything under `systemd/` that procedure produces a spotless working tree and an
-unchanged robot, and the completion check cannot tell the difference. It is currently live:
-`gripperx-mapping.sh` was repointed on 2026-08-24 to start the EKF (`localization.launch.py`), the
-change that gives Nav2 a publisher on `/odometry/filtered`. Pull it without copying it and the
-service still starts, still reports `active`, and Nav2 still comes up green with no velocity
-feedback — the failure that took a session to find in the first place.
+unchanged robot, and the completion check cannot tell the difference: a repointed script still
+`git pull`s clean, still starts, still reports `active`, and still runs the OLD code, silently
+(`CLAUDE.md` §11).
 
 **After changing anything under `Software/pi_env/systemd/`, on the Pi:**
 
@@ -183,14 +135,24 @@ whether — a bringup restart is a movement event and needs explicit user approv
 executed or checked against the machine (no Pi contact, 2026-08-24). Confirm ownership and mode with
 `ls -l /usr/local/bin/gripperx-*.sh` before relying on them.
 
+**Verified 2026-09-21** against the machine: `/etc/systemd/system/gripperx-*.service` are
+`root:root 0644` and `/usr/local/bin/gripperx-*.sh` are `root:root 0755`, matching the two `install`
+lines above — the `TO-VERIFY` above is resolved for these values. `diff` against the repository is
+empty and all four services stayed `active`; `daemon-reload` restarts nothing, so running it is not
+a motion event under SR-1.
+
+**Trap:** a `Description=` or comment-only diff between the repository's unit file and the installed
+one is enough to make `deploy_check.sh --ref <branch>` report DRIFT even though nothing functional
+differs — keep the unit's comments and `Description=` text in sync too, not just `ExecStart=`.
+
 ---
 
 ## 1. Clean-teardown bringup restart procedure (binding)
 
 This is the single most important operational procedure for restarting the real robot. It resolved
-a confirmed root cause (controller-manager spawners dying after a watchdog deploy, session #14 —
-traced to DDS-restart zombies: a duplicate/competing micro-ROS agent on `/dev/esp32`) and was
-declared **binding from now on for every future bringup restart** once the root cause was confirmed.
+a confirmed root cause — controller-manager spawners dying after a watchdog deploy, traced to
+DDS-restart zombies: a duplicate/competing micro-ROS agent on `/dev/esp32` — and is **binding for
+every future bringup restart**.
 
 **Never restart `gripperx-bringup.service` (or do a full stack restart) without this sequence:**
 
@@ -199,23 +161,19 @@ declared **binding from now on for every future bringup restart** once the root 
 2. **`docker stop mros_agent`** — if the micro-ROS agent runs as a Docker container, a plain
    `systemctl stop` of the wrapping service does **not** kill the container (`docker run --rm`
    semantics; the container survives service stop and becomes a DDS zombie). This step is
-   mandatory, not optional — it was the missed step that caused the session #14 spawner-death
-   incident. Note: `docker stop` takes a few seconds and is not a hang.
+   mandatory, not optional — it was the missed step that caused the spawner-death incident above.
+   Note: `docker stop` takes a few seconds and is not a hang.
 
-   *(Audit 2026-08-24: the "~40 s observed" figure that used to close this step does not match the
-   unit. `gripperx-agent.service` sets `ExecStop=docker stop -t 10 mros_agent` with
-   `TimeoutStopSec=15`, so systemd gives the stop 15 s and the container 10 s before SIGKILL — 40 s
-   is not reachable through the service path. The 40 s may have been observed before those values
-   were set, or against a bare `docker stop` with its 10 s default plus a slow shutdown. Left as
-   TO-VERIFY rather than replaced with a number nobody measured; see AUDIT_OPS_2026-08-24.md Q3.)*
-3. **`rm -f /dev/shm/fastrtps_*`** — clean up stale FastDDS shared-memory transport segments. Added
-   after the 2026-07-09 finding that a Pi freeze/reboot can leave orphaned SHM segments behind that
-   cause a **complete SHM transport failure** on the next boot (see §2.2 below for the symptom and
-   how to recognize it). This step was added later than the others (07-09) — earlier restarts (07-08)
-   used steps 1/2/4/5 only, without this cleanup.
+   *(`gripperx-agent.service` sets `ExecStop=docker stop -t 10 mros_agent` with `TimeoutStopSec=15`,
+   so systemd gives the stop 15 s and the container 10 s before SIGKILL. The actual wall time this
+   step takes is TO-VERIFY rather than replaced with a number nobody measured; see
+   AUDIT_OPS_2026-08-24.md Q3.)*
+3. **`rm -f /dev/shm/fastrtps_*`** — clean up stale FastDDS shared-memory transport segments. A Pi
+   freeze/reboot can leave orphaned SHM segments behind that cause a **complete SHM transport
+   failure** on the next boot (see §2.2 below for the symptom and how to recognize it).
 4. **Zombie check** — before starting anything, verify there is no duplicate/leftover process
    holding a device or DDS participant:
-   - No duplicate micro-ROS agent process/container on `/dev/esp32` (the classic session #14
+   - No duplicate micro-ROS agent process/container on `/dev/esp32` (the classic
      zombie signature — two competing agents, both older than the current bringup instance).
    - No orphaned **laptop-side** teleop process either — `keyboard_teleop_node` has a latch-style
      W/S drive command with no timeout; an orphaned instance left running on the laptop was one of
@@ -251,7 +209,7 @@ until ssh ubuntu@gripperx-1.local "…"; do sleep 5; done
 ### 2.1 Journalctl-first, no CLI hammering right after a restart
 
 **During and shortly after any bringup restart, do NOT run `ros2` CLI diagnostics** (`ros2 node
-list`, `ros2 topic echo`, etc.). Live evidence (session #14) strongly correlated additional DDS
+list`, `ros2 topic echo`, etc.). Live evidence strongly correlated additional DDS
 RELIABLE participants, created by exactly these diagnostic commands (especially over the
 high-latency hotspot link, 30-70 ms+ RTT), with `controller_manager` write() times spiking well past
 the 33 ms budget into the 300+ ms range, which can make the controller spawners time out and die
@@ -376,36 +334,33 @@ deploying or touching this part of the system, not what an auditor would look fo
   `--topics_glob "['/octopus/*']" --services_glob "[]" --actions_glob "[]"`.
   `services_glob "[]"` is what disables `rosapi`, so a client cannot enumerate or call anything and
   only the glob'd topics are reachable.
-  > **CORRECTED 2026-08-24 — this bullet named the wrong globs, and the correction came from the
-  > Octopus team running the command rather than reading it.** It previously required
-  > `services_glob:="[]"` and **`params_glob:="[]"`**, quoting the launch-file form from
-  > `OCTOPUS_INTERFACE_PROPOSAL.md` §5. Three things about that were wrong on rosbridge **2.0.7**,
-  > the version they run:
+  > **Traps specific to rosbridge 2.0.7 (the version the Octopus side runs):**
   > - **`params_glob` does not exist on 2.0.7.** Passing it is silently ignored — no warning, no
   >   error. What actually closes parameter access is `services_glob` **plus not running the `rosapi`
   >   node**, because parameter reads and writes travel through `/rosapi/get_param` and friends. A
   >   deployer verifying `params_glob` is verifying nothing.
-  > - **`actions_glob` was missing from that list and is the one that mattered.** Actions are a
-  >   first-class rosbridge capability on 2.0.7, and an **unset** `actions_glob` means **any action
-  >   server on the graph** accepts `send_action_goal` across the link. Nothing was exposed only
-  >   because their graph happens to have no action server — the property rested on an empty graph
-  >   rather than on configuration. It is now `--actions_glob "[]"`.
+  > - **An unset `actions_glob` exposes every action server on the graph.** Actions are a
+  >   first-class rosbridge capability on 2.0.7; leaving `actions_glob` unset means **any action
+  >   server on the graph** accepts `send_action_goal` across the link. Safety here must come from
+  >   the `--actions_glob "[]"` setting, not from the graph happening to have no action server today.
   > - **The `ros2 launch` form kills the node.** On 2.0.7 the globs are `STRING` parameters that
   >   rosbridge parses itself; `ros2 launch` coerces a bare bracket list to `STRING_ARRAY` and the
   >   node dies at startup with `InvalidParameterTypeException`. Use `ros2 run
   >   rosbridge_server rosbridge_websocket` with the globs as **quoted strings**.
   >
-  > The authoritative page is now `documentation/OCTOPUS_ROSBRIDGE_SETUP.md` §3, not the proposal's
-  > §5.
-- **Status of the constraint, updated 2026-08-24.** It is no longer merely proposed: the Octopus team
+  > The authoritative page is `documentation/OCTOPUS_ROSBRIDGE_SETUP.md` §3.
+- **Status of the constraint, confirmed 2026-08-21, not re-verified since.** The Octopus team
   confirmed on 2026-08-21 that rosbridge runs on host `ITQLM125` at `ws://10.42.0.158:9090`, bound
   `0.0.0.0`, version **2.0.7 built from source**, with the three globs above, and that verification
-  steps 5a–5d passed (`OCTOPUS_ROSBRIDGE_SETUP.md` §8). **The instruction below stands anyway, and it
-  is what caught the `params_glob` error:** a deployer must still **verify against what is actually
-  running on their host** rather than trusting any document — this one included — as proof of what is
-  deployed. Note two live caveats: their `ufw` is **disabled**, so the port is open to anything that
-  can reach it; and the systemd unit is **not installed**, so rosbridge does **not** come back after a
-  reboot of their host — it is started by `scripts/start_octopus_debug_stack.sh`.
+  steps 5a–5d passed (`OCTOPUS_ROSBRIDGE_SETUP.md` §8). **Nobody has re-checked this endpoint since,
+  and the shared subnet has moved twice in the meantime (`LOCAL_ENV.md` §2) — do not treat this
+  address as current without re-verifying what is actually running on the Octopus host.** That
+  verification requirement is also what caught the `params_glob` error described above: a deployer must
+  **verify against what is actually running on their host** rather than trusting any document — this
+  one included — as proof of what is deployed. Two more caveats as of the same 2026-08-21 check,
+  equally unverified since: their `ufw` was **disabled**, so the port was open to anything that could
+  reach it; and the systemd unit was **not installed**, so rosbridge did **not** come back after a
+  reboot of their host on its own — it was started by `scripts/start_octopus_debug_stack.sh`.
 - **A refusal to start is silent to the Octopus.** Their side has no failure channel today: if the
   link node exits non-zero (exit code 2, e.g. on a sim-time misconfiguration under SR-15 rule 12, or
   any other startup refusal), what the Octopus operator sees is a link that simply never appears —
@@ -455,14 +410,12 @@ are **gone**, `gripperx_planning/launch/navigation.launch.py` and the `gripperx_
 package are **present**, and `gripperx-navigation.sh` starts `gripperx_planning`. Re-verified against
 the tree 2026-08-24.
 
-**Landed in the repository is not deployed on the robot.** No Pi contact was made by the merge, by
-the edit that recorded it, or by the 2026-08-24 audit. A deployer must check what the machine is
-actually running — and note that a `git pull` alone does not update the service scripts (§0).
+**Landed in the repository is not deployed on the robot.** No Pi contact confirms this. A deployer
+must check what the machine is actually running — and note that a `git pull` alone does not update
+the service scripts (§0).
 
-Origin: the Nav2 integration track (worktree `~/gripperx_ws_nav2`, parallel session), reported via
-the coordinator 2026-08-20. Their geometry/tuning changes (wheel radius, lever arm, meshes,
-footprint, tolerances, recoveries) are deliberately **not** restated here — see that track's own
-documentation and `documentation/ASBUILT.md`.
+Geometry/tuning changes from that integration (wheel radius, lever arm, meshes, footprint,
+tolerances, recoveries) are deliberately **not** restated here — see `documentation/ASBUILT.md`.
 
 ### 4.1 New package `gripperx_behaviors` is a hard start blocker
 
@@ -505,8 +458,13 @@ documentation and `documentation/ASBUILT.md`.
   from Nav2 being up. Nav2 green with `slam_toolbox` inactive is a half-up stack that misdiagnoses
   as a Nav2 problem. Note the anchoring trap the script documents: `ros2 lifecycle get` prints
   `inactive [2]`, so an unanchored `grep active` reports an inactive node as active.
-- **Untested on the machine.** This autostart path has never been cold-booted on the Pi; bringup
-  has been hand-launched since 2026-08-19, so the whole systemd chain is unexercised (§1).
+- **Untested via an actual cold boot.** This autostart path has not been exercised by a full
+  power-cycle boot on the Pi. (The premise this line used to rest on — "bringup has been
+  hand-launched since 2026-08-19, so the whole systemd chain is unexercised" — no longer holds:
+  see the caution at the top of this document. Bringup was systemd-owned when checked on
+  2026-09-21 and again on 2026-09-23, but that is evidence from a service *restart*, not from a
+  cold *boot* — the two are different tests, and no cold-boot run of this specific autostart path
+  is on record.)
 
 ### 4.4 Nav2 accepts a misspelled parameter key silently — verify by listing, not by reading YAML
 
@@ -534,8 +492,8 @@ documentation and `documentation/ASBUILT.md`.
 - the internal digital-twin plan §9 — the simulation-side analogue of this document (sim cleanliness
   protocol, orphan-process cleanup, domain isolation). Different failure modes, same underlying
   discipline (process/transport hygiene on a laptop/Pi with no sandboxing between sessions).
-- `documentation/ASBUILT.md` — as-built hardware state (see this document's corrected banner above
-  for the 2026-08-20 dated/attributed status; `ASBUILT.md` is the canonical source, not this file).
+- `documentation/ASBUILT.md` — as-built hardware state; the canonical source, not this file (see the
+  banner above for this document's own current-state claim).
 - The internal safety audit, §6.4 (items 2 and 6), §6.6 (tracked internally, not in this
   repository) — the audit findings §3 above records in deployer terms; §6.4 is the normative
   pre-real-robot list, §6.6 is the SIMULATION_DOMAIN_IDS ruling. A derived safety-and-known-
@@ -543,8 +501,6 @@ documentation and `documentation/ASBUILT.md`.
 - The internal requirements document, FR-12 §10.1 (items 3 and 7) — the normative extract of the
   internal safety audit's §6.4 within the requirements document (neither in this repository);
   tracks whether these items are still owed before the real robot.
-- The Nav2 integration track's own documentation (worktree `~/gripperx_ws_nav2` as of this
-  writing) — the source for §4 above and for the geometry/tuning changes (wheel radius, lever
-  arm, meshes, footprint, tolerances, recoveries) this document deliberately does not restate.
-  **The code itself merged into `Theo` on 2026-08-21** — the "not yet merged" note that used to
-  close this bullet contradicted §4 on the same page and is withdrawn (corrected 2026-08-24).
+- The Nav2 integration track and `documentation/ASBUILT.md` — the source for §4 above and for the
+  geometry/tuning changes (wheel radius, lever arm, meshes, footprint, tolerances, recoveries) this
+  document deliberately does not restate. The code merged into `Theo` on 2026-08-21.

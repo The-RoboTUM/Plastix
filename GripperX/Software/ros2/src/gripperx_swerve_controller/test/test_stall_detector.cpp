@@ -62,25 +62,30 @@ struct Rig
     detector.set_provenance(all_live());
   }
 
+  /// `drive_withheld` defaults to false here — and ONLY here, in the harness.
+  /// The production signature deliberately has no default (stall_detector.hpp):
+  /// the point of the default in this file is that every pre-existing test keeps
+  /// asserting the ungated behaviour VERBATIM, so if the fix changed any of it
+  /// the suite would say so.
   StallDetectorResult step(
     const std::array<double, kNumWheels> & command,
-    const std::array<double, kNumWheels> & position_rate)
+    const std::array<double, kNumWheels> & position_rate, bool drive_withheld = false)
   {
     now += kDt;
     for (std::size_t i = 0; i < kNumWheels; ++i) {
       position[i] += position_rate[i] * kDt;
     }
-    return detector.update(now, command, position, all_valid());
+    return detector.update(now, command, position, all_valid(), drive_withheld);
   }
 
   StallDetectorResult run(
     double seconds, const std::array<double, kNumWheels> & command,
-    const std::array<double, kNumWheels> & position_rate)
+    const std::array<double, kNumWheels> & position_rate, bool drive_withheld = false)
   {
     StallDetectorResult result;
     const int cycles = static_cast<int>(seconds / kDt);
     for (int c = 0; c < cycles; ++c) {
-      result = step(command, position_rate);
+      result = step(command, position_rate, drive_withheld);
       for (std::size_t i = 0; i < kNumWheels; ++i) {
         seen_multi_wheel_refused = seen_multi_wheel_refused || result.events[i].multi_wheel_refused;
       }
@@ -220,7 +225,7 @@ TEST(StallDetector, UnreadablePositionDisarmsRatherThanTrips)
   StallDetectorResult result;
   for (int c = 0; c < 300; ++c) {
     now += kDt;
-    result = detector.update(now, kDriving, position, invalid);
+    result = detector.update(now, kDriving, position, invalid, false);
   }
   for (std::size_t i = 0; i < kNumWheels; ++i) {
     EXPECT_FALSE(detector.latched(i));
@@ -363,14 +368,150 @@ TEST(StallDetector, ABackwardsClockRestartsTheWindowInsteadOfTripping)
   double now = 100.0;
   for (int c = 0; c < 15; ++c) {
     now += kDt;
-    detector.update(now, kDriving, position, all_valid());
+    detector.update(now, kDriving, position, all_valid(), false);
   }
   now = 0.0;
   for (int c = 0; c < 15; ++c) {
     now += kDt;
-    detector.update(now, kDriving, position, all_valid());
+    detector.update(now, kDriving, position, all_valid(), false);
   }
   for (std::size_t i = 0; i < kNumWheels; ++i) {
     EXPECT_FALSE(detector.latched(i));
   }
+}
+
+// ------------------------------------- the alignment gate's hold (F4 / P5a)
+// THE DEFECT THESE PIN. Stage 2 of SwerveController::write_wheel_commands
+// replaces all four wheel commands with exactly 0.0 while the steering modules
+// slew, and stage 3 — this detector — is handed the REQUESTED command, which
+// stage 2 never touched. The actuator gets 0.0, so the wheel cannot move, while
+// the detector sees the requested command. Before `drive_withheld` existed, ANY
+// hold of window_sec or more under a request above min_command_rad_s latched a
+// motor off.
+//
+// 3.0 rad/s is used throughout: comfortably above min_command_rad_s (2.0).
+namespace
+{
+const std::array<double, kNumWheels> kRequestDuringHold{3.0, 3.0, 3.0, 3.0};
+}  // namespace
+
+TEST(StallDetector, AGateHoldLongerThanTheWindowLatchesNothing)
+{
+  Rig rig(test_config());
+  // 1.5 s of hold against window_sec = 1.0 s. The wheels do not move because
+  // the actuator is receiving exactly 0.0 — that is the gate working, not a
+  // stall.
+  const auto result = rig.run(1.5, kRequestDuringHold, kStopped, /*drive_withheld=*/true);
+
+  EXPECT_EQ(rig.detector.latched_count(), 0u);
+  for (std::size_t i = 0; i < kNumWheels; ++i) {
+    EXPECT_FALSE(rig.detector.latched(i)) << "wheel " << i << " latched on a gate hold";
+    EXPECT_EQ(rig.detector.trip_count(i), 0u) << "wheel " << i;
+    // "The detector is asleep" must not look like "the detector is happy" —
+    // armed() is published for exactly this reason.
+    EXPECT_FALSE(rig.detector.armed(i)) << "wheel " << i;
+    // And the detector's authority is unchanged: it neither zeroes nor trims.
+    // The zero on the wire is the GATE's, applied in stage 2.
+    EXPECT_DOUBLE_EQ(result.commands[i], kRequestDuringHold[i]);
+  }
+  EXPECT_FALSE(result.state_changed);
+}
+
+TEST(StallDetector, NoHoldIsLongEnoughToLatch)
+{
+  // The deployed alignment_timeout_sec (ros2_controllers.yaml) is several
+  // times window_sec, and the gate can also re-engage back to back. Duration
+  // must be irrelevant, not merely survivable — and no MULTI-WHEEL report may
+  // be manufactured either, since during a hold all four wheels freeze
+  // together and that is the signature ros2_controllers.yaml attributes to a
+  // lost /hw/joint_states.
+  Rig rig(test_config());
+  rig.run(30.0, kRequestDuringHold, kStopped, /*drive_withheld=*/true);
+  EXPECT_EQ(rig.detector.latched_count(), 0u);
+  EXPECT_FALSE(rig.seen_multi_wheel_refused);
+}
+
+TEST(StallDetector, ReleasingTheGateGivesTheWheelAFullFreshWindow)
+{
+  // THE OTHER HALF OF THE FIX, and the half that could have been got wrong: the
+  // dwell timer must RESTART at the release, not resume. A wheel breaking away
+  // from standstill gets the whole window_sec to move min_position_delta_rad,
+  // measured from a baseline sampled at the release — exactly what a command
+  // rising from rest through min_command_rad_s already gets.
+  Rig rig(test_config());
+  rig.run(3.0, kRequestDuringHold, kStopped, /*drive_withheld=*/true);
+  ASSERT_EQ(rig.detector.latched_count(), 0u);
+
+  // Gate released. The wheel is STILL not moving — but it has only just been
+  // given the drive back, so the first 0.9 s may not be held against it.
+  rig.run(0.9, kRequestDuringHold, kStopped, /*drive_withheld=*/false);
+  EXPECT_EQ(rig.detector.latched_count(), 0u) << "the pre-hold dwell carried over";
+
+  // Past a full window with the drive flowing and the wheel still dead, this IS
+  // a stall and it must latch. The fix must not blind the protective function.
+  rig.run(0.3, kRequestDuringHold, kStopped, /*drive_withheld=*/false);
+  EXPECT_EQ(rig.detector.latched_count(), 1u);
+}
+
+TEST(StallDetector, AHoldInTheMiddleOfAWindowDoesNotAccumulateAcrossIt)
+{
+  // The complement of the test above: dwell on either side of a hold must not
+  // be added together. 0.9 s of genuine standstill, a short hold, another 0.9 s
+  // of genuine standstill — 1.8 s of frozen wheel in total, but no CONTIGUOUS
+  // armed stretch of a full second, so nothing may latch yet.
+  Rig rig(test_config());
+  const std::array<double, kNumWheels> rate{7.0, 0.0, 7.0, 7.0};  // FR blocked
+  rig.run(0.9, kDriving, rate, /*drive_withheld=*/false);
+  ASSERT_FALSE(rig.detector.latched(1));
+
+  rig.run(0.5, kRequestDuringHold, kStopped, /*drive_withheld=*/true);
+  rig.run(0.9, kDriving, rate, /*drive_withheld=*/false);
+  EXPECT_FALSE(rig.detector.latched(1)) << "dwell accumulated across the hold";
+
+  rig.run(0.3, kDriving, rate, /*drive_withheld=*/false);
+  EXPECT_TRUE(rig.detector.latched(1));
+}
+
+TEST(StallDetector, ARealStallWithNoHoldLatchesExactlyAsBefore)
+{
+  // THE REGRESSION THAT MATTERS MOST. Blinding the protective function would be
+  // a worse defect than the phantom latches this change removes, so the
+  // ungated timing is pinned to the cycle: nothing before 0.9 s, latched by
+  // 1.2 s, only that wheel zeroed.
+  Rig rig(test_config());
+  const std::array<double, kNumWheels> rate{7.0, 0.0, 7.0, 7.0};
+  rig.run(0.9, kDriving, rate, /*drive_withheld=*/false);
+  EXPECT_FALSE(rig.detector.latched(1)) << "tripped before the window elapsed";
+
+  const auto result = rig.run(0.3, kDriving, rate, /*drive_withheld=*/false);
+  EXPECT_TRUE(rig.detector.latched(1));
+  EXPECT_EQ(rig.detector.trip_count(1), 1u);
+  EXPECT_DOUBLE_EQ(result.commands[1], 0.0);
+  for (std::size_t i : {0u, 2u, 3u}) {
+    EXPECT_FALSE(rig.detector.latched(i));
+    EXPECT_DOUBLE_EQ(result.commands[i], 7.0);
+  }
+}
+
+TEST(StallDetector, AGateHoldNeitherClearsNorRetripsAnExistingLatch)
+{
+  // OP-25 is untouched by this change: the release edge is still judged on the
+  // REQUESTED command, so a hold neither releases a latched wheel nor lets it
+  // trip a second time, and the latched wheel keeps being written to exactly
+  // 0.0 by stage 3 while the gate happens to be zeroing everything anyway.
+  Rig rig(test_config());
+  const std::array<double, kNumWheels> rate{7.0, 0.0, 7.0, 7.0};
+  rig.run(1.5, kDriving, rate);
+  ASSERT_TRUE(rig.detector.latched(1));
+
+  const auto result = rig.run(3.0, kRequestDuringHold, kStopped, /*drive_withheld=*/true);
+  EXPECT_TRUE(rig.detector.latched(1));
+  EXPECT_EQ(rig.detector.trip_count(1), 1u);
+  EXPECT_DOUBLE_EQ(result.commands[1], 0.0);
+
+  // …and the two-edge release still works afterwards, in that order.
+  rig.run(0.5, kStopped, kStopped);
+  const auto released = rig.step(kDriving, rate);
+  EXPECT_FALSE(rig.detector.latched(1));
+  EXPECT_TRUE(released.events[1].released);
 }

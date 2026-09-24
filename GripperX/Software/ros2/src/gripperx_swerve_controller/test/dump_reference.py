@@ -52,7 +52,8 @@ from gripperx_control.swerve_kinematic_model import (
     FourWIS4WIDKinematicModel,
 )
 
-# gripperx_control/config/swerve_cmd.yaml, unchanged.
+# gripperx_geometry.constants (generated from geometry.yaml, the single
+# source of truth for these quantities), unchanged.
 from gripperx_geometry.constants import (  # noqa: E402
     HALF_TRACK_KINGPIN as B,
     HALF_WHEELBASE_KINGPIN as A,

@@ -29,15 +29,14 @@ STEER_JOINT_NAMES = (
 # Indices of the front servos in STEER_JOINT_NAMES/servo_ids/... (Task #22c).
 FRONT_JOINT_INDICES = (0, 1)
 
-# --- Steering sign convention (2026-08-13) -----------------------------------
+# --- Steering sign convention -------------------------------------------------
 #
 # Definition in use: a wheel steers OUTWARD when the tyre's front swings AWAY
 # from the vehicle body laterally, INWARD when it swings towards it. The
-# mechanical range is 100 deg outward (user measurement 2026-08-13) / 35 deg
-# inward on every wheel (raised from 30 deg 2026-08-17, user estimate,
-# TO-VERIFY — see steer_servo.yaml for the honesty caveat on this number).
+# mechanical range is asymmetric and per-wheel — see steer_servo.yaml for the
+# current outward/inward limits.
 #
-# Joint-angle sign, verified to be identical for ALL FOUR steering joints:
+# Joint-angle sign, identical for ALL FOUR steering joints:
 #   * gripperx_description/urdf/gripperx_v1.core.xacro, macro `steer_joint`:
 #     every steering joint is `<axis xyz="0 0 1"/>` with `rpy="0 0 0"`, all four
 #     have `parent="chassis_link"`, and chassis_link sits on base_link with
@@ -54,19 +53,17 @@ FRONT_JOINT_INDICES = (0, 1)
 #   => +angle points a wheel towards the robot's LEFT (+y), -angle towards the
 #      RIGHT (-y). Same for all four wheels.
 #
-# From that alone one would conclude outward = +y on the left wheels and -y on
-# the right, i.e. (+1, -1, +1, -1). THAT CONCLUSION IS WRONG — it was tested on
-# the machine and refuted (2026-08-13):
+# From that alone one would conclude outward = (+1, -1, +1, -1) (URDF-only
+# reading). THAT IS WRONG on the front pair — it was tested on the machine
+# and refuted:
 #
 #   steering_outward_sign = (-1, +1, +1, -1) for (FL, FR, BL, BR)   # MEASURED
 #
-# How it was settled: all four servos were driven 15 deg in the measured outward
-# tick direction and the resulting pose was inspected. The wheels lined up
-# tangentially for an in-place spin — which is exactly the sign pattern the
-# kinematics produces for pure rotation (FL -58.6, FR +58.6, BL +58.6,
-# BR -58.6 after normalising each wheel line mod 180; the magnitude read 50.7
-# here until 2026-08-21 and was stale — measured 58.57 in the twin). Outward and the spin pose
-# therefore share the pattern (-, +, +, -), so a spin turns every wheel OUTWARD.
+# How it was settled: all four servos were driven 15 deg in the measured
+# outward tick direction and the resulting pose was inspected. The wheels
+# lined up tangentially for an in-place spin — exactly the sign pattern the
+# kinematics produces for pure rotation. Outward and the spin pose share the
+# pattern (-, +, +, -), so a spin turns every wheel OUTWARD.
 #
 # Why the URDF reading misleads: the wheel hangs on a purely lateral lever arm
 # off the king pin (*_wheel_offset_xyz, y = +-0.072 m), so turning the joint
@@ -75,18 +72,13 @@ FRONT_JOINT_INDICES = (0, 1)
 # about toe. The two readings agree on the rear pair and contradict each other
 # on the front pair, which is precisely where the derivation went wrong.
 #
-# Consequence worth keeping: with (-1, +1, +1, -1) the in-place spin pose needs
-# 58.57 deg OUTWARD on every wheel, comfortably inside the 100 deg outward range.
-# Under the refuted sign it would have needed 58.57 deg inward on three wheels,
-# violating the 35 deg inward limit — i.e. spin would have been impossible,
-# which is a good sanity check to re-run if these numbers are ever touched.
+# Sanity check if these numbers are ever touched: with the measured sign the
+# in-place spin pose needs every wheel OUTWARD, comfortably inside the
+# outward window. Under the refuted sign it would need three wheels inward,
+# beyond the inward limit — i.e. spin would be impossible.
 #
-# The reachable joint range is thus -100/+35 deg on FL and BR, +100/-35 deg on
-# FR and BL — asymmetric AND per-wheel, which is why limits are resolved per
-# joint below.
-#
-# Measured on the machine 2026-08-13 (each wheel turned outward by hand, torque
-# off, watching which id moved and in which tick direction — no commanded
+# Measured on the machine (each wheel turned outward by hand, torque off,
+# watching which id moved and in which tick direction — no commanded
 # motion): outward makes the raw count DECREASE on FL and BR and INCREASE on FR
 # and BL (diagonal, not per-side: the corner servos are mounted mirrored both
 # left/right and front/rear). This is ground truth, not derivable from the code;
@@ -102,7 +94,7 @@ FRONT_JOINT_INDICES = (0, 1)
 # FL, FR, BL, BR the ids are [13, 14, 11, 12]. See steer_servo.yaml — the stale
 # count arrays are index-aligned with the OLD id order, so the id list must not
 # be corrected on its own.
-DEFAULT_OUTWARD_SIGN = (-1, 1, 1, -1)   # MEASURED 2026-08-13, see block above
+DEFAULT_OUTWARD_SIGN = (-1, 1, 1, -1)   # MEASURED, see block above
 DEFAULT_OUTWARD_TICK_DIRECTION = (-1, 1, 1, -1)
 
 
@@ -135,8 +127,8 @@ class SteerServoNode(Node):
         # per-direction keys below are absent.
         self.declare_parameter("counts_plus_90", [2792, 2196, 2163, 2599])
         self.declare_parameter("counts_minus_90", [697, 152, 123, 626])
-        # Per-direction calibration (2026-08-13): raw counts recorded while the
-        # wheel was held at the outward / inward mechanical limit, joint order
+        # Per-direction calibration: raw counts recorded while the wheel was
+        # held at the outward / inward mechanical limit, joint order
         # FL, FR, BL, BR. Declared without a default on purpose — absent means
         # "fall back to the symmetric legacy model above".
         self.declare_parameter("counts_outward_limit", Parameter.Type.INTEGER_ARRAY)
@@ -155,11 +147,11 @@ class SteerServoNode(Node):
         self.declare_parameter("move_acc", 20)
         self.declare_parameter("control_rate_hz", 50.0)
         self.declare_parameter("command_timeout_sec", 0.5)
-        # 60deg (2026-07-16, user decision). The physical self-collision limit is
-        # still enforced by the calibration end-stops (counts_plus_90/minus_90):
-        # a 60deg command maps to those old ~45deg end-stop counts, so real servos
-        # cannot exceed ~45deg until recalibration at rework. See steer_servo.yaml
-        # and gripperx_control/docs/STEERING_LIMITS.md.
+        # 60deg. The physical self-collision limit is still enforced by the
+        # calibration end-stops (counts_plus_90/minus_90): a 60deg command
+        # maps to those end-stop counts, so real servos cannot exceed the
+        # calibrated end-stop until recalibration. See steer_servo.yaml and
+        # gripperx_control/docs/STEERING_LIMITS.md.
         self.declare_parameter("steering_angle_limit_deg", 60.0)
         # Task #22c: above the base limit, only the FRONT servos may
         # steer further (rear stays at steering_angle_limit_deg).
@@ -410,9 +402,9 @@ class SteerServoNode(Node):
 
         for index in range(STEER_JOINT_COUNT):
             joint_outward_rad = outward_rad
-            # Task #22c composed with the per-direction model: the front extension
-            # can only ever ENLARGE, and only in the outward direction -- inward is
-            # the self-collision-critical side (SR-6), it is never extended.
+            # The front extension can only ever ENLARGE, and only in the
+            # outward direction -- inward is the self-collision-critical
+            # side (SR-6), it is never extended.
             if self.enable_front_extended_steering and index in FRONT_JOINT_INDICES:
                 joint_outward_rad = max(outward_rad, self.front_extended_steering_limit_rad)
 
@@ -755,18 +747,17 @@ class SteerServoNode(Node):
 
         # Normal path: /hw/joint_commands from GripperXInterface
         #
-        # OP-24 / S1, stage 4 of four: on a stale /hw/joint_commands the steering HOLDS its
-        # last commanded angle. This used to zero-fill (angles = [0.0] * 4), which is not a
-        # stop but a CENTRE command with the servos' full torque behind it — so every loss
-        # of the command chain became a motion event, in exactly the situation where nobody
-        # is in control (SR-12 (1)). Holding is free: the servos are already at that angle.
-        # There is deliberately nothing to do here now; _target_angles already holds the
-        # last commanded value and the clamp above is unchanged. The stale case is kept as
-        # an explicit branch rather than deleted so the decision stays visible at the point
-        # it applies. Only the wheels go to zero, and that happens upstream in
-        # GripperXInterface::publish_stop_commands() — this node never drives wheels.
-        # Operator-requested centring is a COMMAND, not a timeout, and is untouched: it
-        # arrives on /teleop/direct_steer (spacebar E-stop) and is handled above.
+        # On a stale /hw/joint_commands the steering HOLDS its last commanded
+        # angle — it must NOT zero-fill: angles=[0.0]*4 is not a stop but a
+        # CENTRE command with full servo torque behind it, turning a lost
+        # command chain into a motion event with nobody in control (SR-12
+        # (1)). Holding is free (servos are already there); nothing to do
+        # here. The stale case stays an explicit branch rather than being
+        # deleted, so the decision stays visible at the point it applies.
+        # Wheels going to zero happens upstream in
+        # GripperXInterface::publish_stop_commands() — this node never
+        # drives wheels. Operator-requested centring (/teleop/direct_steer,
+        # spacebar E-stop) is a COMMAND, not a timeout, and is untouched.
         angles = [self._clamp_angle(a, i) for i, a in enumerate(self._target_angles)]
         if self._last_cmd_time is not None:
             age = (self.get_clock().now() - self._last_cmd_time).nanoseconds * 1e-9

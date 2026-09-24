@@ -21,6 +21,13 @@
   <exec_depend>nav2_map_server</exec_depend>
   <exec_depend>nav2_navfn_planner</exec_depend>
   <exec_depend>nav2_planner</exec_depend>
+  <!-- Runtime: controller_server.FollowPath.plugin names
+       nav2_rotation_shim_controller::RotationShimController (P2a, 2026-09-23)
+       and pluginlib resolves it through the ament index. Without this package
+       installed, controller_server fails to configure and the whole Nav2 stack
+       never reaches active - the same failure mode gripperx_behaviors is
+       listed against below. -->
+  <exec_depend>nav2_rotation_shim_controller</exec_depend>
   <!-- Runtime: needs map + map→odom from gripperx_localization (AMCL or SLAM). -->
   <exec_depend>gripperx_localization</exec_depend>
   <!-- Runtime: config/nav2.yaml names gripperx_behaviors::CrabWalk in
@@ -29,6 +36,12 @@
        fails to configure - the whole Nav2 stack then never reaches active. -->
   <exec_depend>gripperx_behaviors</exec_depend>
 
+  <!-- The annulus-exclusion test drives the CONTROLLER'S OWN reachability
+       logic (gripperx_control.steering_limits) against the active nav2.yaml,
+       so the check cannot drift from the plant it is checking. -->
+  <test_depend>gripperx_control</test_depend>
+  <test_depend>python3-pytest</test_depend>
+  <test_depend>python3-yaml</test_depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>
 

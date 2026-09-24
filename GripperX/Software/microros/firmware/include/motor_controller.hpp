@@ -9,62 +9,29 @@
 // Counts of the x4 HW-PCNT decoder per OUTPUT-shaft (wheel) revolution:
 //   COUNTS_PER_OUTPUT_REV = ENCODER_CPR_PER_CHANNEL * 4 (x4 decode) * GEAR_RATIO
 //
-// MEASURED 2026-08-13 on the assembled robot (HWR-10 / HWA-2). Two wheels were
-// rolled forward by hand through exactly 10 output revolutions with the pintest
-// firmware counting; no motion was commanded:
-//     FL  32021 counts / 10 rev = 3202.1
-//     BL  31989 counts / 10 rev = 3198.9
-// Mean 3200.5, the two wheels 0.1 % apart and bracketing 3200 — which factors
-// exactly as 16 * 4 * 50. So the encoder is 16 pulses per channel per MOTOR
-// revolution (64 counts/motor-rev after x4 decoding, the usual value for this
-// motor class) and the nominal 50:1 gearbox is confirmed rather than assumed.
+// Measured 2026-08-13 on the assembled robot (HWR-10 / HWA-2): 3200 counts per
+// output-shaft revolution, i.e. 16 pulses/channel/motor-rev (64 counts/motor-rev
+// after x4 decoding) through the nominal 50:1 gearbox.
 //
-// ENCODER_CPR_PER_CHANNEL was 11.0 before — a clearly-flagged placeholder taken
-// from what is "most commonly quoted" for GB37 Hall encoders. It gave 2200, and
-// dividing real counts by too small a number INFLATES the result: one true wheel
-// revolution produces 3200 counts, which the old constant reported as 3200/2200 =
-// 1.45 revolutions. Reported speed and distance were therefore ~45 % TOO HIGH —
-// the robot actually moved about 31 % less than any odometry from before this
-// date claims. Nothing was ever driven on it, so no stored map is affected.
-//
-// Both constants are now measured. Re-measure only if the motors or encoders are
-// replaced: `python3 ~/enc_identify.py`, then `rev <wheel> 10`.
-#define ENCODER_CPR_PER_CHANNEL   16.0    // measured 2026-08-13 (was 11.0, guessed)
-#define GEAR_RATIO                50.0    // GB37-50 50:1, confirmed by the same measurement
+// Re-measure only if the motors or encoders are replaced:
+// `python3 ~/enc_identify.py`, then `rev <wheel> 10`.
+#define ENCODER_CPR_PER_CHANNEL   16.0    // measured 2026-08-13
+#define GEAR_RATIO                50.0    // GB37-50 50:1 gearbox
 #define COUNTS_PER_OUTPUT_REV     (ENCODER_CPR_PER_CHANNEL * 4.0 * GEAR_RATIO)
 
 // --- Velocity estimation: sampling is DECOUPLED from publishing ---------------
-// Until 2026-08-20 the encoder was read once per state publish, inside the publish
-// block, so a "measurement" existed only every 114-121 ms and its dt was that same
-// jittery interval taken from millis(). Sampling now runs on its own cadence
-// (main.cpp calls sampleEncoder() every loop iteration; the call self-throttles to
-// ENC_SAMPLE_INTERVAL_US) and the publish loop only READS the estimate.
+// Sampling runs on its own cadence (main.cpp calls sampleEncoder() every loop
+// iteration; the call self-throttles to ENC_SAMPLE_INTERVAL_US) and the publish
+// loop only READS the estimate.
 //
 // The estimate is a first difference of the 64-bit PCNT accumulator over a SLIDING
 // window of at least ENC_WINDOW_US, with dt taken from micros() and MEASURED rather
-// than assumed. Three numbers justify the constants below; keep them together if any
-// one of them is changed.
-//
-//   1. dt quantisation. millis() over a 115 ms window: 1 ms / 115 ms = 0.87 %
-//      velocity error from the clock alone. micros() over 100 ms: 1 us / 100 ms =
-//      0.001 %, i.e. gone.
-//   2. Count quantisation. One count = 2*PI / 3200 = 1.9635e-3 rad, so the velocity
-//      step is 1.9635e-3 rad / window. At 100 ms that is 1.96e-2 rad/s = 0.46 % of
-//      the 4.286 rad/s reference drive speed. This term scales as 1/window: a 33 ms
-//      window would give 5.9e-2 rad/s (1.4 %) and would be NOISIER than the estimator
-//      it replaces. Publish rate and estimation window are therefore deliberately
-//      NOT the same number.
-//   3. Group delay of a rectangular window is window/2 = 50 ms. The old estimator
-//      already had a 115 ms window (57 ms group delay) AND delivered it up to 121 ms
-//      late.
-//
-// Net effect, against the 4.286 rad/s reference drive and combining 1. and 2. in
-// quadrature. OLD: sqrt(0.0171^2 + 0.0373^2) = 0.0410 rad/s = 0.96 %, delivered with
-// up to 57 + 121 = 178 ms of total latency. NEW: 0.0196 rad/s = 0.46 %, with up to
-// 50 + 33 = 83 ms. Note honestly that the COUNT term alone got 15 % worse (0.0171 ->
-// 0.0196 rad/s) because the window is shorter than the old jittery one; removing the
-// dt term more than pays for that, and it is the dt term that made the old estimate
-// unusable, because it scaled with the reading instead of being a fixed floor.
+// than assumed (a millisecond clock's quantisation is a sizeable fraction of a
+// short window; a microsecond one is not). Publish rate and estimation window are
+// deliberately NOT the same number: a shorter window trades lower group delay
+// (window/2) for more count-quantisation noise, and the two effects cross over well
+// below ENC_WINDOW_US. Keep ENC_SAMPLE_INTERVAL_US, ENC_WINDOW_US and
+// ENC_SAMPLE_SLOTS together if any one of them is changed.
 //
 // ENC_SAMPLE_INTERVAL_US only has to be small enough that the window boundary can be
 // placed to that resolution; it is NOT needed to avoid losing counts (PCNT counts in
@@ -78,86 +45,44 @@
 #define ENC_MAX_GAP_US          250000u
 
 // --- Open-loop drive feedforward: pwm = a + b*|rpm| --------------------------
-// The law was pwm = b*|rpm| (gain only). It is now an AFFINE feedforward, gain plus
-// a constant offset. This changes the SHAPE of the feedforward and nothing else: it
-// is still open-loop, there is still no error term, no integrator and no gain acting
-// on the measured wheel velocity (FR-11 item 2, NFR-10 acceptance item 10).
+// Open-loop only: gain (b) plus a constant offset (a). No error term, no
+// integrator, no gain acting on the measured wheel velocity (FR-11 item 2,
+// NFR-10 acceptance item 10).
 //
-// WHY AN OFFSET AND NOT A BIGGER GAIN. Measured on hardware 2026-08-20, robot driving
-// ON CARPET, gain already at 1.0625:
-//     commanded 4.286 rad/s -> measured ~2.44 rad/s   deficit 1.858 rad/s  (-43 %)
-//     commanded 2.857 rad/s -> measured ~1.00 rad/s   deficit 1.859 rad/s  (-65 %)
-// Two operating points 1.5x apart, the SAME ABSOLUTE deficit; per wheel at the slow
-// point 1.8515 / 1.8719 / 1.8478 / 1.8660 rad/s, a spread of 1.3 %, so ONE constant
-// covers all four and four separate ones would be fitting noise. A constant speed
-// deficit that does not scale with the setpoint is the signature of a constant load
-// torque. Raising b would SCALE the deficit instead of removing it (it would fix one
-// operating point and miss every other one) and would make the unloaded case overspeed;
-// an offset removes a constant deficit identically at every operating point.
+// `a` compensates a constant load torque (rolling resistance): a gain-only law
+// cannot remove a constant deficit without overspeeding the unloaded case. It
+// is a first-order compensation derived from a measured speed deficit, not a
+// torque measurement, and is correct only at the load/surface it was measured
+// under. Compensating load variation as it changes is the future regulator's
+// job (FR-11), deliberately not built here.
 //
-// WHAT THIS IS NOT. The offset is a FIRST-ORDER COMPENSATION DERIVED FROM A SPEED
-// DEFICIT VIA THE GAIN, not a torque measurement — no current, no torque and no motor
-// constant was measured, the deficit was simply converted into the PWM that the gain
-// says would have produced it. It does not make the feedforward CORRECT; it makes it
-// correct AT ONE LOAD. Whatever remains as the load varies is exactly the job of the
-// future regulator (FR-11), which is deliberately not built here.
+// SURFACE DEPENDENCE: this constant compensates rolling resistance, a property
+// of the SURFACE, not the robot. Wrong (in either direction) on any surface
+// other than the one it was measured on — too small on higher-resistance
+// ground (still too slow), too large on lower-resistance or unloaded ground
+// (now too fast). `TO-VERIFY` on hardware, per surface.
 //
-// SURFACE DEPENDENCE — the important caveat. This constant compensates ROLLING
-// RESISTANCE and is therefore a property of the SURFACE, not of the robot. The same
-// firmware unloaded (wheels in the air) shows only about -5 %, i.e. almost no deficit
-// to compensate. On any surface other than the carpet it was measured on, the constant
-// is wrong by whatever the rolling-resistance difference is: too small on grass or
-// gravel (still too slow), too large on smooth indoor floor or unloaded on blocks
-// (now too fast). TO-VERIFY on hardware, per surface.
+// DEADBAND, and why it is not optional: applying the offset unconditionally
+// would output a + 0 = a at a commanded zero — a permanent creep whenever the
+// robot is idle. The offset therefore applies only from FF_OFFSET_DEADBAND_RPM
+// upwards; strictly below it the output is EXACTLY 0, an integer 0 returned
+// before any arithmetic, not a product that happens to truncate to zero.
 //
-// DEADBAND, and why it is not optional. An offset applied unconditionally would output
-// a + 0 = a at a commanded zero, i.e. ~7.4 % duty on a robot that was told to hold
-// still — a permanent creep whenever it is idle. The offset therefore applies only
-// from FF_OFFSET_DEADBAND_RPM upwards, and strictly below it the output is EXACTLY 0
-// (an integer 0
-// returned before any arithmetic, not a product that happens to truncate to zero).
+// Value chosen ABOVE the wheel command the steering slew brake holds while the
+// wheels re-align (NFR-10 acceptance 1) — see steer_alignment_scale() in
+// swerve_controller.cpp for the brake's current floor — so that "very nearly
+// stopped" during a brake event is never executed as spurious PWM. That
+// justification is scoped to the slew brake specifically (safety finding
+// F-43): it does not extend to ordinary cornering, which never comes close to
+// this deadband.
 //
-// Value: 0.5 RPM = 0.0524 rad/s at the wheel. Chosen ABOVE one command that is known
-// to occur in normal operation and must NOT be lifted to the offset: the steering slew
-// brake holds the wheel command at +-0.04 rad/s (= 0.382 RPM) while the wheels
-// re-align (NFR-10 acceptance 1). That command means "very nearly stopped"; with a
-// smaller deadband it would instead be executed as 19 PWM counts.
-//
-// SCOPE OF THAT JUSTIFICATION, narrowed 2026-08-20 by safety finding F-43 - do not
-// read it as "the deadband covers the slew brake". The brake is MULTIPLICATIVE WITH A
-// FLOOR: angular_speed = (target_speed / wheel_radius) * scale, with
-// scale >= steer_alignment_min_scale = 0.45 (swerve_controller.cpp,
-// steer_alignment_scale()). The braked command is therefore never below 45 % of the
-// command, and it lands inside this deadband ONLY when the command itself is below
-// ~0.116 rad/s. The +-0.04 rad/s above is a SINGLE OBSERVED SAMPLE from the NFR-10
-// acceptance run, not an upper bound. The deadband still covers that case and the
-// value stays right; it simply does not protect ordinary cornering, which never gets
-// near it.
-//
-// CONSEQUENCE ON THE STARTING SPEED, stated because it is a real behaviour change, and
-// MEASURED on carpet 2026-08-20 rather than argued: the minimum commanded speed that
-// actually produces motion goes DOWN, from roughly 0.17 m/s to roughly 0.05 m/s.
-//
-// The mechanism needs one distinction that is easy to get wrong. `a` is derived from
-// ROLLING resistance, measured on a robot already in motion. It is NOT the duty that
-// breaks the machine loose from standstill, and STATIC friction is much higher:
-//
-//   PWM 19-24  (cmd up to 0.040 m/s)  -> does NOT start. Measured: 0.017 m over 22 s
-//                                        across a four-step ladder, i.e. nothing.
-//   PWM 25-26  (cmd 0.050 m/s)        -> BREAKAWAY. Starts, tracks to ~62 %.
-//   PWM 27     (cmd 0.060 m/s)        -> starts, tracks to ~96 %.
-//   PWM 22-23  (cmd 0.030 m/s)        -> DROP-OUT while already rolling; below this it
-//                                        stops. ~3 counts of hysteresis.
-//
-// So `a` alone cannot start the robot; it lowers the command needed to REACH the
-// breakaway duty, which is where the 0.17 -> 0.05 m/s improvement comes from. Between
-// 0.030 and 0.050 m/s the outcome depends on whether it was already moving, and below
-// ~0.06 m/s there is no proportional regime at all: measured speed clusters around
-// 0.45-1.0 rad/s or falls to zero. THE MACHINE CANNOT CREEP. See SAFETY.md F-42.
-//
-// On a lower-resistance surface the same step is a large overspeed at small commands
-// instead — breakaway is lower there, so the step is actually reached; see the surface
-// note above and SAFETY.md F-41.
+// A real consequence of this offset: the minimum commanded speed that actually
+// produces motion is markedly lower than with gain alone. `a` is derived from
+// ROLLING resistance on a robot already moving — it is NOT the duty that
+// breaks the machine loose from standstill, and static friction is higher, so
+// there remains a breakaway/drop-out band with no proportional regime inside
+// it; the robot starts or reads zero, it cannot creep. See SAFETY.md F-41/F-42
+// for the measured breakaway behaviour and its surface dependence.
 #define FF_OFFSET_DEADBAND_RPM   0.5f    // below this the output is exactly 0 (see above)
 
 enum class DriveMode {
@@ -210,11 +135,9 @@ public:
 
     // Sample the encoder and refresh measured RPM + accumulated position.
     // Call FROM EVERY LOOP ITERATION - the call throttles itself to
-    // ENC_SAMPLE_INTERVAL_US and is a few microseconds when it is not due. It must
-    // NOT be tied to the state-publish cycle: that coupling was the defect (see the
-    // block at the top of this file). It was called updateEncoder() while that
-    // coupling existed; the rename is deliberate, so no caller keeps the old
-    // once-per-publish contract by accident.
+    // ENC_SAMPLE_INTERVAL_US and is a few microseconds when it is not due. Must
+    // NOT be tied to the state-publish cycle (see the block at the top of this
+    // file for why that coupling is wrong).
     void sampleEncoder();
 
     float getTargetRPM() const;

@@ -63,10 +63,11 @@ void CrabWalk::onConfigure()
   node->get_parameter(
     this->behavior_name_ + ".allow_mirrored_fallback", allow_mirrored_fallback_);
 
-  // DEFAULT 0.0 = the pre-2026-08-24 behaviour EXACTLY: with no grace the
-  // pre-motion phase is bounded by the same instant the motion phase would have
-  // started at, so end_time_ lands where it always did. It only needs a non-zero
-  // value once swerve_controller's alignment gate is enabled. See the header.
+  // DEFAULT 0.0 reproduces the behaviour without alignment grace: with no
+  // grace the pre-motion phase is bounded by the same instant the motion phase
+  // would have started at, so end_time_ lands where it always did. It only
+  // needs a non-zero value once swerve_controller's alignment gate is enabled.
+  // See the header.
   nav2_util::declare_parameter_if_not_declared(
     node, this->behavior_name_ + ".alignment_grace_sec", rclcpp::ParameterValue(0.0));
   node->get_parameter(this->behavior_name_ + ".alignment_grace_sec", alignment_grace_sec_);
@@ -218,16 +219,14 @@ ResultStatus CrabWalk::onCycleUpdate()
   }
 
   // Straight-line distance from the start, exactly as DriveOnHeading measures
-  // it. NOTE what this does NOT measure: the heading the robot picked up on the
-  // way. A crab carries a small yaw bias (measured on the twin: 0.0138 rad worst
-  // case over the configured 0.20 m, numbers at behavior_server in
-  // config/nav2.yaml) which the wheel odometry cannot see. In the twin SLAM
-  // absorbs it; on the real robot, with all three EKF inputs dead, nothing does.
+  // it. NOTE what this does NOT measure: the heading bias a crab accumulates,
+  // which the wheel odometry cannot see (full numbers at behavior_server in
+  // config/nav2.yaml). In the twin SLAM absorbs it; on the real robot, with all
+  // three EKF inputs dead, nothing does.
   //
-  // This check is also why the executed distance runs slightly long: it fires at
-  // cycle_frequency (10 Hz), so up to one cycle of travel passes before the stop
-  // is issued, and the plant then coasts. Measured 0.197..0.222 m for a 0.20 m
-  // goal.
+  // This check also fires at cycle_frequency (10 Hz), so up to one cycle of
+  // travel passes before the stop is issued and the plant coasts — measured
+  // 0.197..0.222 m for a 0.20 m goal.
   const double diff_x = initial_pose_.pose.position.x - current_pose.pose.position.x;
   const double diff_y = initial_pose_.pose.position.y - current_pose.pose.position.y;
   const double distance = std::hypot(diff_x, diff_y);

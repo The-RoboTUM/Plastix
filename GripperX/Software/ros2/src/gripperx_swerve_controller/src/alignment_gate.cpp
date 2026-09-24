@@ -155,6 +155,9 @@ AlignmentGateResult AlignmentGate::update(
     // others are still travelling is precisely the motion "in a direction nobody
     // asked for" that this class exists to prevent.
     result.commands.fill(0.0);
+    // Set HERE, next to the action, never re-derived by a caller — see the
+    // field comment in alignment_gate.hpp.
+    result.withheld = true;
   }
 
   result.status = status_;

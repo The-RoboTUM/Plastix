@@ -22,22 +22,18 @@ is set this module REFUSES to resolve object goals. A plausible-looking
 placeholder would produce goals that look valid, drive the robot, and miss - so
 there is deliberately no default.
 
-THE OFFSET AND THE TOLERANCE GATE DIFFERENT THINGS - USER DECISION 2026-08-19
-=============================================================================
+THE OFFSET AND THE TOLERANCE GATE DIFFERENT THINGS
+====================================================
 ``offset_x_m``/``offset_y_m`` are the only inputs to the standoff arithmetic, so
 they gate **resolution**. ``tolerance_m`` appears nowhere in that arithmetic: it
 is the window used to judge "close enough to grasp" **after** arriving, so it
-gates the **reached check** and nothing else. They used to be coupled through
-one ``configured`` flag, which meant an unmeasured tolerance silently blocked
-every goal from resolving at all - a gate at the wrong place, and one that made
-auto-pick inert without saying so.
-
-They are now separate: :attr:`GraspOffset.configured` covers resolution,
+gates the **reached check** and nothing else. They are separate:
+:attr:`GraspOffset.configured` covers resolution,
 :attr:`GraspOffset.tolerance_configured` covers the reached check, and
 :func:`check_reached` returns ``known=False`` while the tolerance is TO-VERIFY.
 An unknown reached check must be reported loudly by the caller; it must never
-fall back to a number. **This decision measured nothing.** ``offset_x_m: 0.360``
-remains a user specification and ``tolerance_m`` remains TO-VERIFY.
+fall back to a number. ``offset_x_m: 0.360`` remains a user specification and
+``tolerance_m`` remains TO-VERIFY.
 
 Pure module: no rclpy, no costmap, no TF. The acceptance test for a candidate
 pose is injected as a callable, which is what keeps it that way.

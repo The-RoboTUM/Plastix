@@ -17,17 +17,16 @@ constexpr size_t kNumSteerJoints = 4;
 constexpr size_t kNumWheelJoints = 4;
 constexpr size_t kNumJoints = kNumSteerJoints + kNumWheelJoints;
 
-// hw/joint_states layout. Indices 0..7 (kNumJoints) are the original contract and stay
-// the MINIMUM a publisher has to provide — hw_firmware_mock and any older firmware are
-// still accepted. Firmware with encoder feedback (HWR-10) appends 4 measured wheel
-// positions in rad at 8..11; those are only read when the message is long enough.
+// hw/joint_states layout. Indices 0..7 (kNumJoints) are the MINIMUM a publisher has to
+// provide — hw_firmware_mock and any older firmware are still accepted. Firmware with
+// encoder feedback (HWR-10) appends 4 measured wheel positions in rad at 8..11, read
+// only when the message is long enough.
 constexpr size_t kWheelPositionOffset = kNumJoints;
 constexpr size_t kNumStateValuesWithWheelPositions = kWheelPositionOffset + kNumWheelJoints;
 
 // Firmware with the provenance block (FR-11 items 5/6) appends 4 more values at 12..15,
-// one EncoderStatus code per wheel in the same FL, FR, BL, BR order. Read only when the
-// message is long enough — same shape as the wheel-position guard above, and for the same
-// reason: a short message must degrade to "unknown", never to "valid".
+// one EncoderStatus code per wheel, FL/FR/BL/BR. Same guard shape as above: a short
+// message must degrade to "unknown", never to "valid".
 constexpr size_t kWheelProvenanceOffset = kNumStateValuesWithWheelPositions;
 constexpr size_t kNumStateValuesWithProvenance = kWheelProvenanceOffset + kNumWheelJoints;
 
@@ -177,13 +176,10 @@ CallbackReturn GripperXInterface::on_init(const hardware_interface::HardwareInfo
     wheel_command_topic_ = wheel_cmd_topic_it->second;
   }
 
-  // OP-18a: which reference input the watchdog polices against. Selectable so
-  // that switching the running robot from the superseded per-wheel reference to
-  // the W2 twist/echo pair is a configuration change in
-  // gripperx_v1.ros2_control.xacro and not a code change, and so that both can
-  // exist while the old chain is still the active one. An unknown value is a
-  // hard ERROR, not a silent fallback: guessing here would silently choose
-  // which safety check runs.
+  // OP-18a: which reference input the watchdog polices against. Selectable so switching
+  // from the superseded per-wheel reference to the W2 twist/echo pair is a configuration
+  // change, not a code change. An unknown value is a hard ERROR, not a silent fallback:
+  // guessing here would silently choose which safety check runs.
   const auto wd_reference_it = info_.hardware_parameters.find("watchdog_reference");
   if (wd_reference_it != info_.hardware_parameters.end()) {
     const std::string & reference = wd_reference_it->second;
@@ -265,23 +261,20 @@ CallbackReturn GripperXInterface::on_activate(const rclcpp_lifecycle::State & /*
   wheel_feedback_valid_published_ = false;
   joint_states_received_ = false;
 
-  // Subscriptions first, PUBLISHERS LATER. Everything that can put a message on
+  // Subscriptions first, PUBLISHERS LATER: everything that can put a message on
   // /hw/joint_commands — joint_commands_pub_ here and watchdog_commands_pub_ in
-  // start_watchdog() — is created only AFTER the activation gate below has passed, so a
-  // refused activation cannot leave a command behind on the wire (SR-14 acceptance:
-  // "activation fails visibly and no command is published"). Do not hoist them back up.
+  // start_watchdog() — is created only AFTER the activation gate below passes, so a
+  // refused activation cannot leave a command on the wire (SR-14 acceptance: "activation
+  // fails visibly and no command is published"). Do not hoist them back up.
   joint_states_sub_ = node->create_subscription<std_msgs::msg::Float64MultiArray>(
     joint_states_topic_, rclcpp::SensorDataQoS(),
     std::bind(&GripperXInterface::joint_states_callback, this, std::placeholders::_1));
 
-  // QoS stated explicitly, NOT SystemDefaultsQoS(). steer_servo_node publishes with the
-  // rclpy default profile (`create_publisher(..., 10)` = KEEP_LAST(10), RELIABLE,
-  // VOLATILE). SystemDefaultsQoS() leaves reliability as SYSTEM_DEFAULT, which resolves
-  // to the DDS DataReader default (BEST_EFFORT) under rmw_fastrtps — the recorded
-  // incident on the watchdog subscription below, where a BEST_EFFORT reader saw one
-  // sample in 14 minutes against a RELIABLE 30 Hz writer. A steering measurement that
-  // silently never arrives is exactly the failure FR-10 exists to remove, so the reader
-  // matches the writer deliberately.
+  // QoS stated explicitly, NOT SystemDefaultsQoS(): steer_servo_node publishes RELIABLE
+  // KEEP_LAST(10) (rclpy's default profile), and SystemDefaultsQoS() would resolve
+  // reliability to BEST_EFFORT under rmw_fastrtps, where a BEST_EFFORT reader against a
+  // RELIABLE writer can silently receive almost nothing — exactly the failure FR-10
+  // exists to remove.
   rclcpp::QoS steer_states_qos(rclcpp::KeepLast(10));
   steer_states_qos.reliable();
   steer_states_qos.durability_volatile();
@@ -290,21 +283,15 @@ CallbackReturn GripperXInterface::on_activate(const rclcpp_lifecycle::State & /*
     std::bind(&GripperXInterface::steer_states_callback, this, std::placeholders::_1));
 
   // ── SR-14 item 4: the activation gate ──────────────────────────────────────────────
-  // An activation that cannot read a valid actual steering position MUST NOT activate on
-  // the interface default. The failure this closes: power off -> servos limp -> the wheels
-  // are displaced by hand, terrain or transport -> power on -> a position controller
-  // activates before ANY measurement has arrived and writes the command interface's
-  // initial 0.0, i.e. CENTRE. Nobody asked for that motion; a controller merely came up.
+  // Must not activate without a valid steering measurement. The failure this closes:
+  // power off -> servos limp -> wheels displaced by hand, terrain or transport -> power on
+  // -> a position controller activates before any measurement arrives and writes the
+  // command interface's initial 0.0, i.e. CENTRE — motion nobody asked for.
   //
-  // Bounded, not instant (NFR-3): on a clean bringup the first /hw/steer_states arrives
-  // ~5.9 s after this component starts activating, because steer_servo_node has to scan
-  // the servo bus first. Failing instantly would turn a safety guard into a boot failure.
-  // The window is steer_states_activation_timeout_sec_ — see the xacro for how the value
-  // was derived from that measurement.
-  //
-  // NOT gated on /hw/joint_states: the wheels are commanded to zero, which is safe from
-  // any starting condition, so their feedback is not a precondition for a safe activation.
-  // Only the steering carries a position command.
+  // Bounded, not instant (NFR-3): the servo bus must be scanned before the first
+  // /hw/steer_states measurement can arrive, so failing instantly would turn this into a
+  // boot failure. NOT gated on /hw/joint_states: wheels are commanded to zero, which is
+  // safe from any starting condition, so only the steering measurement is a precondition.
   std::vector<double> measured_steering;
   if (!wait_for_steer_states(measured_steering)) {
     joint_states_sub_.reset();
@@ -318,12 +305,10 @@ CallbackReturn GripperXInterface::on_activate(const rclcpp_lifecycle::State & /*
     return CallbackReturn::ERROR;
   }
 
-  // The measurement is adopted BEFORE anything is published, into both:
-  //  * the position STATE interfaces, so the first controller update() already sees the
-  //    real angle rather than the 0.0 that read() would only overwrite one cycle later;
-  //  * the position COMMAND interfaces, so that the command this component publishes at
-  //    30 Hz from now until a controller writes for the first time is "hold where you
-  //    are" and not "go to centre" (SR-14 item 1, hardware-component half).
+  // The measurement is adopted BEFORE anything is published, into both the position STATE
+  // interfaces (so the first controller update() already sees the real angle) and the
+  // position COMMAND interfaces (so the command published until a controller writes for
+  // the first time is "hold where you are", not "go to centre" — SR-14 item 1).
   for (size_t index = 0; index < kNumSteerJoints; ++index) {
     hw_steering_commands_[index] = measured_steering[index];
     const auto joint_it = steer_index_by_joint_.find(kSteerJointOrder[index]);
@@ -341,10 +326,8 @@ CallbackReturn GripperXInterface::on_activate(const rclcpp_lifecycle::State & /*
   steer_states_valid_pub_ = node->create_publisher<std_msgs::msg::Bool>(
     steer_states_valid_topic_, steer_states_valid_qos);
 
-  // Same latched profile, same reason (FR-11 item 6 / SR-13): the provenance of the
-  // wheel feedback is a state, not an event, and a subscriber that comes up late must
-  // learn it immediately rather than after the next change — which, on a healthy robot,
-  // may be never.
+  // Same latched profile, same reason (FR-11 item 6 / SR-13): wheel-feedback provenance
+  // is a state, not an event, so a late subscriber must learn it immediately.
   rclcpp::QoS wheel_feedback_valid_qos(rclcpp::KeepLast(1));
   wheel_feedback_valid_qos.reliable();
   wheel_feedback_valid_qos.transient_local();
@@ -357,11 +340,9 @@ CallbackReturn GripperXInterface::on_activate(const rclcpp_lifecycle::State & /*
   active_.store(true);
   commands_stale_.store(false);
 
-  // First command out of this component on this activation. NOT publish_zero_commands():
-  // eight zeros put 0.0 on the four steering slots, and steer_servo_node reads those slots
-  // as an angle command — so "zero" is a CENTRE command with the servos' full torque
-  // behind it, which is precisely the unrequested motion SR-14 exists to prevent. Wheels
-  // zero, steering at the measurement we just waited for.
+  // First command out on this activation. NOT publish_zero_commands(): eight zeros put
+  // 0.0 on the four steering slots, which steer_servo_node reads as CENTRE at full servo
+  // torque — the unrequested motion SR-14 exists to prevent.
   publish_stop_commands();
 
   start_watchdog();
@@ -390,15 +371,13 @@ CallbackReturn GripperXInterface::on_activate(const rclcpp_lifecycle::State & /*
 }
 
 // Blocks until /hw/steer_states delivers one measurement that is present, fresh and
-// finite, or until the activation window expires. Returns false on expiry, having said
-// exactly why (SR-13: the failure must be readable at 2 a.m. without guessing).
+// finite, or the activation window expires; returns false having said exactly why
+// (SR-13: readable at 2 a.m. without guessing).
 //
-// The subscription being waited on is the REAL FR-10 subscription on the component's own
-// node, deliberately — a private node with a private subscription could match a publisher
-// that the real one does not, and then the gate would attest to a data path other than the
-// one the robot actually uses. That this works, i.e. that callbacks are serviced while
-// on_activate blocks, is not an assumption: the pre-existing /hw/joint_states wait below
-// has been returning successfully on every hardware bringup.
+// Waits on the REAL FR-10 subscription on this component's own node, deliberately: a
+// private subscription could match a publisher the real one does not, and the gate would
+// then attest to a data path other than the one the robot uses. Callbacks are still
+// serviced while this blocks, the same as the /hw/joint_states wait below.
 bool GripperXInterface::wait_for_steer_states(std::vector<double> & measured)
 {
   const auto start = std::chrono::steady_clock::now();
@@ -490,19 +469,16 @@ CallbackReturn GripperXInterface::on_deactivate(const rclcpp_lifecycle::State & 
 
   stop_watchdog();
 
-  // Last command out of this component on this deactivation. NOT publish_zero_commands():
-  // eight zeros put 0.0 on the four steering slots, and steer_servo_node reads those slots
-  // as an ANGLE command — so deactivating would drive four live servos to CENTRE. That is
-  // the SR-13 incident path (ESP32 flash -> /hw/joint_states stale -> read() returns ERROR
-  // -> the component deactivates), i.e. a fault would answer with unrequested motion.
-  // OP-24 / S1 is the rule at every stage: wheels to zero, steering holds its last
-  // commanded angle. Same call, same reason, as on_activate().
+  // Last command on this deactivation. NOT publish_zero_commands(): eight zeros would put
+  // 0.0 on the steering slots, which steer_servo_node reads as an ANGLE command — driving
+  // four live servos to CENTRE (the SR-13 incident path: ESP32 flash -> /hw/joint_states
+  // stale -> read() ERROR -> deactivate). OP-24 / S1: wheels to zero, steering holds its
+  // last commanded angle, same as on_activate().
   //
-  // Asymmetry worth knowing on THIS path only: stop_watchdog() above has already reset
-  // watchdog_commands_pub_, so of publish_stop_commands()'s deliberately dual publish only
-  // the joint_commands_pub_ half actually goes out here -- the other is a no-op via its
-  // null check. Not a fault (joint_commands_pub_ is the half steer_servo_node reads), but
-  // the redundancy the dual publish exists for is NOT available during deactivation.
+  // Asymmetry on THIS path only: stop_watchdog() above has already reset
+  // watchdog_commands_pub_, so of publish_stop_commands()'s dual publish only the
+  // joint_commands_pub_ half goes out here (the redundancy is unavailable during
+  // deactivation, not a fault — joint_commands_pub_ is the half steer_servo_node reads).
   publish_stop_commands();
 
   joint_states_sub_.reset();
@@ -563,9 +539,9 @@ std::vector<hardware_interface::CommandInterface> GripperXInterface::export_comm
 hardware_interface::return_type GripperXInterface::read(
   const rclcpp::Time & /*time*/, const rclcpp::Duration & /*period*/)
 {
-  // FR-10: the steering position state has its own source and its own freshness rule.
-  // Done before the /hw/joint_states handling so that a missing or stale ESP32 stream
-  // (early return / ERROR below) does not also freeze the steering feedback path.
+  // FR-10: steering position has its own source and freshness rule. Done before the
+  // /hw/joint_states handling so a missing/stale ESP32 stream does not also freeze the
+  // steering feedback path.
   update_steering_position_states();
 
   std_msgs::msg::Float64MultiArray latest_states;
@@ -610,12 +586,10 @@ hardware_interface::return_type GripperXInterface::read(
     return hardware_interface::return_type::ERROR;
   }
 
-  // Steering: indices 0-3 of /hw/joint_states are deliberately IGNORED (FR-10). The ESP32
-  // has no steering sensor and never writes them, so they are a constant 0.0 that used to
-  // be presented as a measurement. The position state is filled by
-  // update_steering_position_states() from /hw/steer_states instead. The steering VELOCITY
-  // state stays 0.0: steer_servo_node reports angle only, and differentiating it here would
-  // invent a signal rather than measure one.
+  // Steering: indices 0-3 of /hw/joint_states are deliberately IGNORED (FR-10): the ESP32
+  // has no steering sensor and never writes them. Position comes from
+  // update_steering_position_states() via /hw/steer_states instead; velocity stays 0.0
+  // since steer_servo_node reports angle only.
   for (size_t index = 0; index < kNumSteerJoints; ++index) {
     const auto joint_it = steer_index_by_joint_.find(kSteerJointOrder[index]);
     if (joint_it == steer_index_by_joint_.end()) {
@@ -624,16 +598,14 @@ hardware_interface::return_type GripperXInterface::read(
     hw_velocities_[joint_it->second] = 0.0;
   }
 
-  // Only firmware with encoder feedback publishes the appended wheel-position block.
-  // Without it the wheel position state stays at its previous value rather than being
-  // forced to zero, so a mid-run firmware downgrade does not produce a position jump.
+  // Only firmware with encoder feedback publishes the wheel-position block. Without it
+  // the position state holds its previous value rather than being forced to zero, so a
+  // mid-run firmware downgrade does not jump the position.
   const bool has_wheel_positions =
     latest_states.data.size() >= kNumStateValuesWithWheelPositions;
 
-  // Length guard for the provenance block, deliberately the SAME SHAPE as the one
-  // above: a message too short to carry provenance maps to UNKNOWN — "we do not know
-  // whether this is a measurement" — and never to a valid code. Silence must not be
-  // readable as an assurance.
+  // Length guard for the provenance block, same shape as the one above: a short message
+  // maps to UNKNOWN, never to a valid code — silence must not read as an assurance.
   const bool has_provenance =
     latest_states.data.size() >= kNumStateValuesWithProvenance;
 
@@ -653,18 +625,13 @@ hardware_interface::return_type GripperXInterface::read(
     const size_t joint_index = joint_it->second;
 
     // DELIBERATE ASYMMETRY WITH THE STEERING PATH ABOVE — DO NOT "FIX" IT INTO
-    // CONSISTENCY. update_steering_position_states() HOLDS the last valid steering angle
-    // when its source degrades. The wheel VELOCITY must NOT be held, and the difference
-    // is not an oversight:
-    //   * a held steering ANGLE describes a wheel that is still pointing where it was
-    //     pointing, which is true — the servos hold position;
-    //   * a held non-zero VELOCITY asserts that a possibly stationary robot is still
-    //     moving, and it feeds odometry, which would integrate that fiction into a
-    //     position error that grows without bound.
-    // So the velocity is passed through exactly as the firmware sent it, whatever its
-    // provenance, and the provenance topic below carries the "this is not a measurement"
-    // verdict instead. Disabling any later closed loop on that verdict is FR-11 item 6 —
-    // it is the consumer's job, not this line's.
+    // CONSISTENCY. update_steering_position_states() HOLDS the last valid angle when its
+    // source degrades; wheel VELOCITY must NOT be held: a held angle is still true (the
+    // servo holds position), but a held non-zero velocity asserts a possibly stationary
+    // robot is still moving, and odometry would integrate that fiction without bound. The
+    // velocity passes through exactly as the firmware sent it; the provenance topic below
+    // carries the "not a measurement" verdict instead (disabling any closed loop on it is
+    // FR-11 item 6, the consumer's job).
     hw_velocities_[joint_index] = latest_states.data[kNumSteerJoints + index];
 
     if (has_wheel_positions) {
@@ -673,11 +640,10 @@ hardware_interface::return_type GripperXInterface::read(
   }
 
   if (!has_wheel_positions) {
-    // Option D. This used to be a WARN about odometry staying flat, which named a
-    // symptom and buried the cause. A publisher that sends only the 8-value minimum has
-    // NO ENCODERS AT ALL: indices 4-7 are then MotorController::getRPM()'s fallback
-    // branch, i.e. the commanded velocity handed straight back. Everything downstream
-    // sees a wheel that tracks its setpoint perfectly, because it IS its setpoint.
+    // A publisher that sends only the 8-value minimum has NO ENCODERS AT ALL: indices
+    // 4-7 are then MotorController::getRPM()'s fallback branch, i.e. the commanded
+    // velocity handed straight back. Everything downstream sees a wheel that tracks its
+    // setpoint perfectly, because it IS its setpoint.
     RCLCPP_ERROR_THROTTLE(
       rclcpp::get_logger("GripperXInterface"), *get_node()->get_clock(), 10000,
       "%s carries only %zu values (< %zu): this publisher has NO encoder feedback. "
@@ -766,9 +732,9 @@ void GripperXInterface::steer_states_callback(
 
 void GripperXInterface::update_steering_position_states()
 {
-  // FR-10 / §3.1.2 stage 8. Joint order on /hw/steer_states is FL, FR, BL, BR
-  // (steer_servo_node STEER_JOINT_NAMES), which is kSteerJointOrder verbatim — no
-  // remapping, and none may be introduced silently.
+  // FR-10 / §3.1.2 stage 8: joint order on /hw/steer_states is FL, FR, BL, BR
+  // (steer_servo_node STEER_JOINT_NAMES) = kSteerJointOrder verbatim — no remapping, none
+  // may be introduced silently.
   std::vector<double> latest;
   bool received = false;
   double age = 0.0;
@@ -784,9 +750,8 @@ void GripperXInterface::update_steering_position_states()
   }
 
   if (!received) {
-    // SR-13: never silent. Note that the state interfaces are NOT zeroed here — they keep
-    // whatever they last held (0.0 only if nothing was ever received), and the health flag
-    // says the value is not a measurement.
+    // SR-13: never silent. State interfaces are NOT zeroed here — they keep whatever they
+    // last held, and the health flag says the value is not a measurement.
     RCLCPP_ERROR_THROTTLE(
       rclcpp::get_logger("GripperXInterface"), *get_node()->get_clock(), 5000,
       "No %s received: the steering position state interfaces carry NO measurement. "
@@ -798,11 +763,10 @@ void GripperXInterface::update_steering_position_states()
 
   const bool fresh = steer_states_timeout_sec_ <= 0.0 || age <= steer_states_timeout_sec_;
   if (!fresh) {
-    // Deliberately NOT a fallback to 0.0 (FR-10 item 3) and deliberately NOT
-    // return_type::ERROR: a lost steering readback must not deactivate the hardware
-    // component and take the whole drive path inactive with it (SR-13's recorded
-    // incident). Hold the last valid measurement — consistent with OP-24/S1, hold on
-    // loss — and make the degradation loud instead.
+    // Deliberately NOT a fallback to 0.0 (FR-10 item 3) and NOT return_type::ERROR: a lost
+    // steering readback must not deactivate the hardware component and take the whole
+    // drive path inactive with it. Hold the last valid measurement (OP-24/S1: hold on
+    // loss) and make the degradation loud instead.
     RCLCPP_ERROR_THROTTLE(
       rclcpp::get_logger("GripperXInterface"), *get_node()->get_clock(), 2000,
       "%s stale (%.3f s > %.3f s): HOLDING the last valid steering measurement. "
@@ -866,9 +830,9 @@ void GripperXInterface::set_wheel_feedback_provenance(
     wheel_feedback_valid_pub_->publish(msg);
   }
 
-  // Log per wheel and only on the wheels that actually changed, so a single encoder
-  // waking up does not reprint the other three. The wheel NAME is in the line: the
-  // whole point of per-wheel provenance is being able to say which wheel.
+  // Log per wheel, only on wheels that changed, so one encoder waking up does not
+  // reprint the other three. The wheel NAME is in the line — the point of per-wheel
+  // provenance.
   for (size_t index = 0; index < kNumWheelJoints; ++index) {
     if (had_published && previous[index] == provenance[index]) {
       continue;
@@ -894,12 +858,9 @@ void GripperXInterface::set_wheel_feedback_provenance(
   }
 }
 
-// UNUSED as of 2026-08-18 and deliberately kept unused: its last two call sites
-// (on_activate, on_deactivate) were both moved to publish_stop_commands() because eight
-// zeros are a CENTRE command for the four steering slots, not a stop (OP-24 / S1, SR-14).
-// Do not reintroduce a call to this without re-deciding OP-24 — there is currently no
-// situation in which this component may command the steering to zero on its own initiative.
-// Retained only so the distinction stays legible; a later cleanup may delete it outright.
+// UNUSED, deliberately kept unused: eight zeros are a CENTRE command for the steering
+// slots, not a stop (OP-24 / S1, SR-14) — on_activate/on_deactivate use
+// publish_stop_commands() instead. Do not reintroduce this without re-deciding OP-24.
 void GripperXInterface::publish_zero_commands()
 {
   if (!joint_commands_pub_) {
@@ -956,28 +917,23 @@ void GripperXInterface::start_watchdog()
     twist_watchdog_.reset();
   }
 
-  // Dedicated node/executor/thread, independent of the controller_manager
-  // executor (the failure candidate). A subscription serviced by our own
-  // executor keeps receiving fresh controller inputs even if the CM executor
-  // is wedged; our own publisher can emit a stop even if the CM node is stuck.
+  // Dedicated node/executor/thread, independent of the controller_manager executor (the
+  // failure candidate): our subscription keeps receiving fresh inputs even if the CM
+  // executor is wedged, and our publisher can emit a stop even if the CM node is stuck.
   //
-  // Under variant B this is MORE load-bearing, not less (OP-18b): kinematics,
-  // controllers, hardware interface and main publisher then all live in
-  // ros2_control_node, and this thread is the only in-process element left that
-  // can emit a stop when that process's executor wedges. It is not weakened
-  // here — both W2 subscriptions are added to this same node.
+  // Under variant B this is MORE load-bearing, not less (OP-18b): kinematics, controllers,
+  // hardware interface and main publisher then all live in ros2_control_node, and this
+  // thread is the only in-process element left that can emit a stop when that executor
+  // wedges — both W2 subscriptions are added to this same node.
   watchdog_node_ = std::make_shared<rclcpp::Node>("gripperx_interface_watchdog");
 
-  // EXPLICIT QoS ON EVERY WATCHDOG INPUT, in every reference mode.
-  // SystemDefaultsQoS() leaves reliability as SYSTEM_DEFAULT, which resolves to the
-  // DDS DataReader default (BEST_EFFORT) under rmw_fastrtps. On this stack a
-  // BEST_EFFORT reader effectively did NOT receive the RELIABLE stream (verified:
-  // the watchdog saw a single sample over 14 min while a RELIABLE reader saw 30 Hz),
-  // so the deadman stayed latched in silence-STOP and zeroed /hw/joint_commands,
-  // blocking all driving. Match the publisher explicitly so the safety deadman
-  // actually observes the live command stream (RELIABLE also avoids best-effort
-  // drops looking like silence / falsely tripping the divergence check).
-  // SR-11 (4) / OP-18a item 2 make this binding for the NEW inputs too.
+  // EXPLICIT QoS ON EVERY WATCHDOG INPUT, in every reference mode (SR-11 (4) /
+  // OP-18a item 2). SystemDefaultsQoS() leaves reliability as SYSTEM_DEFAULT, which
+  // resolves to the DDS DataReader default (BEST_EFFORT) under rmw_fastrtps: a
+  // BEST_EFFORT reader can silently miss most of a RELIABLE stream, latching the
+  // deadman into silence-STOP and blocking all driving. Match the publisher
+  // explicitly so the deadman observes the live command stream (RELIABLE also
+  // avoids best-effort drops looking like silence or falsely tripping divergence).
   rclcpp::QoS command_qos(rclcpp::KeepLast(10));
   command_qos.reliable();
 
@@ -988,9 +944,9 @@ void GripperXInterface::start_watchdog()
       wheel_command_topic_, command_qos,
       std::bind(&GripperXInterface::wheel_command_input_callback, this, std::placeholders::_1));
   } else {
-    // OP-18a / W2. Two inputs, both upstream of and distinct from the policed
-    // topic, both with a single designated writer, and neither requiring the
-    // kinematics here — a twist is compared with a twist.
+    // OP-18a / W2: two inputs, both upstream of and distinct from the policed topic, each
+    // with a single designated writer, neither requiring kinematics — a twist compared
+    // with a twist.
     cmd_vel_sub_ = watchdog_node_->create_subscription<geometry_msgs::msg::Twist>(
       cmd_vel_topic_, command_qos,
       std::bind(&GripperXInterface::cmd_vel_input_callback, this, std::placeholders::_1));
@@ -1079,11 +1035,10 @@ void GripperXInterface::intent_echo_callback(
   if (!msg) {
     return;
   }
-  // Only `sequence` is consumed. The carried twist is deliberately NOT compared
-  // against /cmd_vel: the two legitimately differ for up to one control period
-  // in normal operation, and a value comparison would re-introduce exactly the
-  // race the counter exists to avoid. The twist stays on the wire because it is
-  // what makes the echo readable in a bag when something did go wrong.
+  // Only `sequence` is consumed. The carried twist is deliberately NOT compared against
+  // /cmd_vel: the two legitimately differ for up to one control period, and a value
+  // comparison would reintroduce the race the counter exists to avoid. It stays on the
+  // wire only so the echo is readable in a bag when something went wrong.
   std::lock_guard<std::mutex> lock(twist_watchdog_mutex_);
   twist_watchdog_.on_echo(msg->sequence, std::chrono::steady_clock::now());
 }
@@ -1168,10 +1123,10 @@ void GripperXInterface::watchdog_check_wheel_commands(
   }
 }
 
-// OP-18a / W2 — §3.1.5. The two failure modes the superseded check distinguished
-// are reproduced here on inputs that survive the NFR-10 rebuild, and NEITHER
-// needs the kinematics: /cmd_vel is a twist, the echo carries a twist, and the
-// discrimination is done on the echo's monotonic counter.
+// OP-18a / W2 — §3.1.5: the two failure modes the superseded check distinguished,
+// reproduced on inputs that survive the NFR-10 rebuild. Neither needs kinematics:
+// /cmd_vel is a twist, the echo carries a twist, and discrimination runs on the echo's
+// monotonic counter.
 void GripperXInterface::watchdog_check_twist_echo(const std::chrono::steady_clock::time_point & now)
 {
   TwistEchoWatchdog::Verdict verdict;

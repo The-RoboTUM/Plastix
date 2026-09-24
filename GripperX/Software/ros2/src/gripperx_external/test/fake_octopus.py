@@ -10,9 +10,8 @@ topics replaces this file and the same tests re-run.
 
 WHAT IT REPRODUCES, AND WHY EACH ONE IS HERE
 ============================================
-These are behaviours of the counterpart verified against branch tip ``a7ab8e6278``
-and re-verified on 2026-08-18. A fake that smooths any of them over would let us
-pass stage 0 and fail stage 4.
+These are behaviours of the counterpart, verified against their source. A fake
+that smooths any of them over would let us pass stage 0 and fail stage 4.
 
 1. **Goal publishing stops entirely when nothing is open.** ``/octopus/trash_goal``
    simply goes silent - there is no "done" message. Only ``open_count`` in
@@ -86,12 +85,11 @@ DEFAULT_DATUM_LON = 11.6710000
 
 #: Their working patch is ~4.46 x 3.34 m at 0.10 m resolution. Default targets sit
 #: inside it, in map metres relative to the datum.
-# THE THREE TARGETS ACTUALLY OBSERVED on their running system 2026-08-21, in
-# map metres relative to the datum. The previous defaults - (1.20, 0.80),
-# (-0.90, 1.40), (0.30, -1.10) - were invented, and two of the three sit OUTSIDE
-# the 1.25 m radius filter their demo stack now applies, so they would be
-# dropped at ingest and never appear. Keeping them would have made the fake
-# quietly disagree with the counterpart on the very first tick.
+# THE THREE TARGETS ACTUALLY OBSERVED on their running system, in map metres
+# relative to the datum. Values here must stay real ones from their side, not
+# invented: an invented target can easily fall outside their 1.25 m radius
+# filter and be dropped at ingest, so the fake would silently disagree with
+# the counterpart.
 DEFAULT_TARGETS_M: Tuple[Tuple[float, float], ...] = (
     (-0.283, 0.032),
     (-0.328, 0.564),
@@ -99,10 +97,8 @@ DEFAULT_TARGETS_M: Tuple[Tuple[float, float], ...] = (
 )
 
 # ---------------------------------------------------------------------------
-# CAPTURED FROM THE RUNNING OCTOPUS, 2026-08-21, branch `item-a-map-origin`.
-# These are observations, not guesses: a probe subscribed to their rosbridge at
-# 10.42.0.158:9090 and the frames are archived with the session. Every value
-# below replaced a value this fake had invented.
+# CAPTURED FROM THE RUNNING OCTOPUS - these are observations, not guesses.
+# Do not replace a value below with an invented one.
 # ---------------------------------------------------------------------------
 
 #: Their detector reports 0.8, not the 0.85 this fake used to make up.
@@ -116,11 +112,10 @@ REAL_FRAME_ID = "map"
 
 #: `indoor_static_map_yaw_offset_rad` - +pi/2, fixed in their configuration.
 TRANSFORM_MAP_YAW_OFFSET_RAD = 1.57079632679
-#: `indoor_static_yaw_zero_rad` AS OBSERVED. The drone's PX4 yaw locked at their
-#: startup - about -175.9 deg, nearly due south. It is NOT a constant: their own
-#: message of the same day quoted -3.06995218682264 and a restart had re-locked
-#: it to this value by the time we measured, a 2.27 deg move. That is precisely
-#: the event `relock` reproduces.
+#: `indoor_static_yaw_zero_rad` AS OBSERVED. The drone's PX4 yaw locked at
+#: their startup - about -175.9 deg, nearly due south. It is NOT a constant: a
+#: restart of their transform node re-locks it to a new value, which is
+#: precisely the event `relock` reproduces.
 OBSERVED_YAW_ZERO_RAD = -3.1094807565268194
 
 #: Their `max_radius_m`, set to 1.25 in the indoor demo stack (our number, their
@@ -129,10 +124,10 @@ OBSERVED_YAW_ZERO_RAD = -3.1094807565268194
 DEFAULT_MAX_RADIUS_M = 1.25
 
 #: The five keys of their transform payload this fake does not MODEL -
-#: per-frame detector internals. Frozen VERBATIM from the capture of
-#: 2026-08-21 rather than invented, so the frame is schema-identical to
-#: theirs and we can show we tolerate the whole thing. The VALUES are a
-#: snapshot and do not track anything; nothing may read them as live.
+#: per-frame detector internals. Frozen VERBATIM from a real capture rather
+#: than invented, so the frame is schema-identical to theirs and we can show
+#: we tolerate the whole thing. The VALUES are a snapshot and do not track
+#: anything; nothing may read them as live.
 CAPTURED_TRANSFORM_EXTRAS = json.loads("""{"camera_model": {"normalized_v_origin": "bottom_left", "image_width": 640.0, "image_height": 480.0, "fx": 359.3292231592479, "fy": 359.2290038414162, "cx": 312.8204647201454, "cy": 237.947360594595, "distortion_coefficients": {"k1": -0.057128411511179616, "k2": 0.0028040539388385884, "p1": 0.00015933624483912515, "p2": -0.001408459710522939, "k3": 0.0}, "camera_to_body_rpy_rad": [0.0, 0.0, 1.5707963267948966], "camera_translation_body_m": [0.113, 0.0, 0.022], "ground_z_ned": 0.0, "use_dist_bottom_if_valid": false, "use_manual_height_above_ground": true, "manual_height_above_ground_m": 2.5}, "odometry": {"topic": "/fmu/out/vehicle_odometry", "fresh": true, "age_sec": 0.004132270812988281, "pose_frame": 1, "position": [0.09763315320014954, -0.00518490606918931, 36.89802932739258], "q": [-0.022815745323896408, 0.04058292135596275, 0.039497919380664825, 0.9981344938278198], "position_valid": true, "quaternion_valid": true}, "local_position": {"topic": "/fmu/out/vehicle_local_position", "fresh": false, "age_sec": null, "xy_valid": false, "z_valid": false, "dist_bottom_valid": false, "position_ned": null, "heading": null, "dist_bottom": null}, "output_note": "Flight projection node. Keep projection_enabled=false until camera intrinsics/extrinsics are verified.", "last_output_points_ned": [[-0.3047194514833486, 0.16640160132449092, 39.42062898424406], [-0.31748312607126605, 0.5742278293327645, 39.42062898424406]]}""")
 
 #: How far away ``unreachable`` puts a target. Their JSON has no reachability
@@ -209,8 +204,8 @@ class FakeOctopus:
         #: datum publisher lives. `trash_goal` and the datum keep flowing, so
         #: the consumer's link watchdog - which measures the last frame of ANY
         #: topic - still reports a healthy link, while the target list the
-        #: correlation depends on quietly stops being refreshed. Nothing in this
-        #: fake could produce that case before; `silence gps` does.
+        #: correlation depends on quietly stops being refreshed. `silence gps`
+        #: reproduces exactly this case.
         self.silenced_topics: set = set()
         self.silenced_ticks = 0
 
@@ -443,8 +438,8 @@ class FakeOctopus:
             goal_id=None if goal is None else str(goal.id),
             open_count=len(self.open_targets()),
             targets=targets,
-            # The real envelope, captured 2026-08-21. `numeric_ids` matters
-            # most: theirs are JSON numbers, ours used to be strings.
+            # The real envelope. `numeric_ids` matters most: theirs are JSON
+            # numbers.
             source_id=REAL_SOURCE_ID,
             frame_id=REAL_FRAME_ID,
             timestamp=time.time(),
@@ -515,8 +510,8 @@ class FakeOctopus:
 
         This is the event the whole transform-status subscription exists for: an
         alignment measured before this moment is DEAD, and nothing else in the
-        protocol says so. The default moves it by the 2.27 deg actually observed
-        between their written message and our own measurement on 2026-08-21.
+        protocol says so. The default move, 2.27 deg, matches a real re-lock
+        magnitude observed on their system.
         """
         previous = self._yaw_zero_rad
         if yaw_zero_rad is None:

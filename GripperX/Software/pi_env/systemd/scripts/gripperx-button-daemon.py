@@ -27,7 +27,25 @@ libgpiod v1 API on purpose: the Pi ships python3-libgpiod 1.6.3, i.e.
 `gpiod.request_lines()`. Same pattern as gripperx_control/lidar_power_node.py.
 There are no gpiod CLI tools on the machine.
 
-STATUS: NOT INSTALLED, NOT ENABLED, NOT EXECUTABLE. Nothing here is in effect.
+STATUS, verified against the robot 2026-09-21: INSTALLED, ENABLED, RUNNING,
+BOTH MODES ARMED. /usr/local/bin/gripperx-button-daemon.py is mode 0755
+root:root and byte-identical to this file; /etc/gripperx/gripperx-button.conf
+is present and byte-identical to pi_env/systemd/config/gripperx-button.conf;
+gripperx-button.service is `enabled` and `active`. The config carries
+`mode_r_enabled = true` and `mode_h_enabled = true`, so a press ACTS: short
+press restarts the ROS2 stack, long press halts the Pi.
+
+A stack restart is a MOTION TRIGGER under SR-1 (the motor-enable process rule:
+no drive, steering or arm motion without explicit per-test user approval), and
+a button press carries no such approval. Anyone at the robot with the button in
+reach should know that before pressing it. Note that the `mode_r_enabled` block
+in the .conf still argues at length that Mode R is disarmed -- that COMMENT is
+stale; the VALUE below it is what the daemon reads.
+
+This line read "NOT INSTALLED, NOT ENABLED, NOT EXECUTABLE. Nothing here is in
+effect" until 2026-09-21 -- written before installation, never revisited, false
+for roughly a month. Re-check it against the machine whenever deployment
+changes; do not trust it as history.
 """
 
 from __future__ import annotations

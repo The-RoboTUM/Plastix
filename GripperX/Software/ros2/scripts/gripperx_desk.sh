@@ -9,11 +9,11 @@
 #          3-terminal set" in Software/ros2/src/gripperx_gazebo/README.md.
 #   -h / --help   print this text.
 #
-# Input device (--input keyboard|web, default keyboard, both modes): WHICH
-# front-end drives, never how many. keyboard = keyboard_teleop_node in its own
-# terminal window, the long-standing behaviour and still the default. web =
-# web_teleop_node, the browser UI (gripperx_teleop/docs/TELEOP_WEB_UI.md), run
-# backgrounded with its log in $LOG_DIR. See "Browser teleop UI" below.
+# Input device (--input keyboard|web, default web, both modes): WHICH front-end
+# drives, never how many. web = web_teleop_node, the browser UI
+# (gripperx_teleop/docs/TELEOP_WEB_UI.md), run backgrounded with its log in
+# $LOG_DIR; the URL is printed. keyboard = keyboard_teleop_node in its own
+# terminal window, one --keyboard away. See "Browser teleop UI" below.
 #
 # real and twin are mutually exclusive - there is deliberately NO mode that
 # runs both at once, and the script refuses to start one while the other is
@@ -22,62 +22,57 @@
 # Domain convention (SR-8, PlastiX-wide): real GripperX robots 20-29, their
 # digital twin the same id +200. GripperX-1 = 20 (real) / 220 (twin).
 #
-# Environment separation: nothing is exported in THIS script's own shell.
-# Every RViz/Gazebo/teleop process is spawned as its own "bash -c '<prelude>;
-# exec <cmd>'" subshell that sources its OWN domain's environment (mirroring
-# Software/ros2/scripts/sim_env.sh's guard against the unrelated ~/ros2_ws
-# on ~/.bashrc, which would otherwise leak a stale AMENT_PREFIX_PATH /
-# ROS_DOMAIN_ID into every new terminal). Because nothing is exported here,
-# no spawned process can inherit a stale or foreign domain from this script.
+# Environment separation: nothing is exported in THIS script's own shell. Every
+# RViz/Gazebo/teleop process is spawned as its own "bash -c '<prelude>; exec
+# <cmd>'" subshell that sources its OWN domain's environment - the same guard
+# Software/ros2/scripts/sim_env.sh uses against the unrelated ~/ros2_ws on
+# ~/.bashrc, which otherwise leaks a stale AMENT_PREFIX_PATH / ROS_DOMAIN_ID into
+# every new terminal. Because nothing is exported here, no spawned process can
+# inherit a stale or foreign domain from this script.
 #
-# Collision guard: before starting anything that isn't harmless to duplicate
-# (teleop node, the twin's Gazebo/control node group), the script snapshots
-# which of ITS OWN target processes already exist on that exact domain
-# (matched via /proc/<pid>/environ, not just process name, so a same-named
-# real-domain and twin-domain process are never confused). If a match is
-# already running, that step is SKIPPED with a clear message instead of
-# starting a duplicate (double-publish on /teleop/keyboard/cmd_vel, or a
-# second ros2_control/Gazebo instance fighting the existing one, are worse
-# than not starting). Only PIDs that appear AFTER this script's own launch
-# action are ever recorded as "ours"; teardown only ever touches those exact
-# PIDs, each re-verified against /proc/<pid>/cmdline immediately before the
-# kill (guards against a PID being reused by an unrelated process between
-# tracking and teardown). Nothing pre-existing is ever touched.
+# Collision guard: before starting anything that is not harmless to duplicate
+# (teleop node, the twin's Gazebo/control node group), the script snapshots which
+# of ITS OWN target processes already exist on that exact domain - matched via
+# /proc/<pid>/environ, not process name, so a same-named real-domain and
+# twin-domain process are never confused. A match means that step is SKIPPED with
+# a clear message: a double-publish on /teleop/keyboard/cmd_vel, or a second
+# ros2_control/Gazebo instance fighting the existing one, is worse than not
+# starting. Only PIDs that appear AFTER this script's own launch action count as
+# "ours"; teardown touches those exact PIDs only, each re-verified against
+# /proc/<pid>/cmdline immediately before the kill, because a PID can be reused by
+# an unrelated process in between. Nothing pre-existing is ever touched.
 #
 # Mutual exclusion, TWO rules, both about the same thing - never two live
 # command sources, and never an ambiguous one:
 #   (1) real <-> twin, ACROSS domains: the script refuses to start at all if a
 #       teleop node is already running on the OTHER domain - twin refuses while
-#       one runs on 20, real refuses while one runs on 220. Rationale: it must
-#       never be ambiguous which window drives the REAL robot. Two teleop
-#       windows look identical on screen and differ only in an invisible
-#       ROS_DOMAIN_ID; a keypress meant for the simulation would then move real
-#       hardware (SR-1/SR-8).
+#       one runs on 20, real refuses while one runs on 220. It must never be
+#       ambiguous which window drives the REAL robot: two teleop windows look
+#       identical on screen and differ only in an invisible ROS_DOMAIN_ID, so a
+#       keypress meant for the simulation would move real hardware (SR-1/SR-8).
 #   (2) keyboard <-> web, WITHIN one domain: a running browser UI refuses a
 #       keyboard start and a running keyboard teleop refuses a web start, both
 #       directions, naming the PID. This is the harder failure of the two.
 #       web_teleop_node SUBCLASSES KeyboardTeleopNode and inherits _publish
-#       unchanged, so the two front-ends publish the SAME /teleop/keyboard/
-#       cmd_vel and the same /teleop/direct_steer. The mux forwards whichever
-#       arrived last, and - the part that makes it dangerous rather than merely
-#       untidy - NEITHER operator's dead-man covers the other's traffic:
+#       unchanged, so both front-ends publish the SAME /teleop/keyboard/cmd_vel
+#       and the same /teleop/direct_steer. The mux forwards whichever arrived
+#       last, and NEITHER operator's dead-man covers the other's traffic:
 #       releasing every key on the page does not stop a robot the terminal is
 #       driving, and neither does its emergency stop (SR-2/SR-3, and
-#       gripperx_teleop/docs/TELEOP_WEB_UI.md says the same in its own words). The node itself
+#       gripperx_teleop/docs/TELEOP_WEB_UI.md in its own words). The node itself
 #       only WARNS about a rival (red banner, ERROR log, deliberately no kill);
 #       this launcher refuses, which is the cheaper place to catch it.
 # Both rules match by /proc/<pid>/environ, not by process name alone, so a
 # same-named process on another domain is never mistaken for one on ours - and
 # rule (2) looks for the OTHER node name, not just its own.
 #
-# TTY: keyboard_teleop_node reads the terminal in raw mode (tty/termios), so
-# it needs a real terminal, not a backgrounded pipe. Each keyboard teleop
-# instance is therefore opened in its own terminal-emulator window
-# (gnome-terminal, falling back to x-terminal-emulator); if neither exists, the
-# script prints the exact command to run manually instead of starting it
-# headless. web_teleop_node needs NO tty - its input arrives over HTTP - which
-# is precisely why --input web skips the whole terminal-emulator dance and is
-# backgrounded like RViz and the mapping stack.
+# TTY: keyboard_teleop_node reads the terminal in raw mode (tty/termios), so it
+# needs a real terminal, not a backgrounded pipe. Each keyboard teleop instance
+# is therefore opened in its own terminal-emulator window (gnome-terminal,
+# falling back to x-terminal-emulator); if neither exists, the script prints the
+# exact command to run manually instead of starting it headless. web_teleop_node
+# needs NO tty - its input arrives over HTTP - which is why --input web skips the
+# terminal-emulator dance and is backgrounded like RViz and the mapping stack.
 #
 # Browser teleop UI (--input web): gripperx_teleop/docs/TELEOP_WEB_UI.md is the
 # reference; what matters here is what the launcher must not get wrong.
@@ -97,76 +92,54 @@
 #   * Port collision is checked BEFORE launching. A second web_teleop_node on
 #     the same port dies in its bind() with a traceback in a log file nobody is
 #     watching; the launcher instead names the process holding the port and
-#     points at --web-port. Observed: an unrelated session's UI on
-#     127.0.0.1:8080 while this was being written.
-#   * HANDOVER (2026-08-25) records the UI as verified on the twin (220) and on
-#     a desk rig (42, no motors) and NEVER RUN AGAINST THE REAL ROBOT, with the
-#     /joint_states-vs-commanded sign convention still unmeasured. "real" plus
-#     "--input web" is therefore that first contact, and the launcher says so
-#     out loud rather than letting it happen quietly.
+#     points at --web-port.
+#   * The UI has been run against the real robot, browser front-end included, so
+#     a bare "real" start is not a first contact. The date of that run is not
+#     recorded here (`TO-VERIFY`).
 #
-# RViz config for "real": SUPERSEDED 2026-08-18. The Pi now runs mapping as a
-# systemd service (gripperx-mapping: rf2o_laser_odometry + async slam_toolbox),
-# so /map, /odom and the full TF chain map->odom->base_footprint->base_link DO
-# exist on domain 20. The old default gripperx_description/rviz/display.rviz
-# (Fixed Frame "base_link", no LaserScan, no Map) could therefore never show
-# the robot moving through the world - it pinned the view to the robot itself.
-# New default: gripperx_localization/rviz/localization.rviz, Fixed Frame "map",
-# with Map(/map) + LaserScan(/scan) + RobotModel(/robot_description) + TF.
-# Chosen over ~/.rviz2/gripperx_mapping.rviz because that config has NO
-# RobotModel and no TF display at all (only Map/LaserScan/costmaps//plan), so
-# the one thing actually asked for - a robot model that moves - would be
-# missing. Price of this choice: localization.rviz carries displays that stay
-# empty without Nav2/robot_localization/a camera (GlobalPlan /plan,
-# FilteredOdom /odometry/filtered, DepthCloud+Camera+Image on /camera/*).
-# Verified live on domain 20 (2026-08-18): RViz builds the map swatch
-# (163x164 cells, matching /map) and logs no "Fixed Frame does not exist" and
-# no missing transform for lidar_link/base_link. Override: RVIZ_CONFIG_REAL.
-# Note on stationary SLAM: slam_toolbox stamps map->odom with the last
-# PROCESSED scan (minimum_travel_distance 0.3 m / heading 0.3 rad), so while
-# the robot stands still that stamp freezes and ages. Harmless here - the
-# transform keeps being published at 50 Hz and tf2 serves the single cached
-# entry for any query time - and it advances again as soon as you drive.
+# RViz config for "real": gripperx_localization/rviz/localization.rviz, Fixed
+# Frame "map", with Map(/map) + LaserScan(/scan) + RobotModel(/robot_description)
+# + TF - the Pi runs mapping as a systemd service, so /map and the full chain
+# map->odom->base_footprint->base_link exist on domain 20. Price of this config:
+# it carries displays that stay empty without Nav2/robot_localization/a camera
+# (GlobalPlan /plan, FilteredOdom /odometry/filtered, DepthCloud+Camera+Image on
+# /camera/*). Override: RVIZ_CONFIG_REAL.
+# Note on stationary SLAM: slam_toolbox stamps map->odom with the last PROCESSED
+# scan (minimum_travel_distance 0.3 m / heading 0.3 rad), so while the robot
+# stands still that stamp freezes and ages. Harmless here - the transform keeps
+# being published at 50 Hz and tf2 serves the single cached entry for any query
+# time - and it advances again as soon as you drive.
 #
 # Teardown: gripperx_gazebo/README.md explicitly warns a plain Ctrl-C is not
 # enough for the twin. See "Collision guard" above for how this script tracks
 # and kills exactly what it started, nothing else, no ros2 daemon stop, no
-# name-only pkill sweep. The README still names swerve_cmd_node and
-# joint_command_bridge as the usual survivors - that is stale, see "NFR-10"
-# below; the surviving set is now gz sim / clock_ready_gate / parameter_bridge /
+# name-only pkill sweep. The survivor list in that README is stale (see "NFR-10"
+# below); the surviving set is gz sim / clock_ready_gate / parameter_bridge /
 # teleop_mux_node / robot_state_publisher / async_slam_toolbox_node.
 #
-# NFR-10 (hardware-accepted 2026-08-19): swerve_controller is the ACTIVE AND ONLY
-# drive path. real_robot.launch.py no longer includes control.launch.py, and
+# NFR-10: swerve_controller is the ACTIVE AND ONLY drive path.
+# real_robot.launch.py does not include control.launch.py, and
 # spawn_robot.launch.py spawns swerve_controller instead of the old
 # steering/wheel controller pair, so NONE of swerve_cmd_node,
-# joint_command_bridge or sim_steer_bridge is started any more - on either side.
-# The files were REMOVED from the repo in the deletion round (eb05e25, "deletion
-# round: retire the pre-NFR-10 controller node chain"); only the orphaned config
+# joint_command_bridge or sim_steer_bridge is started any more, on either side.
+# The nodes are gone from the repo; only the orphaned config
 # gripperx_control/config/swerve_cmd.yaml is left. That does NOT retire the
-# checks below: a stale install tree, an old bringup that outlived a deploy, or
-# a hand-started control.launch.py from an older checkout can all still put such
-# a process on the robot, and the point of a health check is to see what IS
-# running rather than what the current source could start.
-#   * health check: swerve_cmd_node/joint_command_bridge were listed as REQUIRED
-#     nodes, so every healthy robot reported two missing nodes. They are now
-#     checked with the opposite polarity - if either is running, that is a
-#     THIRD publisher on /hw/joint_commands (the documented normal state is
-#     exactly 2: GripperXInterface + its watchdog, D4/OP-18b/SR-10) and is
-#     reported as a fault. teleop_mux_node and lidar_power_node were missing
-#     from the required list and were added.
-#   * swerve_controller itself is a controller_manager PLUGIN, not a process:
-#     it cannot be pgrep-ed. Its spawner is one-shot and is long gone by the
-#     time this check runs. Verifying it needs "ros2 control list_controllers"
-#     on the Pi, which is deliberately NOT done here (DDS traffic during/after
-#     bringup provokes controller_manager overruns).
-#   * twin collision-guard/orphan lists: dropped sim_steer_bridge,
-#     swerve_cmd_node, joint_command_bridge (never started any more) and
-#     ros2_control_node (in the sim the controller_manager runs INSIDE the
-#     gz_ros2_control plugin, i.e. inside the gz sim process - there is no
-#     separate ros2_control_node to orphan); dropped gzserver (Gazebo Classic,
-#     this stack is Harmonic). Added clock_ready_gate and teleop_mux_node,
-#     which the twin does start and which do survive a plain Ctrl-C.
+# checks below: a stale install tree, an old bringup that outlived a deploy, or a
+# hand-started control.launch.py from an older checkout can all still put such a
+# process on the robot, and a health check exists to see what IS running rather
+# than what the current source could start.
+#   * health check: swerve_cmd_node/joint_command_bridge are checked with
+#     INVERTED polarity - if either runs, that is a THIRD publisher on
+#     /hw/joint_commands (documented normal state is exactly 2: GripperXInterface
+#     + its watchdog, D4/OP-18b/SR-10) and is reported as a fault.
+#   * swerve_controller itself is a controller_manager PLUGIN, not a process: it
+#     cannot be pgrep-ed, and its spawner is one-shot and long gone by the time
+#     this check runs. Verifying it needs "ros2 control list_controllers" on the
+#     Pi, which is deliberately NOT done here - DDS traffic during/after bringup
+#     provokes controller_manager overruns.
+#   * the twin's collision-guard and orphan lists follow from this. The reason for
+#     every entry and every deliberate non-entry is at the lists themselves, in
+#     start_twin() and in the teardown.
 #
 # Steering safety gate (real mode, MOVEMENT-RELEVANT - read this before
 # removing it): merely STARTING the teleop commands the steering. keyboard_
@@ -175,14 +148,13 @@
 # publish_rate_hz (default 50.0) with angle initialised to 0.0;
 # steer_servo_node applies /teleop/direct_steer as an OVERRIDE on top of
 # /hw/joint_commands. So the wheels are driven to straight-ahead (0 deg)
-# immediately, without any key press. On 2026-08-19 the robot was left with
-# actuator power ON and the steering holding ~ +-33 deg from the last drive -
-# starting the launcher would have swung all four wheels by that much,
-# unrequested.
+# immediately, without any key press: on a robot left with actuator power ON and
+# the steering holding an off-centre angle from the last drive, starting the
+# launcher swings all four wheels by that much, unrequested.
 # This is exactly the class of action the user's standing rule covers: no
-# movement of drive, steering servos or arm without explicit per-test approval
-# (rule of 2026-07-06, reaffirmed after the incident). The gate therefore
-# states what will happen, reads the CURRENT angles from /hw/steer_states
+# movement of drive, steering servos or arm without explicit per-test approval.
+# The gate therefore states what will happen, reads the CURRENT angles
+# from /hw/steer_states
 # (Float64MultiArray, radians, joint order FL FR BL BR - the topic
 # steer_servo_node itself publishes from servo read-back, chosen over TF
 # because it is the servo truth and needs no mapping/odometry to be alive) and
@@ -217,18 +189,16 @@
 # slam_toolbox.yaml), followed by a lifecycle configure/activate dance -
 # slam_toolbox comes up unconfigured and publishes nothing until it is activated.
 # THIS IS NO LONGER THE SAME STACK THE Pi RUNS, and the difference is left in
-# place deliberately rather than papered over. Since a52379d (2026-08-24)
-# gripperx-mapping.sh launches gripperx_localization/localization.launch.py
-# (laser_scan_matcher + EKF + slam_toolbox with the 2026-08-21 tuning), not
-# mapping.launch.py; the commit's own words are that mapping.launch.py's
-# slam_toolbox.yaml carries the older, coarser parameters and that rf2o and the
-# EKF both publish odom->base_footprint. So this laptop-side fallback is now a
-# DIFFERENT odometry source with COARSER SLAM settings, and running it beside a
-# mapping Pi is a TF fight, not merely a duplicate. That is exactly why the
-# detection below had to be corrected to recognise the Pi's new node set, and why
-# it now refuses to start on an unknown answer. Whether the laptop fallback
-# should switch to localization.launch.py as well is a real question and NOT
-# decided here - it is a repo file, another stack's tuning, and a user call.
+# place deliberately rather than papered over. gripperx-mapping.sh on the Pi
+# launches gripperx_localization/localization.launch.py (laser_scan_matcher + EKF
+# + slam_toolbox), not mapping.launch.py, and mapping.launch.py's
+# slam_toolbox.yaml carries the older, coarser parameters while rf2o and the EKF
+# both publish odom->base_footprint. So this laptop-side fallback is a DIFFERENT
+# odometry source with COARSER SLAM settings, and running it beside a mapping Pi
+# is a TF fight, not merely a duplicate - which is why the detection below knows
+# the Pi's node set and refuses to start on an unknown answer. Whether the laptop
+# fallback should switch to localization.launch.py as well is a real question and
+# NOT decided here - it is a repo file, another stack's tuning, and a user call.
 # WEAK POINT, by design: rf2o consumes /scan over WiFi. Every dropped or late
 # scan becomes an odometry error, and unlike on the Pi there is no way to hide
 # the link. Expect worse odometry than the Pi-side variant; on a bad link the
@@ -240,56 +210,42 @@
 # jumps around in RViz. Opt out with GRIPPERX_DESK_LOCAL_MAP=off or
 # --no-local-map. The processes are tracked and torn down PID-exactly like
 # everything else this script starts.
-# AND IT SKIPS ITSELF WHEN IT CANNOT TELL - added 2026-08-25 after the path was
-# exercised for the first time. Both pieces of evidence can fail at once, and
-# they did: on a loaded Pi all five ssh attempts timed out (evidence "unknown"),
-# and the DDS fallback "ros2 node list" on domain 20 returned a graph with no
-# robot in it at all - the laptop could not see the Pi's nodes, only a local one.
-# Two failed observations are not a measurement that nothing is mapping, but the
-# old code read them that way and went on to START a second rf2o + slam_toolbox
-# ON THE REAL ROBOT'S DOMAIN - precisely the duplicate-publisher case the
-# paragraph above exists to prevent, reached by guessing. The steering gate two
-# paragraphs down already answers this class of question the other way round
-# ("unknown is treated as worst case"), and this now does the same: no ssh
-# answer means no local mapping stack, and the run says so. --force-local-map
-# (or GRIPPERX_DESK_LOCAL_MAP=force) is the deliberate override for the case
-# where the operator KNOWS the Pi is not mapping; like --no-steer-gate it
-# asserts, it does not verify.
+# AND IT SKIPS ITSELF WHEN IT CANNOT TELL. Both pieces of evidence can fail at
+# once: a loaded Pi lets every ssh attempt time out (evidence "unknown"), and on
+# a link that cannot see the robot the DDS fallback "ros2 node list" on domain 20
+# returns a graph with no robot in it - indistinguishable from a Pi that is not
+# mapping. Two failed observations are not a measurement that nothing is mapping,
+# and acting on them would START a second rf2o + slam_toolbox ON THE REAL ROBOT'S
+# DOMAIN, by guessing. Unknown is treated as worst case, exactly as the steering
+# gate does: no ssh answer means no local mapping stack, and the run says so.
+# --force-local-map (or GRIPPERX_DESK_LOCAL_MAP=force) is the deliberate override
+# for the case where the operator KNOWS the Pi is not mapping; like
+# --no-steer-gate it asserts, it does not verify.
 #
 # gz-transport partition (twin): ROS_DOMAIN_ID isolates DDS, but gz-transport
 # IGNORES it entirely - it namespaces by GZ_PARTITION, which defaults to
 # "<hostname>:<username>" and is therefore IDENTICAL for every track on this
-# laptop. A parallel Gazebo has already captured a spawn once because of this
-# (SR-8 gap, recorded in the handover). sim_env.sh sets GZ_IP but no
-# GZ_PARTITION and is a repo file that is NOT edited from here, so the twin
-# prelude sets GZ_PARTITION itself, AFTER sourcing sim_env.sh. The name
-# gripperx_desk_twin_220 cannot collide with the nav2 track (~/gripperx_ws_nav2,
-# domain 220), because that track sources sim_env.sh unchanged and thus stays
-# on the "<hostname>:<username>" default - any explicit non-empty name is
-# disjoint from it. Override with GZ_PARTITION_TWIN.
+# laptop, so a parallel Gazebo can capture this one's spawn (SR-8 gap).
+# sim_env.sh sets GZ_IP but no GZ_PARTITION and is a repo file that is NOT edited
+# from here, so the twin prelude sets GZ_PARTITION itself, AFTER sourcing
+# sim_env.sh. Any explicit non-empty name is disjoint from that default, so
+# gripperx_desk_twin_220 cannot collide with a track that sources sim_env.sh
+# unchanged. Override with GZ_PARTITION_TWIN.
 #
 # Domain ownership: 20 = real GripperX-1, 220 = its twin (SR-8 makes that
 # mandatory, not conventional), 221 = the "second parallel twin session" the
 # same convention reserves; gripperx_external hard-codes SIMULATION_DOMAIN_IDS
-# = {220, 221} and treats every other domain as a real robot.
-# CORRECTED 2026-08-25: this paragraph used to attribute 220 to a nav2 track in
-# ~/gripperx_ws_nav2 and 221 to an octopus track in ~/gripperx_ws_octopus. Both
-# worktrees were removed and both branches deleted on 2026-08-25, so naming an
-# owner is now a guess. The check reports the DOMAIN and the PIDs and leaves the
-# attribution to the reader. It stays read-only either way: it names PIDs and
-# warns, it never acts.
+# = {220, 221} and treats every other domain as a real robot. No owner is named
+# for a busy domain: the check reports the DOMAIN and the PIDs and leaves the
+# attribution to the reader. It is read-only - it names PIDs and warns, never
+# acts.
 
 set -u
 
-# Repo copy of this script (Software/ros2/scripts/gripperx_desk.sh): WS is
-# derived from the script's OWN location, same technique sim_env.sh in this
-# same directory already uses ("$(dirname "${BASH_SOURCE[0]}")/.."), and for
-# the same reason - a hardcoded "$HOME/gripperx_ws" would silently point at
-# the shared main tree even when this file is run out of a git worktree
-# (e.g. ~/gripperx_ws_desk), sourcing a foreign install/setup.bash. The
-# original, unversioned ~/gripperx_desk.sh keeps the old hardcoded
-# "$HOME/gripperx_ws/Software/ros2" on purpose - it only ever runs from the
-# user's actual $HOME, never from a worktree copy.
+# WS is derived from the script's OWN location, the same technique sim_env.sh in
+# this directory uses, and for the same reason: a hardcoded "$HOME/gripperx_ws"
+# would silently point at the shared main tree even when this file runs out of a
+# git worktree, sourcing a foreign install/setup.bash.
 WS="$(cd -- "$(dirname -- "${BASH_SOURCE[0]:-$0}")/.." && pwd)"
 SSH_HOST="gripperx"
 
@@ -297,11 +253,9 @@ REAL_DOMAIN=20
 TWIN_DOMAIN=220
 RMW_IMPL=rmw_fastrtps_cpp
 
-# Domains that other parallel sessions may occupy - only ever READ, never used
-# here. See "Domain ownership" in the header: these are the two ids the domain
-# convention reserves for simulation (SR-8 / SIMULATION_DOMAIN_IDS), NOT the
-# property of any named worktree. The two worktrees this list used to name were
-# deleted on 2026-08-25.
+# Domains that other parallel sessions may occupy - only ever READ. The two ids
+# the convention reserves for simulation (SR-8 / SIMULATION_DOMAIN_IDS), NOT the
+# property of any named worktree; see "Domain ownership" in the header.
 FOREIGN_DOMAINS=(220 221)
 
 # gz-transport partition for the twin group; see the header. Must differ from
@@ -317,10 +271,19 @@ STEER_GATE="${GRIPPERX_DESK_STEER_GATE:-on}"
 # (see start_local_mapping - "on" deliberately does NOT).
 LOCAL_MAP="${GRIPPERX_DESK_LOCAL_MAP:-on}"
 
-# Which teleop front-end drives - "keyboard" (default, unchanged behaviour) or
-# "web". Applies to real and twin alike; it selects the input device, it never
-# starts a second one. --input <device> overrides.
-INPUT="${GRIPPERX_DESK_INPUT:-keyboard}"
+# Which teleop front-end drives - "web" (default) or "keyboard". Applies to real
+# and twin alike; it selects the input device, it never starts a second one.
+# --input <device> overrides, --keyboard is the shorthand back.
+#
+# The browser UI is the SAME teleop, not a lighter one: WebTeleopNode subclasses
+# KeyboardTeleopNode and overrides neither _publish nor press nor center, so the
+# dead-man, the TransitionGuard and the steering gate are the inherited ones - the
+# default says which front-end you see, never how much protection you get.
+# "keyboard" stays available for the case the web UI cannot serve (no browser, or
+# a terminal-only session over ssh); it is that escape hatch, not a safety
+# measure, since the browser UI has been run against the real robot with the
+# front-end included. The date of that run is not recorded - `TO-VERIFY`.
+INPUT="${GRIPPERX_DESK_INPUT:-web}"
 
 # The two teleop node names, in one place. Every guard in this script iterates
 # over this list rather than hardcoding "keyboard_teleop_node", because the two
@@ -387,10 +350,12 @@ Usage: gripperx_desk.sh [real|twin|-h|--help] [flags]
   twin   Digital twin: Gazebo (GUI) + standalone RViz + teleop,
          ROS_DOMAIN_ID=220, in its own gz-transport partition.
 
-Input device (both modes): --input keyboard (default) or --input web.
-  keyboard  keyboard_teleop_node in its own terminal window (needs a tty).
+Input device (both modes): --input web (default) or --input keyboard.
   web       web_teleop_node, the browser UI, backgrounded, log in /tmp/
             gripperx_desk. Needs no terminal; the URL is printed.
+  keyboard  keyboard_teleop_node in its own terminal window (needs a tty).
+Same node either way - the browser UI subclasses the keyboard one and inherits
+the dead-man, the guard and the steering gate unchanged.
 
 Mutual exclusion, two rules:
   real <-> twin   the script refuses to start while ANY teleop node (keyboard
@@ -411,8 +376,9 @@ therefore shows the current wheel angles and asks you to type MOVE before
 either teleop is started.
 
 Flags:
-  --input <keyboard|web>  teleop front-end (default keyboard)
+  --input <keyboard|web>  teleop front-end (default web)
   --web                   shorthand for --input web
+  --keyboard              shorthand for --input keyboard (terminal teleop)
   --open-browser          open the UI in a browser (web only, default off)
   --web-port <n>          TCP port for the UI (default 8080)
   --web-expose            bind the UI to 0.0.0.0 instead of 127.0.0.1.
@@ -427,7 +393,7 @@ Flags:
 Env overrides: RVIZ_CONFIG_REAL=<path>, RVIZ_CONFIG_TWIN=<path>,
                GRIPPERX_DESK_STEER_GATE=off, GRIPPERX_DESK_LOCAL_MAP=off,
                GRIPPERX_DESK_INPUT=web, GRIPPERX_DESK_WEB_PORT=<n>,
-               GZ_PARTITION_TWIN=<name>
+               GRIPPERX_DESK_MAP_WATCH_INTERVAL=<s>|off, GZ_PARTITION_TWIN=<name>
                (there is no environment variable for the bind address on
                 purpose - see --web-expose)
 EOF
@@ -443,9 +409,8 @@ domain_of_pid() {
     # "2>/dev/null" BEFORE the input redirection, deliberately: redirections are
     # applied left to right, and it is the "< /proc/.../environ" itself that
     # fails (EACCES) for processes of other users - that failure is reported by
-    # the shell, not by tr, so a trailing 2>/dev/null came too late to suppress
-    # it. Only showed up once this was called for every PID in /proc rather than
-    # for pgrep hits, which are all our own.
+    # the shell, not by tr, so a trailing 2>/dev/null comes too late to suppress
+    # it.
     tr '\0' '\n' 2>/dev/null < "/proc/$1/environ" | sed -n 's/^ROS_DOMAIN_ID=//p'
 }
 
@@ -475,11 +440,10 @@ track() { # label pid pattern
 # It carries ROS_DOMAIN_ID in its environ, so to a /proc-based domain match it is
 # indistinguishable from a real node, and THIS SCRIPT SPAWNS THEM ITSELF: the
 # health check's topic list, the local-mapping DDS probe and the lifecycle calls
-# all do. Found 2026-08-25: other_track_check() reported domains 220 and 221 as
-# busy with named tracks while both were in fact empty - the hits were daemons,
-# one of them left behind by this script's own previous run. A warning that fires
-# when nothing is wrong is worse than no warning, because it teaches the reader
-# to skip the one that matters.
+# all do, so other_track_check() would report an empty domain as busy on the
+# strength of a daemon left behind by this script's own previous run. A warning
+# that fires when nothing is wrong is worse than no warning, because it teaches
+# the reader to skip the one that matters.
 # Matched on the CMDLINE, not on a name: the process is called "python3", which
 # discriminates nothing, and "ros2-daemon" appears only as an argument value.
 is_ros2_cli_daemon() { # pid
@@ -611,6 +575,11 @@ teardown() {
         return   # nothing was ever started (e.g. -h/--help, or all steps skipped) - stay quiet
     fi
     echo
+    # The watch goes first: it must not comment on processes that are on their way
+    # out, and everything it could still say is said once more at the end of teardown.
+    if [ -n "${MAP_WATCH_PID:-}" ] && kill -0 "$MAP_WATCH_PID" 2>/dev/null; then
+        kill -TERM "$MAP_WATCH_PID" 2>/dev/null
+    fi
     log "Tearing down everything this script started..."
     local i pid label pattern
     for i in "${!TRACKED_PIDS[@]}"; do
@@ -667,29 +636,34 @@ teardown() {
             done
         done
     fi
+    if [ -n "${MAP_WATCH_FLAG:-}" ] && [ -f "$MAP_WATCH_FLAG" ]; then
+        rm -f "$MAP_WATCH_FLAG"
+        warn "A MAPPING COLLISION was seen during this run, and the stack that is going"
+        warn "  down now was part of it. The Pi's own /slam_toolbox may have been left"
+        warn "  'unconfigured' by it: its configure can have been answered by the node this"
+        warn "  script started. Then there is no /map publisher and no map->odom left on"
+        warn "  domain $REAL_DOMAIN, and the next RViz opens empty. Check it, do not assume:"
+        warn "    ssh $SSH_HOST 'source /opt/ros/jazzy/setup.bash; ROS_DOMAIN_ID=$REAL_DOMAIN ros2 lifecycle get /slam_toolbox'"
+        warn "  Repair, if it does not say 'active':"
+        warn "    ssh $SSH_HOST 'sudo systemctl restart gripperx-mapping'"
+    fi
     log "Teardown complete. Terminal windows (if any) may remain open (idle shell) - close them manually."
 }
 # PIPE is in the list deliberately. A shell killed by an UNTRAPPED fatal signal
 # does not run its EXIT trap, and SIGPIPE is exactly that case: piping this
 # script into something that exits early ("gripperx_desk.sh real | head") kills
-# it the moment it writes to the closed pipe, and every process it had started
-# (RViz, the local mapping stack, Gazebo) was left running. Observed while
-# testing this script on 2026-08-20.
+# it the moment it writes to the closed pipe, leaving every process it started
+# (RViz, the local mapping stack, Gazebo) running.
 trap teardown INT TERM PIPE EXIT
 
 # --- Pi health check (real mode only) ---------------------------------------
 
 pi_health_check() {
     log "== Pi health check (read-only, ssh $SSH_HOST) =="
-    # RETRY BUDGET WIDENED 2026-08-25, from 3 attempts / ConnectTimeout 5.
-    # Measured that day on a fully loaded Pi (all four services active, load ~3.0,
-    # goal_gateway_node 36.5 % + ros2_control_node 19.6 % + laser_scan_matcher
-    # 16.3 % + steer_servo_node 15.1 %): attempts 1 AND 2 timed out and attempt 3
-    # succeeded. That is the whole old budget spent on a Pi that was perfectly
-    # healthy - one more slow handshake and this check would have declared the
-    # robot unreachable and told the user to expect an empty RViz. A slow
-    # handshake is not a down robot, and the cost of being wrong in that direction
-    # is that the operator stops believing the health check.
+    # The retry budget is deliberately wide: on a fully loaded Pi (all four
+    # services active) the first two attempts can time out and the third succeed.
+    # A slow handshake is not a down robot, and declaring the robot unreachable
+    # while it is merely busy teaches the operator to stop believing this check.
     # The outer "timeout" is not redundant with ConnectTimeout: ConnectTimeout
     # bounds the TCP/handshake phase only, and a session that hangs AFTER
     # authentication (the loaded case) would otherwise stall here for ever.
@@ -718,21 +692,19 @@ pi_health_check() {
             echo "N_RC: $(pgrep -c -f "ros2_control_nod[e]")"
             echo "N_LIDAR: $(pgrep -c -f "ldlidar_stl_ros2_nod[e]")"
             echo "N_SCANFILT: $(pgrep -c -f "scan_range_filte[r]")"
-            # THE MAPPING STACK ON THE Pi CHANGED - a52379d, 2026-08-24.
+            # WHAT THE Pi RUNS FOR MAPPING.
             # (No apostrophes in this block: it is a single-quoted ssh payload.)
-            # gripperx-mapping.service no longer launches gripperx_bringup/
-            # mapping.launch.py (rf2o + slam_toolbox). It launches
-            # gripperx_localization/localization.launch.py with enable_slam:=true
-            # enable_laser_odometry:=true, i.e. ros2_laser_scan_matcher (node name
-            # laser_odometry_node) + an ekf_node + odom_divergence_monitor +
-            # async_slam_toolbox_node. rf2o is GONE from the robot. Asking for it
-            # is why the check reported "service active but nodes are missing
-            # (rf2o=0)" on a healthy, mapping robot on 2026-08-25 - and, worse,
-            # why PI_MAPPING_EVIDENCE could never reach "active", which is the
-            # flag that stops this laptop starting a SECOND mapping stack on
-            # domain 20. rf2o is still asked for, but with the opposite meaning:
-            # per a52379d rf2o and the EKF both publish odom->base_footprint, so
-            # an rf2o on the Pi today is a TF fight, not a mapping stack.
+            # gripperx-mapping.service launches gripperx_localization/
+            # localization.launch.py with enable_slam:=true
+            # enable_laser_odometry:=true: ros2_laser_scan_matcher (node name
+            # laser_odometry_node) + ekf_node + odom_divergence_monitor +
+            # async_slam_toolbox_node. It is NOT gripperx_bringup/mapping.launch.py
+            # and rf2o is GONE from the robot, so requiring rf2o here would keep
+            # PI_MAPPING_EVIDENCE from ever reaching "active" - the flag that stops
+            # this laptop starting a SECOND mapping stack on domain 20. rf2o is
+            # still asked for, with the opposite meaning: it and the EKF both
+            # publish odom->base_footprint, so an rf2o on the Pi is a TF fight, not
+            # a mapping stack.
             echo "N_RF2O: $(pgrep -c -f "rf2o_laser_odometry_nod[e]")"
             echo "N_LSM: $(pgrep -c -f "laser_scan_matche[r]")"
             echo "N_EKF: $(pgrep -c -f "ekf_nod[e]")"
@@ -796,23 +768,19 @@ pi_health_check() {
         warn "bringup (real_robot.launch.py) process NOT found (service: ${svc_bringup:-unknown})"
         warn "  - teleop will have nothing to talk to."
     fi
-    # Required set corrected for NFR-10 (see the header): swerve_cmd_node and
-    # joint_command_bridge were in here and are NOT started any more, so this
-    # check reported two missing nodes on every healthy robot. teleop_mux_node
-    # was missing although the teleop cannot reach the drive without it.
-    # swerve_controller is deliberately absent from this list - it is a
-    # controller_manager plugin inside ros2_control_node, not a process.
+    # Required set per NFR-10 (see the header): no swerve_cmd_node and no
+    # joint_command_bridge, which are not started any more, but teleop_mux_node,
+    # without which the teleop cannot reach the drive. swerve_controller is
+    # deliberately absent - it is a controller_manager plugin inside
+    # ros2_control_node, not a process.
     local missing=()
     [ "${n_rsp:-0}" -ge 1 ] 2>/dev/null || missing+=("robot_state_publisher")
     [ "${n_rc:-0}" -ge 1 ] 2>/dev/null || missing+=("ros2_control_node")
     [ "${n_lidar:-0}" -ge 1 ] 2>/dev/null || missing+=("ldlidar_stl_ros2_node")
-    # ADDED 2026-08-25, and it is not cosmetic. Since the scan-filter change the
-    # LiDAR driver publishes /scan_RAW, and scan_range_filter is what republishes
-    # /scan with the self-returns (arm, gripper, all below 0.10 m) removed. If it
-    # is not running there is NO /scan at all - not unfiltered data, none - so
-    # slam_toolbox, both costmaps and RViz go quiet together. The launch file
-    # calls that a deliberately loud failure; without this line the health check
-    # was deaf to it and would have reported a healthy robot.
+    # Not cosmetic: the LiDAR driver publishes /scan_RAW, and scan_range_filter is
+    # what republishes /scan with the self-returns (arm, gripper, all below 0.10 m)
+    # removed. If it is not running there is NO /scan at all - not unfiltered data,
+    # none - so slam_toolbox, both costmaps and RViz go quiet together.
     [ "${n_scanfilt:-0}" -ge 1 ] 2>/dev/null || missing+=("scan_range_filter")
     [ "${n_steer:-0}" -ge 1 ] 2>/dev/null || missing+=("steer_servo_node")
     [ "${n_mux:-0}" -ge 1 ] 2>/dev/null || missing+=("teleop_mux_node")
@@ -915,12 +883,11 @@ mapping_check() { # svc_state n_laser_scan_matcher n_slam n_ekf
         warn "Missing on domain $REAL_DOMAIN: ${missing[*]} - the corresponding RViz display stays empty."
     fi
     # /odom is reported SEPARATELY and NOT as a required topic, because who
-    # publishes it changed with a52379d and this script has not verified the new
-    # answer. rf2o published /odom (odom_topic: '/odom') and rf2o is gone; the
-    # EKF's own output topic is /odometry/filtered, and one of the remappings in
-    # localization.launch.py points /odometry/filtered at /wheel/odom for one of
-    # the four EKF variants. Rather than guess which topic carries odometry on
-    # this robot today, both are reported and neither is called a fault.
+    # publishes it is unverified: rf2o published /odom and rf2o is gone; the EKF's
+    # own output topic is /odometry/filtered, and one remapping in
+    # localization.launch.py points /odometry/filtered at /wheel/odom for one of the
+    # four EKF variants. Rather than guess which topic carries odometry on this
+    # robot, both are reported and neither is called a fault.
     for t in /odom /odometry/filtered; do
         if grep -qx -- "$t" <<<"$topics"; then
             ok "  odometry topic present on domain $REAL_DOMAIN: $t"
@@ -958,15 +925,14 @@ mapping_check() { # svc_state n_laser_scan_matcher n_slam n_ekf
 other_track_check() { # domain_we_are_about_to_use
     local ours="$1" d pid pids comm found=0
     log "== other-track check (read-only, nothing is killed) =="
-    # No owner names any more - see "Domain ownership" in the header. The
-    # worktrees this used to name were deleted on 2026-08-25 and attributing a
-    # PID to a track that no longer exists is worse than reporting the PID.
+    # No owner names - see "Domain ownership" in the header. Attributing a PID to
+    # a named track is a guess; the PID itself is not.
     for d in "${FOREIGN_DOMAINS[@]}"; do
         # Two buckets, and only one of them is news. See is_ros2_cli_daemon():
         # a ros2 CLI daemon carries the domain in its environ but is not another
         # session at work - it is the leftover of somebody's (often our own)
-        # "ros2 topic list". Counting it as activity is what made this check cry
-        # wolf on 220/221 when both were empty.
+        # "ros2 topic list", and counting it as activity makes this check cry wolf
+        # on an empty domain.
         local real_pids="" daemon_pids=""
         for pid in $(pids_on_domain "$d"); do
             if is_ros2_cli_daemon "$pid"; then
@@ -1013,8 +979,8 @@ other_track_check() { # domain_we_are_about_to_use
 # in CORNERING and immediately publishes angle*STEER_PATTERN (angle=0.0) on
 # /teleop/direct_steer at 50 Hz, which steer_servo_node applies as an override -
 # all four wheels are driven to straight-ahead without any key press. The user's
-# standing rule (2026-07-06, per test, never blanket) requires explicit approval
-# for exactly that, so it is asked for here, with the current angles on screen.
+# standing rule (per test, never blanket) requires explicit approval for exactly
+# that, so it is asked for here, with the current angles on screen.
 
 # Current steering angles in DEGREES, one line, joint order FL FR BL BR.
 # Source: /hw/steer_states (std_msgs/Float64MultiArray, RADIANS), published by
@@ -1036,12 +1002,11 @@ read_steer_states_deg() {
 
 # "ros2 lifecycle get" prints "<state> [<id>]", e.g. "active [3]",
 # "inactive [2]", "unconfigured [1]". Only the bare state word is returned, and
-# every caller compares it with "=", NEVER with a glob. Reason, found in
-# testing: "inactive" CONTAINS the substring "active", so [[ $state == *active* ]]
-# is true for a node that is merely configured. That made the activation loop
-# break before it ever called "lifecycle set activate" and then report success -
-# slam_toolbox sat in "inactive [2]" and published no map at all, while the
-# launcher said "ACTIVE - the map is being built".
+# every caller compares it with "=", NEVER with a glob: "inactive" CONTAINS the
+# substring "active", so [[ $state == *active* ]] is true for a node that is
+# merely configured. The activation loop then breaks before it ever calls
+# "lifecycle set activate" and reports success, while slam_toolbox sits in
+# "inactive [2]" and publishes no map at all.
 lifecycle_state_of() { # node
     timeout 10 bash -c "$REAL_PRELUDE exec ros2 lifecycle get '$1'" 2>/dev/null \
         | awk 'NR==1{print $1}'
@@ -1111,13 +1076,16 @@ steer_safety_gate() {
 # slam_toolbox with the repo config) on THIS laptop, on the real domain, plus the
 # lifecycle configure/activate dance that gripperx-mapping.sh performs - a
 # lifecycle node comes up "unconfigured" and publishes nothing until activated.
-# Nothing is started, stopped or enabled on the Pi; see the header (OP-20 is not
-# this script's business).
-#
-# KNOWN WEAK POINT: rf2o consumes /scan over WiFi. Dropped or late scans become
+# Nothing is started, stopped or enabled on the Pi.
+# KNOWN WEAK POINT: rf2o consumes /scan over WiFi, so dropped or late scans become
 # odometry error and the map smears. The Pi-side gripperx-mapping.service, where
 # /scan never crosses the link, remains the better place for this.
 LOCAL_MAP_STATE="not started"
+# 1 only if THIS run actually launched the local stack. Every skip path leaves it
+# at 0, and the collision watch below must not run in those cases: without a local
+# stack there is nothing of ours to collide, and the Pi's own nodes are the normal,
+# correct picture rather than a finding.
+LOCAL_MAP_OURS=0
 
 start_local_mapping() {
     case "${LOCAL_MAP,,}" in
@@ -1155,11 +1123,10 @@ start_local_mapping() {
         return 0
     fi
     # UNKNOWN IS NOT "NO". Reaching this line with evidence "unknown" means BOTH
-    # observations came back empty-handed: ssh could not be completed (a loaded
-    # Pi answers late - all five attempts timed out on 2026-08-25 while the robot
-    # was perfectly healthy and mapping), and the DDS graph above showed no
-    # rf2o/slam_toolbox, which on a link that cannot see the robot at all looks
-    # exactly the same as a robot that is not mapping. Starting here would put a
+    # observations came back empty-handed: ssh could not be completed (a loaded Pi
+    # can let every attempt time out while it is healthy and mapping), and the DDS
+    # graph above showed no rf2o/slam_toolbox, which on a link that cannot see the
+    # robot at all looks exactly like a robot that is not mapping. Starting would put a
     # SECOND publisher of odom->base_footprint on the REAL robot's domain on the
     # strength of two failures to observe. Refuse instead, and say what to do.
     if [ "$PI_MAPPING_EVIDENCE" = "unknown" ] && [ "${LOCAL_MAP,,}" != "force" ]; then
@@ -1185,6 +1152,7 @@ start_local_mapping() {
         warn "local mapping: launch exited immediately - see $logfile"
         return 1
     fi
+    LOCAL_MAP_OURS=1
     track "local mapping launch" "$lpid" "gripperx_bringup mapping.launch.py"
     ok "local mapping: launch started (PID $lpid, log: $logfile)"
 
@@ -1255,6 +1223,71 @@ start_local_mapping() {
         return 1
     fi
     return 0
+}
+
+# --- mapping collision watch (real mode) -------------------------------------
+# THE GUARD IN start_local_mapping CHECKS ONCE, AT START, so it cannot see a Pi-side
+# mapping stack that is started afterwards. From that moment domain 20 carries two
+# publishers of odom->base_footprint and two nodes named /slam_toolbox, and three
+# things follow: RViz jumps, which is what an ambiguous TF tree looks like; the Pi's
+# own lifecycle configure can land on OUR slam_toolbox, because lifecycle calls
+# address a node by name, leaving the Pi's node "unconfigured" while its service
+# reports "building map"; and stopping this script then removes the only /map
+# publisher and the only map->odom transform on the domain, so the next RViz comes
+# up empty and drops every message for a transform that no longer exists.
+# This watch re-reads the graph while the run
+# is alive, so the collision is named when it appears rather than reconstructed from logs
+# afterwards. It only ever REPORTS: killing a mapping stack under a running session is a
+# decision for the operator, and both candidate stacks may be feeding something.
+MAP_WATCH_PID=""
+MAP_WATCH_INTERVAL="${GRIPPERX_DESK_MAP_WATCH_INTERVAL:-15}"
+MAP_WATCH_FLAG="$LOG_DIR/map_collision_seen"
+
+start_map_collision_watch() {
+    [ "$LOCAL_MAP_OURS" = 1 ] || return 0
+    case "${MAP_WATCH_INTERVAL,,}" in
+        off|0|no)
+            log "mapping collision watch: disabled (GRIPPERX_DESK_MAP_WATCH_INTERVAL=$MAP_WATCH_INTERVAL)."
+            return 0
+            ;;
+    esac
+    rm -f "$MAP_WATCH_FLAG"
+    (
+        local_seen=0
+        while sleep "$MAP_WATCH_INTERVAL"; do
+            nodes=$(timeout 20 bash -c "$REAL_PRELUDE exec ros2 node list" 2>/dev/null)
+            # An empty answer is a failed observation, not an all-clear - same rule the
+            # start-time guard follows. Say nothing and look again next cycle.
+            [ -n "${nodes//[[:space:]]/}" ] || continue
+            slam_dupes=$(grep -cx '/slam_toolbox' <<<"$nodes")
+            pi_nodes=$(grep -Ex '/(laser_odometry_node|ekf_filter_node)' <<<"$nodes" | tr '\n' ' ')
+            if [ "${slam_dupes:-0}" -le 1 ] && [ -z "${pi_nodes// /}" ]; then
+                local_seen=0
+                continue
+            fi
+            : > "$MAP_WATCH_FLAG"
+            if [ "$local_seen" = 0 ]; then
+                warn "MAPPING COLLISION on domain $REAL_DOMAIN - the Pi started mapping while"
+                warn "  this script's own stack is running. Evidence: ${slam_dupes} node(s) named"
+                warn "  /slam_toolbox${pi_nodes:+, plus Pi mapping nodes: ${pi_nodes% }}."
+                warn "  Two publishers of odom->base_footprint: tf2 serves whichever arrived"
+                warn "  last and the robot jumps in RViz. Worse, lifecycle calls address a node"
+                warn "  by NAME, so the Pi's configure/activate can land on OUR slam_toolbox and"
+                warn "  leave the Pi's own node unconfigured - with no symptom until this script"
+                warn "  exits and takes the only working map publisher with it."
+                warn "  Resolve it - keep the Pi's stack, drop ours:"
+                warn "    stop this script (Ctrl-C), then re-run it without a local map:"
+                warn "      $0 real --no-local-map"
+                warn "    and on the robot, repair the node the collision may have left behind:"
+                warn "      ssh $SSH_HOST 'sudo systemctl restart gripperx-mapping'"
+            else
+                warn "MAPPING COLLISION still present (${slam_dupes} x /slam_toolbox${pi_nodes:+, ${pi_nodes% }})."
+            fi
+            local_seen=1
+        done
+    ) &
+    MAP_WATCH_PID=$!
+    log "mapping collision watch: running (PID $MAP_WATCH_PID, every ${MAP_WATCH_INTERVAL}s)."
 }
 
 # --- RViz --------------------------------------------------------------------
@@ -1331,11 +1364,10 @@ start_teleop() { # prelude domain label mode
 start_teleop_keyboard() { # prelude domain label mode
     local prelude="$1" domain="$2" label="$3" mode="$4"
     # laptop_teleop.launch.py passes config/keyboard_teleop.yaml as its first
-    # parameters entry, and that file is keyed on `/**` since 2026-08-25. That is
-    # what supplies a, b and wheel_radius, which keyboard_teleop_node declares
-    # WITHOUT defaults (geometry single source of truth) - so this plain launch
-    # still starts. Re-verified 2026-08-25 on a scratch domain; without the file
-    # the node would raise at startup instead of running.
+    # parameters entry, and that file is keyed on `/**`. That is what supplies a, b
+    # and wheel_radius, which keyboard_teleop_node declares WITHOUT defaults
+    # (geometry single source of truth) - without that file the node raises at
+    # startup instead of running.
     local cmd="$prelude exec ros2 launch gripperx_teleop laptop_teleop.launch.py"
     if [ -z "$TERM_CMD" ]; then
         warn "$label teleop: no terminal emulator found (checked gnome-terminal, x-terminal-emulator)."
@@ -1397,10 +1429,8 @@ start_teleop_web() { # prelude domain label
     local prelude="$1" domain="$2" label="$3"
 
     # BEFORE launching, not after: a second web_teleop_node on a taken port dies
-    # inside bind() with a traceback in a log file nobody is watching, and the
-    # only symptom this script would otherwise show is "no node appeared within
-    # 20 s". Observed for real while this was written - an unrelated session held
-    # 127.0.0.1:8080.
+    # inside bind() with a traceback in a log file nobody is watching, and the only
+    # symptom this script would otherwise show is "no node appeared within 20 s".
     local holder
     if holder=$(web_port_in_use "$WEB_PORT"); then
         warn "$label teleop (web): TCP port $WEB_PORT is already taken by $holder."
@@ -1472,6 +1502,8 @@ start_real() {
     # should already be on their way when it starts. Neither of these two can
     # move anything - the gate sits in front of the teleop, which can.
     start_local_mapping
+    # Only arms itself if the line above actually started a local stack.
+    start_map_collision_watch
     start_rviz "$REAL_PRELUDE" "$RVIZ_CONFIG_REAL" "$REAL_DOMAIN" "real"
     start_teleop "$REAL_PRELUDE" "$REAL_DOMAIN" "real" "real"
     log "real: local mapping state: $LOCAL_MAP_STATE"
@@ -1482,16 +1514,15 @@ TWIN_BASELINE_PIDS=""
 
 start_twin() {
     log "== twin: Gazebo + RViz + teleop, ROS_DOMAIN_ID=$TWIN_DOMAIN =="
-    # Corrected for NFR-10 / Gazebo Harmonic - see the header. Dropped:
-    # sim_steer_bridge / swerve_cmd_node / joint_command_bridge (not started any
-    # more, on either side), ros2_control_node (in the sim the controller_manager
-    # lives inside the gz_ros2_control plugin, i.e. inside the gz sim process,
-    # so no such process exists to collide with), gzserver (Gazebo Classic).
-    # Added: clock_ready_gate and teleop_mux_node, which the twin does start.
-    # scan_range_filter ADDED 2026-08-25: simulate_robot.launch.py now starts it
-    # in the twin as well ("same filter as the real robot, on purpose"), it takes
-    # /scan_raw -> /scan, and a second instance would republish the same topic.
-    # It survives a plain Ctrl-C like the rest of this list.
+    # Per NFR-10 / Gazebo Harmonic - see the header. Deliberately absent:
+    # sim_steer_bridge / swerve_cmd_node / joint_command_bridge (not started on
+    # either side), ros2_control_node (in the sim the controller_manager lives
+    # inside the gz_ros2_control plugin, i.e. inside the gz sim process, so no such
+    # process exists to collide with) and gzserver (Gazebo Classic). Present:
+    # clock_ready_gate and teleop_mux_node, which the twin does start, and
+    # scan_range_filter, which simulate_robot.launch.py starts in the twin as well
+    # (/scan_raw -> /scan), where a second instance would republish the same topic.
+    # All of these survive a plain Ctrl-C.
     local patterns=("sim_mapping.launch.py" "gz sim" "async_slam_toolbox_node" \
                      "ground_truth_odom_bridge" "clock_ready_gate" \
                      "robot_state_publisher" "teleop_mux_node" "spawn_robot" \
@@ -1503,12 +1534,11 @@ start_twin() {
     # that executable is missing, launch does not degrade - it aborts the ENTIRE
     # launch description and tears Gazebo down again, and the only message is
     # "executable 'clock_ready_gate' not found on the libexec directory", which
-    # reads like a code bug rather than a stale install tree. Observed on this
-    # laptop 2026-08-20: install/gripperx_gazebo/lib/gripperx_gazebo held only
-    # sim_with_logging, dated 2026-07-17, while the source
-    # src/gripperx_gazebo/scripts/clock_ready_gate is present. Warn, name the
-    # fix, and continue - this script never builds anything and never writes to
-    # the shared workspace.
+    # reads like a code bug rather than a stale install tree - typically
+    # install/gripperx_gazebo/lib/gripperx_gazebo missing the executable while the
+    # source src/gripperx_gazebo/scripts/clock_ready_gate is present. Warn, name the
+    # fix, and continue - this script never builds anything and never writes to the
+    # shared workspace.
     local gate_exe="$WS/install/gripperx_gazebo/lib/gripperx_gazebo/clock_ready_gate"
     if [ ! -x "$gate_exe" ]; then
         warn "twin: clock_ready_gate is missing from the install tree:"
@@ -1603,14 +1633,6 @@ if [ "$INPUT" = web ] && [ "$WEB_HOST" != "127.0.0.1" ]; then
     warn "  This page has NO PASSWORD and control is first-come. Anyone who can reach"
     warn "  that port can drive this robot. Only do this on a network you control."
 fi
-if [ "$INPUT" = web ] && [ "$MODE" = real ]; then
-    warn "real + --input web: per HANDOVER (2026-08-25) the browser UI has been run on"
-    warn "  the twin (220) and on a desk rig (42, no motors) and NEVER against the real"
-    warn "  robot, and the sign convention between /joint_states and the commanded pose"
-    warn "  is still unmeasured. This start is that first contact. The steering gate below"
-    warn "  applies to it exactly as to the keyboard teleop - it is the same publish tick."
-fi
-
 case "$MODE" in
     real)
         refuse_if_other_teleop "$TWIN_DOMAIN" "twin" || exit 1

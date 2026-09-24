@@ -9,10 +9,9 @@ It prints, for a set of representative body twists, the per-wheel steering
 angles the kinematics requests and whether each lies inside that wheel's real,
 calibrated window; then it asserts the invariants that must hold.
 
-Reference data (see gripperx_control/config/steer_servo.yaml): 100 deg outward
-(measured on the machine 2026-08-13) / 35 deg inward (raised from 30 deg
-2026-08-17, user estimate, TO-VERIFY, not a measurement), outward sign
-[-1, +1, +1, -1] for FL, FR, BL, BR.
+Reference data (see gripperx_control/config/steer_servo.yaml, the source of
+truth, for the current outward/inward limits and their measurement
+provenance): outward sign [-1, +1, +1, -1] for FL, FR, BL, BR.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Verification of the wiring between the robot's autostart, the localization stack
-and Nav2 — i.e. of the invariant that was BROKEN until 2026-08-24.
+and Nav2.
 
 Run from the workspace source tree:
 
@@ -13,22 +13,13 @@ always run.
 WHAT THIS EXISTS TO CATCH
 -------------------------
 `gripperx_planning/config/nav2.yaml` points `controller_server` and `bt_navigator` at
-`odom_topic: /odometry/filtered`. That topic is published by `ekf_filter_node`, which
-lives in `gripperx_localization/launch/localization.launch.py`. Until 2026-08-24 the
-robot's autostart chain
-
-    gripperx-bringup.service   -> real_robot.launch.py       (no localization at all)
-    gripperx-mapping.service   -> mapping.launch.py          (rf2o + slam_toolbox, no EKF)
-    gripperx-navigation.service-> gripperx_planning/navigation.launch.py  (Nav2)
-
-started NO EKF anywhere, so `/odometry/filtered` had no publisher and Nav2 came up
-green with permanently zero velocity feedback. Nothing failed, nothing logged, and the
-defect was found by reading launch files rather than by running them.
-
-The test therefore does not check "is the code as written today". It checks the
-PROPERTY: whatever the mapping service starts must publish the topic Nav2 reads its
-odometry from. Repointing the service somewhere else in the future is fine — dropping
-the EKF out of the chain again is not.
+`odom_topic: /odometry/filtered`, published by `ekf_filter_node`
+(`gripperx_localization/launch/localization.launch.py`). The test does not check "is
+the code as written today" — it checks the PROPERTY: whatever the mapping service
+starts must publish the topic Nav2 reads its odometry from. Repointing the service
+somewhere else in the future is fine; dropping the EKF out of the chain again is not
+— an absent publisher fails silently, with Nav2 coming up green and permanently zero
+velocity feedback while nothing logs an error.
 
 Part 1  Nav2's odom topic has a publisher in the chain the autostart actually starts
 Part 2  exactly one node in that chain claims odom -> base_footprint (rf2o is out)
@@ -387,6 +378,43 @@ def static_parts(script_args: dict[str, str]) -> None:
               "safety net never fires, and the service claims to be mapping while "
               "slam_toolbox sits unconfigured.")
         check(not matches("unconfigured [1]\n"), "it does NOT match 'unconfigured [1]'")
+
+    # The anchor above makes the script read the state correctly; it does not make the
+    # state belong to the right node. "ros2 lifecycle get/set" address a node by NAME,
+    # and a second /slam_toolbox on the same ROS domain (e.g. from a laptop desk run)
+    # can have the Pi's configure and readiness check answered by that foreign node —
+    # the service then logs "slam_toolbox active - building map" while its own node
+    # sits unconfigured, publishing no /map and no map->odom. What the script can do is
+    # count the name and refuse to report a reading it cannot attribute — so that
+    # counter is what is checked here.
+    m2 = re.search(r"ros2 node list 2>/dev/null \| grep -c(\S*) ('|\")(.+?)\2", text)
+    check(m2 is not None,
+          "the script counts the nodes carrying the name /slam_toolbox",
+          "a lifecycle reading on an ambiguous name is not evidence about this "
+          "service's own node; if that counter is gone, the false 'active' of "
+          "2026-09-18 is possible again")
+    if m2:
+        flags, pattern2 = m2.group(1), m2.group(3)
+        print(f"  ..    counter in the script: grep -c{flags} {pattern2!r}")
+
+        def count(sample: str) -> str:
+            return subprocess.run(["grep", f"-c{flags}", pattern2], input=sample,
+                                  text=True, capture_output=True).stdout.strip()
+
+        two = "/ekf_filter_node\n/slam_toolbox\n/slam_toolbox\n"
+        one = "/ekf_filter_node\n/slam_toolbox\n"
+        check(count(two) == "2", "it counts a duplicated /slam_toolbox as 2", f"got {count(two)!r}")
+        check(count(one) == "1", "it counts a single /slam_toolbox as 1", f"got {count(one)!r}")
+        # -x matters: without it, a namespaced or suffixed node name would be counted
+        # as the plain one and a real duplicate could hide behind an inflated count.
+        check(count("/slam_toolbox_twin\n") == "0",
+              "it does NOT count '/slam_toolbox_twin' as /slam_toolbox",
+              "the match must be whole-line (grep -x), otherwise the count is a substring "
+              "count and stops meaning 'nodes with this exact name'")
+    check("SLAM_NODES" in text and re.search(r'SLAM_NODES.*-gt 1', text) is not None,
+          "an ambiguous name (>1) suppresses the 'active' claim",
+          "the count is only worth taking if the script acts on it: with more than one "
+          "node of that name it must not report a map it cannot verify")
 
     section("Part 7 — the autostart script is valid and carries its rollback route")
     if shutil.which("bash"):

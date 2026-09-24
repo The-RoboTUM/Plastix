@@ -5,9 +5,20 @@
 #   1-3 s                -> DEAD ZONE, discarded on purpose
 #   long press (>= 3 s)  -> Mode H, stack down, then the Pi halts
 #
-# NOT ENABLED ON DELIVERY. Nothing here is in effect until someone installs the
-# daemon, installs /etc/gripperx/gripperx-button.conf and runs
-# `systemctl enable --now gripperx-button.service`. That is a deliberate act.
+# INSTALLED, ENABLED AND RUNNING on GripperX-1, verified 2026-09-22. Until that
+# date this header still read "NOT ENABLED ON DELIVERY. Nothing here is in
+# effect until someone installs the daemon ...". That enabling was done long
+# ago; the sentence had simply never been revisited, and it invited the reader
+# to assume a live P0 safety path was inert.
+#
+# Enabling it IS still a deliberate act -- that part was never wrong. It has
+# been taken: `mode_r_enabled = true` and `mode_h_enabled = true` in
+# /etc/gripperx/gripperx-button.conf, so BOTH functions below are armed and a
+# real press acts. A short press restarts the ROS2 stack with no per-test
+# approval in the loop (SR-1, the motor-enable process rule, still governs
+# every restart an agent triggers). Accepted on the real robot 2026-09-22:
+# ten consecutive short presses, drive and steering back each time, no manual
+# intervention -- HWR-40 criterion 3.
 #
 # SUPERSEDES dtoverlay=gpio-shutdown -- that overlay emits one KEY_POWER event,
 # cannot measure press duration, and would claim the same GPIO line. The two are

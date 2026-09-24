@@ -32,12 +32,10 @@ TWIN_DOMAIN_ID = 220
 ACCEPTANCE_DOMAIN_ID = 221
 
 #: The domains on which NOTHING can move a real motor, enumerated rather than
-#: inferred. SAFETY.md F-27: the arm's real-robot protections used to be keyed
-#: to ``== REAL_ROBOT_DOMAIN_ID``, so every domain that was not exactly 20 -
-#: including any domain the robot is renumbered to, and this project renumbered
-#: one inside a week - took the permissive branch silently. The polarity is now
-#: the other way round: a domain is permissive only if it is named here, and
-#: anything unknown is treated as a real robot.
+#: inferred (SAFETY.md F-27): keying this to ``== REAL_ROBOT_DOMAIN_ID`` would
+#: let any domain the robot is renumbered to - including one nobody has named
+#: yet - take the permissive branch silently. A domain is permissive only if
+#: it is named here; anything unknown is treated as a real robot.
 #:
 #: Adding a domain to this set is the one edit in this package that can make a
 #: real machine take a simulation branch. Both members are simulation-only by
@@ -156,15 +154,12 @@ def enforce_domain(node, expected_domain_id: int, logger=None) -> None:
 def clock_publisher_warning(
     publisher_count: int, use_sim_time: bool, when: str
 ) -> Optional[str]:
-    """The MIRROR of the sim-time refusal. SAFETY.md F-35, user decision 2026-08-20.
+    """The MIRROR of the sim-time refusal. SAFETY.md F-35.
 
     Package D closes one direction of the sim-time divergence - ``use_sim_time:
-    true`` where no ``/clock`` can exist - and closes it twice over. **The other
-    direction was untouched:** ``use_sim_time:=false`` while a ``/clock``
-    publisher is live. Nothing in this package looked for a ``/clock`` publisher
-    at all; ``count_publishers`` appeared once in the whole package, for
-    ``link_status``. This function is the missing half, and it makes the pair
-    symmetrical.
+    true`` where no ``/clock`` can exist. **The other direction was untouched:**
+    ``use_sim_time:=false`` while a ``/clock`` publisher is live. This function
+    is the missing half, and it makes the pair symmetrical.
 
     WHY IT WARNS AND DOES NOT REFUSE, WHICH IS NOT THE SAME CHOICE AS PACKAGE D's.
     The forward direction is a configuration that CANNOT work: sim time with no
@@ -177,18 +172,17 @@ def clock_publisher_warning(
     chose for the forward clock jump (F-40): no disarm, no cancel, no new refusal
     path, no tenth trigger. The gate is untouched.
 
-    **THE CONSEQUENCE OF THE MISMATCH IS STILL `SUSPECTED`, NOT OBSERVED.** The
-    auditor predicts it is fail-safe - ages computed against a mismatched epoch
-    come out large and ``validate_goal`` refuses - and says plainly that this is a
-    prediction. Showing it needs the real Gazebo twin, and **the user decided on
-    2026-08-20 not to make that run**. So this function detects and reports the
-    CONDITION; nothing here is evidence about what the condition does, and F-35
-    stays open on that half.
+    **THE CONSEQUENCE OF THE MISMATCH IS STILL `SUSPECTED`, NOT OBSERVED.** Ages
+    computed against a mismatched epoch are predicted to come out large, so
+    ``validate_goal`` would refuse them - but this is a prediction: confirming
+    it needs the real Gazebo twin, which has not been run for this. So this
+    function detects and reports the CONDITION; nothing here is evidence about
+    what the condition does, and F-35 stays open on that half.
 
     ``when`` names the moment, because the two moments answer different
     questions: at startup DDS discovery may not have matched the publisher yet,
-    so a clean start is not proof of absence - which is exactly why the auditor
-    asked for the check to run again on the first ``/clock`` message.
+    so a clean start is not proof of absence - which is why the check must also
+    run again on the first ``/clock`` message.
 
     Pure and rclpy-free, so both branches are exercised offline without a node,
     a context or a domain.

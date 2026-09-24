@@ -49,13 +49,11 @@ POINTER = "declared in gripperx_geometry/config/geometry.yaml"
 
 # 1. node defaults -> mandatory
 #
-# swerve_cmd_node.py was a fourth entry here and was REMOVED 2026-08-25 (user
-# decision): the deletion round retired that node together with
-# joint_command_bridge, sim_steer_bridge and control.launch.py, so migrating its
-# literals would have been work on a file that no longer exists -- and because
-# this script refuses to write anything when a single edit does not match, the
-# missing file would have ABORTED the whole migration rather than skipping one
-# target. Nothing else in the edit set changes.
+# swerve_cmd_node.py is deliberately absent here: it was retired along with
+# joint_command_bridge, sim_steer_bridge and control.launch.py. This script
+# refuses to write anything when a single edit does not match, so a target
+# file that no longer exists would abort the whole migration rather than
+# just skipping it. Nothing else in the edit set changes.
 NODE_DEFAULTS = {
     "gripperx_control/src/gripperx_control/teleop_joint_commands_node.py": ["a", "b", "wheel_radius"],
     "gripperx_teleop/gripperx_teleop/keyboard_teleop_node.py": ["a", "b", "wheel_radius"],
@@ -94,13 +92,9 @@ PACKAGE_DEPS = [
     "gripperx_swerve_controller/package.xml",
 ]
 
-# 4b. C++ carries the same duplicates, found by the 2026-08-24 whole-tree sweep.
-#     swerve_controller.hpp's members are auto_declare FALLBACKS — what the
-#     controller uses if its YAML lacks the key — i.e. exactly the Python
-#     declare_parameter defect in another language. The three test files derive
-#     their expectations FROM these constants (verified: test_swerve_kinematics
-#     builds its module table from kA/kB, test_steering_limits asserts limits
-#     that do not depend on them), so changing them is self-consistent.
+# 4b. C++ carries the same duplicates. swerve_controller.hpp's members are
+#     auto_declare FALLBACKS — what the controller uses if its YAML lacks the
+#     key — i.e. the same defect as the Python declare_parameter defaults.
 #     dump_reference.cpp and dump_reference.py must move TOGETHER — they are a
 #     cross-language equivalence check and would otherwise disagree by design.
 CPP_VALUE_FIXES = {
@@ -172,10 +166,9 @@ REGISTRY_EMPTY = """KNOWN_DIVERGENCES: dict[str, tuple[float, str]] = {
 }"""
 
 
-# 6. keyboard_teleop_node has NO parameter file on any launch path — found by
-#    the 2026-08-21 dry run, which is exactly what a dry run is for. Removing
-#    its defaults without giving it a file would break laptop_teleop.launch.py
-#    at startup. The file is created rather than the values inlined into the
+# 6. keyboard_teleop_node has NO parameter file on any launch path. Removing
+#    its defaults without giving it one would break laptop_teleop.launch.py at
+#    startup. The file is created rather than inlining the values into the
 #    launch, because an inline literal is a new source of truth.
 KEYBOARD_CONFIG = "gripperx_teleop/config/keyboard_teleop.yaml"
 
@@ -393,8 +386,7 @@ def edit_package_dep(text: str) -> str:
 
     Most packages group their <test_depend> entries; gripperx_teleop has none at
     all and goes straight from <exec_depend> to <export>. Anchoring only on
-    <test_depend> made the whole migration refuse to run because of one file,
-    which is the right failure but the wrong cause.
+    <test_depend> would abort the whole migration over that one file.
     """
     if "gripperx_geometry" in text:
         return text
@@ -418,10 +410,9 @@ def build_edits(root: Path) -> tuple[dict[Path, tuple[str, str]], list[str]]:
         """Apply one edit, composing with any edit already staged for this file.
 
         Two edits touch check_teleop_manoeuvre_path.py — the model call and the
-        harness parameter list. Reading from disk each time made the second
-        silently discard the first, which the dry run caught by the harness
-        referencing a name the discarded edit would have imported. Staged text
-        is therefore chained, and the original is kept only for the diff.
+        harness parameter list. Staged text is chained across edits to the
+        same file rather than re-read from disk; the original is kept only
+        for the diff.
         """
         path = root / relpath
         if not path.is_file():

@@ -123,8 +123,7 @@ void MotorController::setTargetRPM(float rpm) {
     targetRPM_ = rpm;
 
     // Anything inside the feedforward deadband is a full stop, INCLUDING the commanded
-    // zero (|0.0| < FF_OFFSET_DEADBAND_RPM, so this subsumes the old == 0.0 test and no
-    // longer depends on an exact float compare). This is the outer of two guards: it
+    // zero (|0.0| < FF_OFFSET_DEADBAND_RPM). This is the outer of two guards: it
     // drives the pins to a hard stop, while computePwm() independently returns 0 for the
     // same range. Without it the offset would creep the robot whenever it is idle.
     if (fabs(targetRPM_) < FF_OFFSET_DEADBAND_RPM) {

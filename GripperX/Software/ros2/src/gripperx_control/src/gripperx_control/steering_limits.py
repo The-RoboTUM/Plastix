@@ -2,19 +2,17 @@
 
 Why this module exists
 ----------------------
-The steering range of this robot is **asymmetric and per wheel**. Measured on
-the machine 2026-08-13 (see `config/steer_servo.yaml`, which is the source of
-truth): every wheel reaches ~100 deg OUTWARD (tyre swings away from the
-chassis) and only ~35 deg INWARD (raised from ~30 deg 2026-08-17 — a user
-estimate, TO-VERIFY, not a new measurement; see `config/steer_servo.yaml` for
-the honesty caveat), and which *sign of the joint angle* is outward differs
-per wheel:
+The steering range of this robot is **asymmetric and per wheel**. See
+`config/steer_servo.yaml` (the source of truth) for the current outward and
+inward limits and their measurement provenance — the two differ substantially
+— and which *sign of the joint angle* is outward differs per wheel:
 
     steering_outward_sign = (-1, +1, +1, -1)     # FL, FR, BL, BR (MEASURED)
 
-so in robot-frame joint angles the reachable window is
+so in robot-frame joint angles the reachable window is (current values,
+`config/steer_servo.yaml`, recalibrated 2026-09-18):
 
-    FL [-100, +35]   FR [-35, +100]   BL [-35, +100]   BR [-100, +35]   (deg)
+    FL [-125, +35]   FR [-35, +125]   BL [-35, +125]   BR [-125, +35]   (deg)
 
 `steer_servo_node` already clamps per joint against exactly this window. That
 clamp is the last line of defence, and everything upstream must plan inside the
@@ -22,10 +20,11 @@ same window — otherwise the servo node silently clamps a wheel, the pose no
 longer matches any consistent instantaneous centre of rotation, and the wheels
 scrub against each other.
 
-A single symmetric `steering_angle_limit` cannot express this: 30 throws away
-70 deg of outward travel, 100 lets the kinematics request angles that get
-clamped. Hence per-wheel bounds and a feasibility step, both defined here so
-they can be unit-checked without ROS (this module imports nothing from rclpy).
+A single symmetric `steering_angle_limit` cannot express this: a value near
+the inward limit throws away most of the outward travel, while a value near
+the outward limit lets the kinematics request angles that get clamped. Hence
+per-wheel bounds and a feasibility step, both defined here so they can be
+unit-checked without ROS (this module imports nothing from rclpy).
 
 Sign convention
 ---------------
@@ -43,12 +42,14 @@ wheels — i.e. spin would be impossible.
 
 The magnitude was 50.7 here until 2026-08-21 and that value was stale. Measured
 in the twin on that date, all four steering joints settle at 58.57 deg under a
-pure rotation command; computing it from the controller's own geometry
-(a = 0.180, b = 0.110, ros2_controllers.yaml) gives atan2(a, -b) folded through
-the +-180 module flip = 58.57 deg, and from the exact CAD king-pin pair
-(0.1809 / 0.1087) 59.04 deg. Nothing reachable changes — 58.6 is still far
-inside the 100 deg outward range — but the number is now the one the machine
-actually holds.
+pure rotation command; computing it from the geometry the controller carried
+THAT DAY (a = 0.180, b = 0.110 — superseded on 2026-08-24, when
+gripperx_geometry/config/geometry.yaml became the single source and
+ros2_controllers.yaml took 0.1809 / 0.1087) gives atan2(a, -b) folded through
+the +-180 module flip = 58.57 deg, and from the CAD king-pin pair now declared
+there, 59.04 deg. Nothing reachable changes — 58.6 is still comfortably inside
+the outward range (`config/steer_servo.yaml`) — but the number is now the one
+the machine actually holds.
 """
 
 from __future__ import annotations
@@ -71,14 +72,34 @@ MODEL_ORDER_LABELS: Tuple[str, ...] = ("FL", "BL", "BR", "FR")
 # Index of each model-order wheel inside a joint-order array.
 MODEL_TO_JOINT_INDEX: Tuple[int, ...] = (0, 2, 3, 1)
 
-# Outward measured 2026-08-13; inward raised 30 -> 35 deg 2026-08-17 (user
-# choice, TO-VERIFY — the limit is chosen, not measured). The travel itself IS
-# measured: the tightest inward stop is BL at 35.60 deg, so 35 leaves only
-# ~0.6 deg of margin where 30 kept ~5.6. See config/steer_servo.yaml for the
-# full provenance and the risk. Mirrors config/steer_servo.yaml. Defaults only — the
-# runtime values come from parameters so the two files can be aligned without
-# a rebuild.
-DEFAULT_OUTWARD_LIMIT_DEG = 100.0
+# Both limits re-derived from the recalibration after the ASA coupling
+# rework, measured at the REAL mechanical limit rather than at first
+# resistance (measured travel: outward 193.6-196.4 deg, inward 50.3-56.7 deg,
+# 2026-09-18).
+#
+# WHY 125 deg OUTWARD (user, 2026-09-23). Two reasons, neither of them a hard
+# ceiling:
+#   1. a comfortable margin to the mechanical stop -- against the measured
+#      193.6-196.4 deg of travel this leaves roughly 70 deg;
+#   2. keeping the left and right wheel from touching each other. That is not
+#      reachable at 125 deg; it becomes possible at a markedly larger angle in
+#      an unfavourable combination of per-wheel angles.
+# So the limit is a chosen working margin, not a value derived from a
+# constraint -- which is why it is 125 and not some computed number.
+#
+# CORRECTED 2026-09-23: this comment previously justified 125 deg as "the point
+# where FL's raw count approaches its 0/4095 wrap (FL has 133.6 deg of count
+# headroom)". That was wrong twice over. The 133.6 was carried forward from the
+# pre-rework FL centre of 1520 ticks and never re-derived; on the current
+# calibration FL has 95.7 deg of headroom and FR, at 92.8 deg, is the tighter
+# wheel. And the wrap cannot be the binding constraint at all, because the
+# mechanical stop at ~196 deg is reached long before the wrap at ~220 deg.
+#
+# 35 deg inward has 15.3 deg of measured margin on the tightest wheel.
+# Mirrors config/steer_servo.yaml, the source of truth. Defaults only — the
+# runtime values come from parameters so the two files can be aligned
+# without a rebuild.
+DEFAULT_OUTWARD_LIMIT_DEG = 125.0
 DEFAULT_INWARD_LIMIT_DEG = 35.0
 DEFAULT_OUTWARD_SIGN: Tuple[int, ...] = (-1, 1, 1, -1)
 
@@ -312,10 +333,12 @@ def limit_twist_to_steering_range(
       search always has a feasible lower bound for the usual driving case.
     * In-place spin (vx = vy = 0) is unaffected: the wheel angles do not depend
       on |omega| there at all. The spin pose needs 58.6 deg OUTWARD on every
-      wheel and is inside the 100 deg outward range, so it passes untouched.
+      wheel and is inside the outward range (`config/steer_servo.yaml`), so it
+      passes untouched.
     * Ordinary cornering loses turn AUTHORITY, not turn shape: the requested
-      curvature is capped at the tightest radius the 30 deg inward limit
-      allows. The robot turns wider than asked instead of scrubbing.
+      curvature is capped at the tightest radius the inward limit
+      (`config/steer_servo.yaml`) allows. The robot turns wider than asked
+      instead of scrubbing.
     * If even omega = 0 is unreachable, the requested DIRECTION OF TRAVEL
       itself cannot be steered to. Pure crab (vy only) is NOT such a case —
       `resolve_wheel_targets` reaches it at ∓90 deg via the ±180 module flip,

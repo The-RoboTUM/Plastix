@@ -8,11 +8,25 @@ Pure python, no ROS. Run from the workspace source tree:
 THE FINDING THIS FILE EXISTS TO PIN DOWN. A pure translation puts all four
 modules on the SAME angle — that is the only solution, not a simplification —
 so the direction of travel psi is limited by the steering windows directly. With
-the calibrated 100 deg outward / 35 deg inward and the measured outward sign,
-most of the circle is NOT AVAILABLE: four reachable arcs with four 45 deg dead
-bands between them. Steering a crab is therefore +-10 deg of continuous motion
-and then a jump, and every number below is derived from the same SteeringLimits
-the pose resolution uses rather than written down here.
+the calibrated per-wheel limits (`gripperx_control/config/steer_servo.yaml`,
+the source of truth) and the measured outward sign, most of the circle is NOT
+AVAILABLE: the circle breaks into reachable arcs with dead bands between them,
+so steering a crab is a stretch of continuous motion and then a jump.
+
+The widths are an IDENTITY, not a threshold, and that is what this file checks:
+
+    dead band  = 180 - outward - inward          (deg)
+    the jump   = from 180 - outward, to inward
+
+Both follow from the arcs and hold for any window. Two assertions here used to
+be thresholds instead — ">= 30 deg" and "~80 deg" — which were the 100 deg
+machine's numbers promoted to requirements. They failed from the 2026-09-18
+recalibration onwards, and they failed for an IMPROVEMENT: at 125 deg outward
+the dead bands are 20 deg rather than 45, which is better for the operator, not
+worse. No requirement asks for a minimum dead-band width; FR-7 is silent on it.
+So they are identities now, and this file fails when the model and the window
+disagree rather than when the window legitimately moves (finding 27,
+`claude/docs/COMMENT_SLIM_FINDINGS.md`).
 
 Part 3 is the regression that matters most: with psi at the plain crab heading
 the twist must be bit-identical to what manoeuvre_twist() produced before this
@@ -81,9 +95,18 @@ def main() -> int:
     print()
 
     check("there is more than one arc, i.e. the range really is broken up", len(arcs) > 1)
+    # Identity, derived from the window in force — see the module docstring for
+    # why this is not a threshold. A gap of zero would mean the circle closed up
+    # and the whole finding this file pins down had gone away; that is worth
+    # failing on, and it is what the arithmetic says rather than a chosen floor.
+    expected_gap = 180.0 - DEFAULT_OUTWARD_LIMIT_DEG - DEFAULT_INWARD_LIMIT_DEG
     check(
-        "every dead band is a real gap the operator will feel (>= 30 deg)",
-        all(high - low >= 30.0 for low, high in gaps),
+        f"every dead band is exactly 180 - outward - inward = {expected_gap:.1f} deg",
+        all(abs((high - low) - expected_gap) < 1e-6 for low, high in gaps),
+    )
+    check(
+        "the dead bands are real gaps, i.e. the circle has not closed up",
+        expected_gap > 0.0 and bool(gaps),
     )
     check(
         "pure crab (+-90 deg) is reachable — the accepted recovery still works",
@@ -129,8 +152,20 @@ def main() -> int:
     if trace:
         before, after = trace[0]
         print(f"     jump: {before:+.1f} deg -> {after:+.1f} deg  ({before - after:.1f} deg of swing)")
-        check("the jump starts at the edge of the crab arc (~80 deg)", 79.0 <= before <= 81.0)
-        check("and lands on the edge of the forward cone (~35 deg)", 34.0 <= after <= 36.0)
+        # Both edges are the window's own numbers, not chosen ones: the crab
+        # arc ends where the far wheel runs out of outward travel, and the
+        # forward cone ends at the inward limit.
+        jump_from = 180.0 - DEFAULT_OUTWARD_LIMIT_DEG
+        jump_to = DEFAULT_INWARD_LIMIT_DEG
+        check(
+            f"the jump starts at the edge of the crab arc "
+            f"(180 - outward = {jump_from:.1f} deg)",
+            abs(before - jump_from) <= 0.6,
+        )
+        check(
+            f"and lands on the edge of the forward cone (inward = {jump_to:.1f} deg)",
+            abs(after - jump_to) <= 0.6,
+        )
 
     # Symmetry: a crab-right must behave the same way mirrored.
     psi = -math.pi / 2

@@ -818,16 +818,42 @@ main() {
                  log "      ${AGENT_RESTART_DWELL_SEC}s from the agent stop; ESP session teardown)"
                  sleep "$remaining"
                  for unit in "${START_ORDER[@]}"; do
-                     # reset-failed FIRST, added 2026-08-25. A unit in state
-                     # `failed` does not accept a plain `systemctl start`, so a
-                     # single failure LATCHES until somebody knows the
-                     # incantation. Observed that evening: phase 4 left
-                     # gripperx-agent `failed`, the operator's stop/start did
-                     # nothing, and only reset-failed + start recovered it.
-                     # StartLimitBurst is 5, so repeated Mode R presses can also
-                     # exhaust the allowance and land here. Harmless when the
-                     # unit is healthy: reset-failed on a non-failed unit is a
-                     # no-op.
+                     # reset-failed FIRST, added 2026-08-25. KEPT AS CHEAP
+                     # INSURANCE, not as a load-bearing fix -- the rationale
+                     # this comment used to give was measured and found wrong
+                     # on 2026-09-22 (systemd 255, fault injection on the
+                     # machine; full record in
+                     # claude/docs/MODER_ACCEPTANCE_2026-09-22.md):
+                     #   * It said "a unit in state `failed` does not accept a
+                     #     plain `systemctl start`, so a single failure
+                     #     LATCHES". FALSE. A unit failed once by exit code
+                     #     accepts a plain start and recovers.
+                     #   * What does refuse a start is the START RATE LIMIT
+                     #     (StartLimitBurst 5 within StartLimitIntervalSec,
+                     #     which is 10 s on all four units here). But that is a
+                     #     SLIDING WINDOW AND IT EXPIRES BY ITSELF: measured,
+                     #     waiting 20 s let a plain start through with no
+                     #     reset-failed at all.
+                     #   * And it cannot reach phase 4 anyway. Measured on the
+                     #     real path: `stopping gripperx-agent` 11:32:01 ->
+                     #     `starting gripperx-agent` 11:32:16, a 15 s gap
+                     #     against a 10 s window. The limit has always expired
+                     #     before this loop starts anything.
+                     # So this call has no DEMONSTRABLE effect in the normal
+                     # restart path. It is kept because it costs nothing (a
+                     # no-op on a healthy unit) and the set of states a wedged
+                     # stack can present has not been fully enumerated.
+                     # WATCH OUT when diagnosing this by hand: when the rate
+                     # limit does latch, `systemctl show -p Result` still says
+                     # `exit-code`, NOT `start-limit-hit`, and the CLI prints
+                     # "control process exited with error code". Only the
+                     # journal names the real cause ("Start request repeated
+                     # too quickly"). The 2026-08-25 observation fits an
+                     # operator retrying fast enough to keep re-arming that
+                     # window, which reset-failed then broke.
+                     # END-TO-END PROOF, 2026-09-22: gripperx-agent forced into
+                     # `failed` (drive silent, steering alive -- the 2026-08-25
+                     # shape), one short press, full recovery verified per node.
                      systemctl reset-failed "$unit.service" 2>/dev/null || true
                      log "starting $unit"
                      systemctl start "$unit.service" \

@@ -36,23 +36,25 @@ SteeringLimits default_joint_limits()
 TEST(SteeringLimits, JointOrderWindowsMatchTheMeasuredMachine)
 {
   const auto limits = default_joint_limits();
-  // FL [-100, +35]  FR [-35, +100]  BL [-35, +100]  BR [-100, +35]
-  EXPECT_NEAR(limits.lower(0), -100.0 * kDeg, 1e-12);
+  // FL [-125, +35]  FR [-35, +125]  BL [-35, +125]  BR [-125, +35]
+  // Literals are spelled out rather than derived from kDefaultOutwardLimitDeg on
+  // purpose: a test that reads the constant it is checking would pass for any
+  // value.
+  EXPECT_NEAR(limits.lower(0), -125.0 * kDeg, 1e-12);
   EXPECT_NEAR(limits.upper(0), 35.0 * kDeg, 1e-12);
   EXPECT_NEAR(limits.lower(1), -35.0 * kDeg, 1e-12);
-  EXPECT_NEAR(limits.upper(1), 100.0 * kDeg, 1e-12);
+  EXPECT_NEAR(limits.upper(1), 125.0 * kDeg, 1e-12);
   EXPECT_NEAR(limits.lower(2), -35.0 * kDeg, 1e-12);
-  EXPECT_NEAR(limits.upper(2), 100.0 * kDeg, 1e-12);
-  EXPECT_NEAR(limits.lower(3), -100.0 * kDeg, 1e-12);
+  EXPECT_NEAR(limits.upper(2), 125.0 * kDeg, 1e-12);
+  EXPECT_NEAR(limits.lower(3), -125.0 * kDeg, 1e-12);
   EXPECT_NEAR(limits.upper(3), 35.0 * kDeg, 1e-12);
 }
 
 TEST(SteeringLimits, InwardLimitIs35Not30)
 {
-  // The document carried 30.0 in four places; both configs have said 35.0 since
-  // a29e181 and the user confirmed the correction on 2026-08-19. Porting 30.0
-  // would throw away 5 deg of inward travel on every wheel and would be a
-  // FAILED port disguised as a faithful one (NFR-10 acceptance 3a).
+  // Must stay 35.0, not 30.0: porting 30.0 would throw away 5 deg of inward
+  // travel on every wheel and would be a FAILED port disguised as a faithful
+  // one (NFR-10 acceptance 3a).
   EXPECT_DOUBLE_EQ(kDefaultInwardLimitDeg, 35.0);
 }
 
@@ -110,13 +112,13 @@ TEST(SteeringLimits, PureCrabResolvesViaTheModuleFlipAndIsNotRejected)
 TEST(SteeringLimits, TightCorneringReducesOmegaRatherThanClamping)
 {
   // The expected value is NOT guessed: it is what the live Python chain
-  // produces for this twist (gripperx_control.steering_limits, checked
-  // 2026-08-19), so this test doubles as a pinned equivalence case.
+  // produces for this twist (gripperx_control.steering_limits), so this test
+  // doubles as a pinned equivalence case.
   //
-  // Note also what this case shows about the search: at vx = 0.1 an omega of
-  // 0.3 has to be reduced, while an omega of 3.0 passes untouched. The
-  // reachable set falls apart into two arcs because of the +-180 module flip,
-  // so the bisection is CONSERVATIVE rather than monotone — documented in
+  // What this case also shows about the search: at vx = 0.1 an omega of 0.3 has
+  // to be reduced, while an omega of 3.0 passes untouched. The reachable set
+  // falls apart into two arcs because of the +-180 module flip, so the
+  // bisection is CONSERVATIVE rather than monotone — documented in
   // limit_twist_to_steering_range and reproduced faithfully here.
   const SwerveKinematics model(0.1809, 0.1087, 0.070);
   const auto limits = default_joint_limits().in_model_order();
@@ -135,19 +137,40 @@ TEST(SteeringLimits, TightCorneringReducesOmegaRatherThanClamping)
 
 TEST(SteeringLimits, SteepDiagonalIsRejectedAndReportsViolations)
 {
-  // A direction of travel that no module solution fits, under the REAL
-  // calibrated window (100/35). FR-8 diagonals land here; FR-7 crab does not.
-  // Rejected, with the violations available so the rejection can be LOGGED and
-  // never silent — silent clamping is the failure mode the machinery exists to
-  // remove (§3.1.4 (a) item 2).
+  // A direction of travel that no module solution fits, under the calibrated
+  // window (125/35 deg). Rejected, with the violations available so the
+  // rejection can be LOGGED and never silent — silent clamping is the failure
+  // mode the machinery exists to remove (§3.1.4 (a) item 2). The binding
+  // constraint on a steep diagonal is the INWARD limit, unchanged at 35 deg —
+  // see the test below for the same twist family resolving once the OUTWARD
+  // limit is wide enough.
+  const SwerveKinematics model(0.1809, 0.1087, 0.070);
+  const auto limits = default_joint_limits().in_model_order();
+  const std::array<double, kNumWheels> current{0.0, 0.0, 0.0, 0.0};
+  const auto result =
+    limit_twist_to_steering_range(model, BodyTwist{0.1, 0.1, 0.1}, current, limits);
+  EXPECT_EQ(result.status, LimitStatus::kRejected);
+  EXPECT_FALSE(result.targets.has_value());
+  EXPECT_FALSE(result.violations.empty());
+}
+
+TEST(SteeringLimits, TheWiderOutwardWindowUnlocksADiagonalThatWasRejectedBefore)
+{
+  // {0.05, 0.05, 0.1} is an FR-8 diagonal with no module solution under a
+  // tighter outward window; at the current 125 deg limit it resolves cleanly,
+  // every wheel inside its own window. If this ever starts failing, the outward
+  // limit has been lowered somewhere and the machine has quietly lost a
+  // manoeuvre.
   const SwerveKinematics model(0.1809, 0.1087, 0.070);
   const auto limits = default_joint_limits().in_model_order();
   const std::array<double, kNumWheels> current{0.0, 0.0, 0.0, 0.0};
   const auto result =
     limit_twist_to_steering_range(model, BodyTwist{0.05, 0.05, 0.1}, current, limits);
-  EXPECT_EQ(result.status, LimitStatus::kRejected);
-  EXPECT_FALSE(result.targets.has_value());
-  EXPECT_FALSE(result.violations.empty());
+  EXPECT_EQ(result.status, LimitStatus::kOk);
+  ASSERT_TRUE(result.targets.has_value());
+  for (std::size_t i = 0; i < kNumWheels; ++i) {
+    EXPECT_TRUE(limits.contains(i, (*result.targets)[i].angle)) << "wheel " << i;
+  }
 }
 
 TEST(SwerveKinematics, ZeroTwistResolvesToCentreWhichIsWhyStage2Exists)

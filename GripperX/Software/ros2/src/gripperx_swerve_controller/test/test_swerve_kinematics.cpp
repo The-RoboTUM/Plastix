@@ -370,7 +370,8 @@ TEST(ContactPointCorrection, SpinPoseRegressionAtTheMeasuredOmega)
   const double kSpinPoseDeg = std::atan2(kA, kB) / kDeg;
   const std::array<double, kNumWheels> expected_deg{
     -kSpinPoseDeg, kSpinPoseDeg, -kSpinPoseDeg, kSpinPoseDeg};
-  // GEOMETRY-DERIVED, regenerated 2026-08-24 for a = 0.1809 / b = 0.1087.
+  // GEOMETRY-DERIVED, regenerated 2026-08-24 for a/b as declared in
+  // gripperx_geometry/config/geometry.yaml (0.1809 / 0.1087 at generation time).
   // Not independent evidence: only the 0.266571 below is measured.
   const std::array<double, kNumWheels> expected_rad_s{
     -2.888884, -2.888884, 2.888874, 2.886717};
@@ -390,15 +391,10 @@ TEST(ContactPointCorrection, SpinPoseRegressionAtTheMeasuredOmega)
 
 TEST(ContactPointCorrection, SpinPoseFollowsTheDeclaredGeometryNotTheRetiredOne)
 {
-  // The number three comment blocks used to give as +-50.7. It belongs to the
-  // retired b = 0.16556 geometry; with a = 0.180 / b = 0.110 the pose is
-  // atan2(a, b) = 58.570 deg, which is 8 deg less steering margin than a reader
-  // of the old number would compute.
-  // Retired geometry b = 0.16556 gave 50.80 deg; the tape pair
-  // 0.180 / 0.110 gave 58.57; the CAD pair 0.1809 / 0.1087 gives 59.00.
-  // Asserted as a RANGE against the retired value rather than as a new
-  // literal, so the next legitimate geometry change does not have to
-  // edit this test at all.
+  // Asserted as a RANGE, not a literal, so the next legitimate geometry change
+  // does not have to edit this test at all. The bound excludes the retired
+  // b = 0.16556 geometry (~50.8 deg); the current declared geometry gives
+  // ~58-59 deg.
   EXPECT_GT(std::atan2(kA, kB) / kDeg, 55.0);
   EXPECT_LT(std::atan2(kA, kB) / kDeg, 62.0);
 }

@@ -67,11 +67,8 @@ KEY_TO_MANOEUVRE = {
     "9": SPIN_CCW,
 }
 
-# REBOUND 2026-08-24 (user). The arrows used to be all four manoeuvres; UP/DOWN
-# are now the CRAB STEERING keys (see CRAB_STEER_KEYS below) and the two spins
-# moved to `0` and `9`. The old UP/DOWN binding was already the odd one out --
-# UP meant "spin clockwise", not "forward", and the node's banner had to carry a
-# note saying so.
+# Arrow up/down steer an active crab (CRAB_STEER_KEYS) rather than selecting a
+# manoeuvre -- not "forward/back", see the node's banner.
 CRAB_STEER_KEYS = ("up", "down")
 
 # Precedence if two manoeuvre keys somehow look held at the same instant (the
@@ -96,31 +93,25 @@ HUMAN_LABEL = {
 # that direction. The steering angle a translation at heading psi needs is
 # therefore delta = psi on every wheel, modulo the +-180 deg module fold.
 #
-# AND THE WINDOWS ARE ASYMMETRIC, so most of the circle is not available. With
-# the calibrated 100 deg outward / 35 deg inward and the measured outward sign
-# (-1, +1, +1, -1), the reachable set is FOUR SEPARATE ARCS with four 45 deg
-# DEAD BANDS between them:
-#
-#     reachable   [-180,-145]  [-100,-80]  [-35,+35]  [+80,+100]  [+145,+180]
-#     dead band          (-145,-100)   (-80,-35)   (+35,+80)   (+100,+145)
+# AND THE WINDOWS ARE ASYMMETRIC (outward/inward stops: `steer_servo.yaml`,
+# source of truth), so most of the circle is not available: the reachable set
+# is FOUR SEPARATE ARCS with dead bands between them -- see
+# reachable_translation_arcs() for the actual numbers.
 #
 # So "steer the crab" cannot mean "sweep psi continuously". Between pure crab
-# (+-90 deg, and note it has only +-10 deg of room) and the forward cone (+-35
-# deg) there is a 45 deg gap in which NO pose exists — swerve_controller's
-# limit_twist_to_steering_range would return kRejected, zero the drive and hold
-# the steering, for the whole width of it.
+# and the forward cone there is a dead band in which NO pose exists --
+# swerve_controller's limit_twist_to_steering_range would return kRejected,
+# zero the drive and hold the steering, for the whole width of it.
 #
-# nav2.yaml's crab_walk block reached the same conclusion from the other end
-# ("the required 90 deg sits 10 deg inside the outward stop ... any mix moves the
-# required angle off 90 deg, and the +-10 deg that exist are the whole budget"),
-# which is why this is computed here rather than argued: the arcs come out of the
-# SAME SteeringLimits the pose resolution uses, so they cannot drift apart from
-# it if the calibration changes.
+# nav2.yaml's crab_walk block reaches the same conclusion from the other end,
+# which is why this is computed here rather than argued: the arcs come out of
+# the SAME SteeringLimits the pose resolution uses, so they cannot drift apart
+# from it if the calibration changes.
 #
-# THE DEAD BANDS COME FROM THE INWARD LIMIT, NOT THE OUTWARD ONE. Continuous psi
-# would need outward >= 145 deg (so that the folded solution psi-180 stays inside
-# the window all the way down to +35). Raising the outward limit past the
-# calibrated 100 deg is explicitly out of scope.
+# THE DEAD BANDS COME FROM THE INWARD LIMIT, NOT THE OUTWARD ONE. Continuous
+# psi would need a much larger outward window than `steer_servo.yaml`
+# provides. Raising the outward limit to remove the dead bands is out of
+# scope here.
 
 
 def reachable_translation_arcs(
@@ -207,14 +198,12 @@ def crab_twist(crab_speed: float, psi: float) -> Tuple[float, float, float]:
     THE TWO CARDINAL HEADINGS ARE RETURNED LITERALLY, and that is not a
     micro-optimisation. `math.cos(math.pi / 2)` is 6.1e-17, not 0.0, so the
     general formula would give an unsteered crab a phantom forward component
-    where the pre-2026-08-24 code had an exact zero. Physically it is 15
-    attometres per second and irrelevant; as a VALUE it is the difference between
-    `vx == 0.0` and `vx != 0.0`, and this chain tests exact zeros in several
-    places on purpose (swerve_controller's OP-24/S1 zero-twist test, its
-    manoeuvre classification). Introducing an epsilon to clean it up would add
-    the very kind of unmeasured threshold those exact tests exist to avoid, so
-    the comparison here is EXACT EQUALITY against the value the caller starts psi
-    at — no tolerance, and nothing to tune.
+    instead of an exact zero. Physically irrelevant (15 attometres/s), but as a
+    VALUE it is the difference between `vx == 0.0` and `vx != 0.0`, and this
+    chain tests exact zeros on purpose (swerve_controller's OP-24/S1 zero-twist
+    test, its manoeuvre classification). An epsilon here would add the very
+    kind of unmeasured threshold those tests exist to avoid -- the comparison
+    is EXACT EQUALITY against the value the caller starts psi at, no tolerance.
     """
 
     speed = abs(crab_speed)
@@ -236,9 +225,8 @@ def manoeuvre_twist(
     Sign convention is the robot frame used everywhere else in this chain:
     +y is the robot's left, +omega is counter-clockwise (right-hand rule, z up).
 
-    `crab_psi` steers a crab away from pure sideways. Omitting it reproduces the
-    pre-2026-08-24 behaviour EXACTLY — psi = +-pi/2 gives (0, +-crab_speed, 0) to
-    the last bit — which is what keeps the accepted crab recovery unchanged.
+    `crab_psi` steers a crab away from pure sideways. Omitting it gives psi =
+    +-pi/2 to the last bit -- exactly the accepted crab recovery behaviour.
     """
 
     if manoeuvre == CRAB_LEFT:

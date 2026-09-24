@@ -42,8 +42,8 @@ bool QuadEncoder::begin(pcnt_unit_t unit, uint8_t pinA, uint8_t pinB) {
     chanB.counter_l_lim  = kLowLimit;
     if (pcnt_unit_config(&chanB) != ESP_OK) return false;
 
-    // Glitch filter (~12.5 us @ 80 MHz APB) against PWM/EMI-induced bounce, same
-    // value as the bench sketch — safely below the shortest real encoder edge.
+    // Glitch filter (~12.5 us @ 80 MHz APB) against PWM/EMI-induced bounce —
+    // value chosen safely below the shortest real encoder edge.
     if (pcnt_set_filter_value(unit_, 1000) != ESP_OK) return false;
     if (pcnt_filter_enable(unit_) != ESP_OK) return false;
 

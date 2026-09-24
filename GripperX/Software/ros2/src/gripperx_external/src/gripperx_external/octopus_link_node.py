@@ -357,8 +357,8 @@ class OctopusLinkNode(Node):
         self.declare_parameter("publish_telemetry", True)
         self.declare_parameter("telemetry_debug_json", True)
         self.declare_parameter("source_name", "octopus")
-        # The fifth ingress topic, 2026-08-21. Its own switch rather than a
-        # reuse of goal_ingress_enabled - see the module docstring.
+        # The fifth ingress topic. Its own switch rather than a reuse of
+        # goal_ingress_enabled - see the module docstring.
         self.declare_parameter("transform_status_enabled", True)
         self.declare_parameter(
             "transform_relock_epsilon_rad", proto.DEFAULT_RELOCK_EPSILON_RAD
@@ -398,11 +398,11 @@ class OctopusLinkNode(Node):
             )
             raise SystemExit(2)
 
-        # THE MIRROR, SAFETY.md F-35, user decision 2026-08-20. Both nodes carry
-        # the refusal above, so both carry its reverse: a check that exists in
-        # one node and not the other is the drift `domain_guard` exists to
-        # prevent. WARNs, never refuses - the reasoning is in
-        # `clock_publisher_warning`. Nothing here gates anything.
+        # THE MIRROR, SAFETY.md F-35. Both nodes carry the refusal above, so
+        # both carry its reverse: a check that exists in one node and not the
+        # other is the drift `domain_guard` exists to prevent. WARNs, never
+        # refuses - the reasoning is in `clock_publisher_warning`. Nothing
+        # here gates anything.
         self._use_sim_time = bool(self.get_parameter("use_sim_time").value)
         self._clock_mismatch_warned = False
         self._warn_if_clock_publisher("at startup")
@@ -764,9 +764,9 @@ class OctopusLinkNode(Node):
         msg.object_longitude_deg = fix.longitude_deg
         msg.confidence = float("nan")
         msg.resolved = False
-        # The stamp the counterpart set, preserved for the staleness check. Both
-        # of their producers always set it (verified 2026-08-18), so an unset
-        # stamp is a fault, not a variant.
+        # The stamp the counterpart set, preserved for the staleness check.
+        # Both of their producers always set it, so an unset stamp is a fault,
+        # not a variant.
         if fix.stamp_sec is not None:
             msg.header.stamp = _stamp_from_sec(fix.stamp_sec)
         msg.datum.header.stamp = msg.header.stamp

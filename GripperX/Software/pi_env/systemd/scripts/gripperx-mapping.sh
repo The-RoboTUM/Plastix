@@ -74,6 +74,31 @@ slam_state_is_active() {
   ros2 lifecycle get /slam_toolbox 2>/dev/null | grep -q '^active'
 }
 
+# THE NAME IS THE ADDRESS, AND THE NAME IS NOT UNIQUE. Added 2026-09-18 after the
+# incident below. Every lifecycle call in this script - and the one launch_ros makes
+# inside localization.launch.py - addresses the node as "/slam_toolbox", and ROS 2
+# permits a second node with exactly that name on the same domain. The laptop desk
+# launcher (Software/ros2/scripts/gripperx_desk.sh) starts its own slam_toolbox when
+# the Pi is not mapping, and on 2026-09-18 this service was started WHILE that laptop
+# stack was running:
+#   15:48:46  laptop log:  "No transition matching 1 found for current state active"
+#   15:48:48  Pi log:      "Failed to make transition 'TRANSITION_CONFIGURE' for
+#                           LifecycleNode '/slam_toolbox'"
+#   15:48:50  Pi log:      "[mapping] slam_toolbox active - building map."   <-- FALSE
+# The configure request was answered by the laptop's already-active node, and the
+# readiness check below then read that same foreign node's state. The safety net never
+# fired, this service reported a map it was not building, and the Pi's own slam_toolbox
+# stayed "unconfigured": no /map publisher, no map->odom transform, and every RViz on
+# the domain dropped every message waiting for a transform that could not arrive.
+#
+# This script cannot pick a node by process out of two that share a name. What it CAN
+# do is notice that the name is ambiguous and stop presenting a reading it cannot
+# attribute as a state it knows - a false "active" is worse than an honest "unknown",
+# because it is the line an operator believes.
+slam_node_count() {
+  ros2 node list 2>/dev/null | grep -cx '/slam_toolbox' || true
+}
+
 echo "[mapping] Waiting for slam_toolbox to reach active..."
 SLAM_ACTIVE=0
 for _ in $(seq 1 20); do
@@ -84,13 +109,33 @@ for _ in $(seq 1 20); do
   sleep 1
 done
 
+# Counted AFTER the wait, not before it: the node this service starts needs those
+# seconds to appear, and a count taken too early would call every cold start ambiguous.
+SLAM_NODES=$(slam_node_count)
+SLAM_NODES=${SLAM_NODES:-0}
+if [ "$SLAM_NODES" -gt 1 ]; then
+  echo "[mapping] WARNING: $SLAM_NODES nodes named /slam_toolbox on domain $ROS_DOMAIN_ID." >&2
+  echo "[mapping]          Lifecycle calls address a node by NAME, so neither the state" >&2
+  echo "[mapping]          read above nor the transitions below are known to reach the one" >&2
+  echo "[mapping]          this service started. The reading is discarded, not believed." >&2
+  echo "[mapping]          The usual source is a laptop gripperx_desk.sh run carrying its" >&2
+  echo "[mapping]          own local mapping stack. Stop that stack, then on the robot:" >&2
+  echo "[mapping]              sudo systemctl restart gripperx-mapping" >&2
+  SLAM_ACTIVE=0
+fi
+
 if [ "$SLAM_ACTIVE" -eq 1 ]; then
   echo "[mapping] slam_toolbox active — building map."
 else
   echo "[mapping] slam_toolbox not active after 20 s — driving the lifecycle by hand."
   ros2 lifecycle set /slam_toolbox configure >/dev/null 2>&1 || true
   ros2 lifecycle set /slam_toolbox activate  >/dev/null 2>&1 || true
-  if slam_state_is_active; then
+  if [ "$SLAM_NODES" -gt 1 ]; then
+    echo "[mapping] WARNING: transitions sent, but with $SLAM_NODES nodes of that name the" >&2
+    echo "[mapping]          outcome cannot be verified from here, and the request may have" >&2
+    echo "[mapping]          gone to the other node. This service does NOT claim a map." >&2
+    echo "[mapping]          Resolve the duplicate first:  ros2 node list | grep -x /slam_toolbox" >&2
+  elif slam_state_is_active; then
     echo "[mapping] slam_toolbox active after the manual transition."
   else
     echo "[mapping] WARNING: slam_toolbox did NOT reach active. There will be no map," >&2

@@ -27,6 +27,11 @@ setup(
         (f"share/{package_name}", ["INTERFACE.md"]),
     ],
     install_requires=["setuptools"],
+    # colcon picks pytest over unittest only when the package declares it here;
+    # without this line `colcon test` runs `python3 -m unittest`, which finds
+    # nothing in test/ and exits GREEN on an empty suite. Same trap as
+    # gripperx_control/setup.py, which carries the identical note.
+    tests_require=["pytest"],
     zip_safe=True,
     maintainer="aditya",
     maintainer_email="kotteaditya919@gmail.com",

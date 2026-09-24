@@ -7,8 +7,7 @@ JSON-in-``std_msgs/String`` is the house style across the whole Octopus stack.
 This module is the single place that knows that, which is what keeps the
 transport (rosbridge today) swappable.
 
-Contract as of branch tip ``a7ab8e6278`` (2026-08-17), authoritative doc
-``Octopus/docs/octopus_to_robot_interface.md``:
+Authoritative doc ``Octopus/docs/octopus_to_robot_interface.md``:
 
 ===================================== ======================= =========
 Topic                                 Type                    Direction
@@ -21,9 +20,9 @@ Topic                                 Type                    Direction
                                       ``std_msgs/String`` JSON   -> robot (frame lock, ~1 Hz)
 ===================================== ======================= =========
 
-The fifth topic was added on 2026-08-21, after their answer to Q1. It carries no
-goal and no target: it reports the startup yaw their map frame is locked to, and
-we read it to learn when that lock CHANGED - see :class:`TransformStatus`.
+The fifth topic carries no goal and no target: it reports the startup yaw their
+map frame is locked to, and we read it to learn when that lock CHANGED - see
+:class:`TransformStatus`.
 
 Two behaviours of theirs drive the parsing:
 
@@ -73,9 +72,9 @@ TOPIC_TRASH_GOAL = "/octopus/trash_goal"
 TOPIC_TRASH_GPS = "/octopus/trash_gps"
 TOPIC_TRASH_GOAL_DONE = "/octopus/trash_goal_done"
 
-#: The fifth ingress topic (2026-08-21). ``std_msgs/String`` carrying JSON at
-#: ~1 Hz. Their existing ``--topics_glob "['/octopus/*']"`` already covers it,
-#: so subscribing changed nothing on their side.
+#: The fifth ingress topic. ``std_msgs/String`` carrying JSON at ~1 Hz. Their
+#: existing ``--topics_glob "['/octopus/*']"`` already covers it, so
+#: subscribing changed nothing on their side.
 TOPIC_TRANSFORM_STATUS = "/octopus/flight_camera_transform/status"
 
 #: Proposed, not yet on their side (proposal item 1). Their existing
@@ -90,10 +89,9 @@ STATUS_NO_FIX = -1
 STATUS_FIX = 0
 
 # --- what their two producers actually put on the wire ---------------------
-# Verified against their source on 2026-08-18. These are facts about the
-# counterpart, not preferences of ours, which is why they are named constants
-# here rather than literals in the fake: if their nodes change, this is the one
-# place that has to change with them.
+# These are facts about the counterpart, not preferences of ours, which is why
+# they are named constants here rather than literals in the fake: if their
+# nodes change, this is the one place that has to change with them.
 #: ``header.frame_id`` on both NavSatFix topics.
 OCTOPUS_FRAME_ID = "map"
 #: sigma 0.5 m in x/y, 1.0 in z. A hardcoded *estimate* on their side, not a
@@ -235,10 +233,10 @@ def parse_navsatfix(payload: Any) -> NavSatFixPayload:
     pipeline.
     """
     mapping = _require_mapping(payload, "NavSatFix")
-    # Canonical keys, verified against their source 2026-08-18: these payloads
-    # come through rosbridge as a serialised sensor_msgs/NavSatFix, so the
-    # spellings are the message field names. NOT lat/lon - that is the
-    # trash_gps JSON, parsed below with its own canonical names.
+    # Canonical keys: these payloads come through rosbridge as a serialised
+    # sensor_msgs/NavSatFix, so the spellings are the message field names. NOT
+    # lat/lon - that is the trash_gps JSON, parsed below with its own
+    # canonical names.
     latitude = _as_float(
         _require_key(mapping, "latitude", "NavSatFix", ("lat",)), "NavSatFix.latitude"
     )
@@ -411,7 +409,7 @@ def parse_trash_gps(payload: Any) -> TrashGpsReport:
     if isinstance(datum_field, Mapping):
         # Canonical keys here are lat/lon - NEVER latitude/longitude. This JSON
         # is hand-written by trash_gps_goal_node, not serialised from a ROS
-        # message (verified against their source 2026-08-18).
+        # message.
         latitude = _as_float(
             _require_key(datum_field, "lat", "trash_gps.datum", ("latitude",)), "datum.lat"
         )
@@ -494,12 +492,11 @@ def build_trash_gps(
     of them defaults to the older, smaller payload so existing callers and their
     asserted payloads are untouched.
 
-    Captured from the running Octopus on 2026-08-21 (branch
-    ``item-a-map-origin``), the envelope carries FOUR keys this function did not
-    emit - ``source_id``, ``frame_id``, ``timestamp`` and ``datum.x``/``datum.y``
-    - and each target carries ``class_name``. We read none of them, which is
-    exactly why they are worth emitting: a fake that omits fields the real
-    system sends cannot show that we tolerate them.
+    The real Octopus envelope carries FOUR keys this function does not emit by
+    default - ``source_id``, ``frame_id``, ``timestamp`` and
+    ``datum.x``/``datum.y`` - and each target carries ``class_name``. We read
+    none of them, which is exactly why they are worth emitting: a fake that
+    omits fields the real system sends cannot show that we tolerate them.
 
     ``numeric_ids`` is the one that matters most. The real payload carries
     ``"id": 1`` as a JSON **number**; this function emitted ``"id": "1"`` as a
@@ -515,8 +512,8 @@ def build_trash_gps(
             "from_topic": datum.from_topic,
         }
         if datum_xy is not None:
-            # Their datum block carries its own map coordinates, which are
-            # (0.0, 0.0) since the item-A origin fix - the datum IS the origin.
+            # Their datum block carries its own map coordinates, currently
+            # (0.0, 0.0) - the datum IS the origin.
             datum_block["x"], datum_block["y"] = float(datum_xy[0]), float(datum_xy[1])
 
     def _id(value: str) -> Any:
@@ -619,21 +616,11 @@ def build_goal_done(target_id: str, as_json_object: bool = False) -> str:
 TRANSFORM_STATE_READY = "ready"
 
 #: How far ``indoor_static_yaw_zero_rad`` must move before we call it a NEW
-#: lock rather than the same lock republished.
-#:
-#: UNMEASURED, AND NOT A PHYSICAL THRESHOLD. Nobody has measured how much that
-#: value moves across a restart of their transform node - there is no run of
-#: ours to measure it in. Its only job is to absorb representation noise: the
-#: value travels as a JSON decimal literal, and a change of formatting on their
-#: side (or a re-serialisation through float32 anywhere in the chain) must not
-#: read as a re-lock. 1e-6 rad is 6e-5 deg, which is orders of magnitude below
-#: any re-lock the drone could physically produce and orders of magnitude above
-#: double round-trip noise. Same reasoning and same number as
-#: ``geodesy.BOOTSTRAP_MATCH_TOLERANCE_DEG``.
-#:
-#: What it CANNOT do is detect a re-lock that happens to land on the same yaw -
-#: a restart with the drone in the same pose is invisible to this test, and no
-#: epsilon fixes that. See the open questions in the handover.
+#: lock rather than the same lock republished. NOT a physical threshold - it
+#: only has to absorb representation noise (JSON decimal round-trip, float32
+#: re-serialisation), staying far below any re-lock the drone could physically
+#: produce. Must stay equal to ``geodesy.BOOTSTRAP_MATCH_TOLERANCE_DEG``.
+#: Cannot detect a re-lock that happens to land on the same yaw.
 DEFAULT_RELOCK_EPSILON_RAD = 1e-6
 
 
@@ -642,7 +629,7 @@ class TransformStatus:
     """One sample of ``/octopus/flight_camera_transform/status`` (~1 Hz).
 
     THIS IS AN INVALIDATION SIGNAL, NOT A CALIBRATION. Their map ``+y`` is the
-    drone's heading at startup (Q1 = option B, answered 2026-08-21), so a
+    drone's heading at startup, so a
     ``their-map -> our-map`` rotation has always been required and this topic
     does not supply it: that rotation comes from where the robot is placed
     relative to the drone. What this topic supplies is the rotation's
@@ -682,8 +669,6 @@ class TransformStatus:
     def align_angle_rad(self) -> Optional[float]:
         """``map_yaw_offset - yaw_zero``, or ``None`` when it is not derivable.
 
-        Their own derived quantity: in the sample they sent from a running
-        system, ``1.57079632679 - (-3.06995218682264) = 4.6407 rad = 265.9 deg``.
         ``None`` rather than a number whenever either angle is absent or
         non-finite - a fabricated 0.0 here would read as "their frame and ours
         agree", which is the one wrong answer this whole topic exists to
@@ -1039,12 +1024,12 @@ def build_device_status(
                 "reason": battery_reason,
                 "percent": battery_percent,
             },
-            # What we observe about THEIR frame lock, mirrored back to them
-            # (2026-08-21). Not a request and not a complaint: it is the one
-            # place either side can see that both agree on which lock is live,
-            # and it costs one dict that the link node already holds. `null`
-            # when we are not subscribed, which is a different statement from
-            # "no lock" and is spelled differently on purpose (FR-12 item 8).
+            # What we observe about THEIR frame lock, mirrored back to them. Not
+            # a request and not a complaint: it is the one place either side can
+            # see that both agree on which lock is live, and it costs one dict
+            # the link node already holds. `null` when we are not subscribed,
+            # which is a different statement from "no lock" and is spelled
+            # differently on purpose (FR-12 item 8).
             "octopus_transform": None if octopus_transform is None else dict(octopus_transform),
         }
     )

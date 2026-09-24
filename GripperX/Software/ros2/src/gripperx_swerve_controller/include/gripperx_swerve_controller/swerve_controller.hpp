@@ -120,7 +120,7 @@ private:
   void active_mode_callback(const std_msgs::msg::String::SharedPtr msg);
   void wheel_feedback_valid_callback(const std_msgs::msg::Int32MultiArray::SharedPtr msg);
 
-  /// RUNTIME SWITCH FOR THE VELOCITY REGULATOR — user decision 2026-08-20.
+  /// RUNTIME SWITCH FOR THE VELOCITY REGULATOR.
   /// `ros2 param set /swerve_controller wheel_regulator_enabled false` must take
   /// effect on the NEXT update() cycle, on a live driving robot, with no reload:
   /// "reload the controller" is far too slow to be an off-switch. Validation
@@ -177,11 +177,11 @@ private:
   /// the steering modules are still rotating. `reference_rad` is only the
   /// NORMALISATION of "how big is a big steering error" — it is NOT a limit.
   ///
-  /// The formula and its three constants are unchanged. What changed (user
-  /// decision 2026-08-19) is what `target_angle` is: the caller passes the
-  /// POST-ARBITRATION commanded angle — the A2 direct_steer override when one
-  /// is fresh, the IK target otherwise — instead of always the IK target. See
-  /// the block comment at the call site in update().
+  /// The formula and its three constants are unchanged. What changed is what
+  /// `target_angle` is: the caller passes the POST-ARBITRATION commanded angle
+  /// — the A2 direct_steer override when one is fresh, the IK target otherwise
+  /// — instead of always the IK target. See the block comment at the call site
+  /// in update().
   double steer_alignment_scale(double target_angle, double current_angle) const;
 
   /// Port of swerve_cmd_node._apply_steer_feedback_differential (task #21).

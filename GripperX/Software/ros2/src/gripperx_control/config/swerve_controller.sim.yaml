@@ -23,35 +23,29 @@
 
 swerve_controller:
   ros__parameters:
-    # [1,1,1,1] in BOTH real and sim since 2026-08-21: the URDF's right-side
-    # drive joints no longer carry an authored axis mirror, so there is nothing
-    # left for this value to undo. Kept declared, at the identity, because the
-    # parameter is still the documented place a wiring-sign change would go.
+    # [1,1,1,1] in BOTH real and sim: the URDF's right-side drive joints no
+    # longer carry an authored axis mirror, so there is nothing left for this
+    # value to undo. Kept declared, at the identity, because the parameter is
+    # still the documented place a wiring-sign change would go.
     wheel_command_multipliers: [1.0, 1.0, 1.0, 1.0]
 
-    # HWR-30a's provenance gate has no source in the twin. /hw/wheel_feedback_valid
+    # HWR-30a's provenance gate has no source in the twin: /hw/wheel_feedback_valid
     # is published by GripperXInterface (FR-11 items 5/6), and GazeboSimSystem
-    # never loads that component — so in sim nothing ever publishes it, every
-    # wheel reads provenance UNKNOWN, and the stall detector would stay
-    # PERMANENTLY DISARMED while the configure log said it was on. The real
-    # robot must keep the opposite default (`false` in ros2_controllers.yaml):
-    # there a missing provenance topic means the encoders' state is genuinely
-    # unknown, and assuming LIVE would arm the detector against feedback that
-    # may be an echo of the command.
+    # never loads that component, so in sim every wheel reads provenance
+    # UNKNOWN and the stall detector would stay PERMANENTLY DISARMED while
+    # the configure log said it was on. The real robot must keep the
+    # opposite default (`false` in ros2_controllers.yaml): there a missing
+    # provenance topic means the encoders' state is genuinely unknown, and
+    # assuming LIVE would arm the detector against feedback that may be an
+    # echo of the command.
     #
     # In Gazebo the joint positions are true physics, so "commanded and not
-    # turning" is a real statement there — which is exactly why HWR-30a was put
-    # in the controller and not in the hardware interface.
+    # turning" is a real statement there — which is why HWR-30a sits in the
+    # controller, not the hardware interface.
     #
-    # SINCE 2026-08-20 THIS VALUE GATES A SECOND CONSUMER: the per-wheel velocity
-    # regulator uses the same provenance test.
-    #
-    # CORRECTED 2026-08-21 — the sentence here used to say the regulator "stays
-    # false". That stopped being true within a day: the user enabled it by
-    # default on 2026-08-20, this file does NOT override the flag, and it layers
-    # on top of ros2_controllers.yaml. **The twin therefore inherited the closed
-    # loop silently, with nobody deciding it for the twin.** That is recorded as
-    # OP-36(a); `real == sim` is preserved, which is why it was not caught by the
-    # usual check. Consequence to be aware of before reading any twin result:
-    # this line is what LETS the regulator act there, and it is now acting.
+    # This value also gates the per-wheel velocity regulator (same
+    # provenance test). The twin therefore inherits the regulator's closed
+    # loop as soon as it is enabled by default (OP-36(a)) — `real == sim` is
+    # preserved here, which is why nothing decided this for the twin
+    # specifically.
     assume_live_provenance: true

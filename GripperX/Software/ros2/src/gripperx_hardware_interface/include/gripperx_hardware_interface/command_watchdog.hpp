@@ -1,62 +1,46 @@
-// Decision core of the command watchdog — OP-18a option W2, SR-11, §3.1.5.
+// Decision core of the command watchdog (OP-18a option W2, SR-11, §3.1.5 —
+// see claude/REQUIREMENTS.md). Pulled out of GripperXInterface so it is a
+// pure function of (timestamps, twist values, echo sequence numbers): every
+// case — silence, divergence, recovery, each false-positive mode — is a
+// deterministic unit test (test/test_command_watchdog.cpp), which the real
+// interface cannot offer (needs a live controller_manager and hardware feed).
 //
-// WHY THIS IS ITS OWN HEADER, AND WHY IT TOUCHES NO ROS TYPE.
-// This is the check that exists because of the 2026-07-06 incident and its
-// 2026-08-17 recurrence. Inside GripperXInterface it can only be exercised with
-// a controller_manager, a URDF, a live hardware feed and a wedged executor —
-// i.e. it can only be tested on the robot, which is exactly where a safety
-// check must NOT first be tried. Pulled out, its whole state machine is a pure
-// function of (timestamps, twist values, echo sequence numbers) and every case
-// below — silence, divergence, recovery, and each named false-positive mode —
-// is a deterministic unit test (test/test_command_watchdog.cpp).
-//
-// WHAT IT DECIDES. Under variant B the controller's input is a body twist and
-// its output is per-wheel, so the old input-vs-output comparison would need the
-// kinematics inside the safety component. It does not: it compares a twist with
-// a twist, via the intent echo swerve_controller publishes from its update
-// loop (OP-18a item 1 — never from the controller_manager EXECUTOR, or the
-// divergence check collapses into the silence check).
-//
+// Compares a twist with a twist, via the intent echo swerve_controller
+// publishes from its update loop (OP-18a item 1 — never from the
+// controller_manager EXECUTOR, or divergence collapses into silence). This
+// avoids needing the kinematics inside the safety component:
 //   silence    — /cmd_vel itself stale beyond command_timeout_sec.
-//   divergence — /cmd_vel fresh, and it has CHANGED since the last /cmd_vel the
-//                controller demonstrably consumed, while the echo's `sequence`
-//                has stood still for longer than command_timeout_sec.
+//   divergence — /cmd_vel fresh and CHANGED since the last one the controller
+//                demonstrably consumed, while the echo's `sequence` has stood
+//                still longer than command_timeout_sec.
 //
-// THE COUNTER SEMANTICS MATTER AND ARE EASY TO GET BACKWARDS. `sequence` counts
-// /cmd_vel messages CONSUMED, not update cycles and not distinct values. So:
-//   * a legitimately constant command still advances `sequence` (every
-//     republished Twist is a new message) — a frozen VALUE with an advancing
-//     sequence is normal operation and must not trip anything;
-//   * a frozen `sequence` under a fresh, changing /cmd_vel is the fault.
-// The check therefore keys on `sequence`, and uses the twist values only to
-// answer "has the operator asked for something the controller has not taken
-// up?".
+// COUNTER SEMANTICS, EASY TO GET BACKWARDS: `sequence` counts /cmd_vel
+// messages CONSUMED, not update cycles or distinct values. A constant command
+// still advances it (every republished Twist is a new message) — a frozen
+// VALUE with an advancing sequence is normal and must not trip anything; a
+// frozen sequence under a fresh, changing /cmd_vel is the fault. The check
+// therefore keys on `sequence`; twist values only answer "has the operator
+// asked for something the controller has not taken up?".
 //
-// WHY THE "HAS CHANGED" CONDITION IS NOT A WEAKENING. While /cmd_vel does not
-// change, a wedged controller commands the last consumed twist — which is the
-// twist currently being commanded. The robot is doing what it is told; there is
-// nothing to stop. The fault becomes real, and is caught within
-// command_timeout_sec, at the first change — which includes the operator
-// releasing the key, because teleop_mux then publishes zeros at 20 Hz. The
-// superseded wheel-command watchdog behaved identically (a frozen output equal
-// to a frozen input diverges from nothing), so this is not a regression.
+// "HAS CHANGED" IS NOT A WEAKENING: while /cmd_vel does not change, a wedged
+// controller commands the twist it last consumed, which is the twist
+// currently being commanded — nothing to stop. The fault is caught within
+// command_timeout_sec of the first change, including the operator releasing
+// the key (teleop_mux then publishes zeros at 20 Hz).
 //
-// The comparison is deliberately made STICKY by construction rather than by a
-// time window: the change counter is snapshotted at each `sequence` advance, so
-// "unconsumed change" stays true until the controller consumes again, and
-// clears by itself the moment it does.
+// STICKY BY CONSTRUCTION, not a time window: the change counter is
+// snapshotted at each `sequence` advance, so "unconsumed change" stays true
+// until the controller consumes again and clears by itself then.
 //
-// CLOCK SOURCE — deviation D17, and this component is on the safe side of it.
-// Every time here is a std::chrono::steady_clock ARRIVAL time taken in the
-// watchdog's own callbacks. No ROS clock, and deliberately NOT the echo's
-// header.stamp, which is ROS time. D17 records that a non-advancing /clock
-// makes every `now() - stamp` freshness test in the chain read "always fresh"
-// and so fails toward "keep commanding". A steady_clock age cannot be stalled
-// by a clock source at all, so both checks here keep working with /clock
-// stopped, paused, or absent. The exposed tests are the ones that DO use the
-// ROS clock — swerve_controller's cmd_vel_timeout_sec and A2's
-// direct_timeout_sec — not these. Reusing header.stamp here to "save a
-// subtraction" would hand D17 the watchdog as well; do not.
+// CLOCK SOURCE (deviation D17): every time here is a std::chrono::steady_clock
+// ARRIVAL time from the watchdog's own callbacks — never ROS time, and never
+// the echo's header.stamp. A non-advancing /clock makes every ROS-time
+// freshness test read "always fresh" and fail toward "keep commanding"
+// (D17); a steady_clock age cannot be stalled by any clock source. Other
+// timeouts in the chain (swerve_controller's cmd_vel_timeout_sec, A2's
+// direct_timeout_sec) still use ROS time and are NOT covered by this.
+// Reusing header.stamp here to "save a subtraction" would hand D17 this
+// watchdog too; do not.
 
 #ifndef GRIPPERX_HARDWARE_INTERFACE__COMMAND_WATCHDOG_HPP_
 #define GRIPPERX_HARDWARE_INTERFACE__COMMAND_WATCHDOG_HPP_
@@ -72,8 +56,8 @@ namespace gripperx_hardware_interface
 enum class WatchdogReference
 {
   /// Superseded: /wheel_velocity_controller/commands vs. the command interface.
-  /// The topic disappears with the NFR-10 rebuild, but the old chain still runs,
-  /// so this stays the default until the switch-over is made in configuration.
+  /// Stays the default until the NFR-10 rebuild removes the topic and the
+  /// switch-over is made in configuration.
   kWheelCommands,
   /// OP-18a / W2: /cmd_vel + the swerve_controller intent echo.
   kTwistEcho
@@ -89,10 +73,9 @@ struct TwistSample
 /// Tolerances below which two body twists count as the same command.
 ///
 /// SEPARATE FOR LINEAR AND ANGULAR ON PURPOSE: m/s and rad/s are not the same
-/// quantity and a single epsilon over both would silently pick whichever
-/// happened to be stricter. See the derivation at the parameter defaults in
-/// GripperXInterface — the values are TO-VERIFY and are NOT the per-wheel
-/// command_divergence_eps.
+/// quantity; a single epsilon over both would silently pick whichever
+/// happened to be stricter. NOT the per-wheel command_divergence_eps — see
+/// the parameter defaults in GripperXInterface (values are TO-VERIFY).
 struct TwistTolerance
 {
   double linear{1.0e-4};
@@ -169,8 +152,7 @@ public:
   {
     Verdict verdict;
     if (!cmd_vel_received_ || command_timeout_sec_ <= 0.0) {
-      // Startup grace, identical in shape to the one the superseded watchdog
-      // had ("nothing received yet -> do not enforce"). It is the reason a
+      // Startup grace: nothing received yet -> do not enforce. This is why a
       // never-published /cmd_vel cannot latch a stop at boot.
       return verdict;
     }
@@ -179,12 +161,10 @@ public:
     verdict.silence = verdict.cmd_vel_age_sec > command_timeout_sec_;
 
     if (!echo_seen_) {
-      // /cmd_vel is flowing and the controller has never echoed. That is
-      // reportable, but it is NOT treated as divergence: at bringup the
-      // hardware component activates before the controllers spawn, so this
-      // state is also the normal startup window, and a stop latched here would
-      // block every start. Left as an explicit flag rather than silently
-      // dropped.
+      // /cmd_vel is flowing but the controller has never echoed — reportable,
+      // not divergence: at bringup the hardware component activates before
+      // controllers spawn, so this is also the normal startup window, and
+      // latching a stop here would block every start.
       verdict.echo_never_seen = !verdict.silence;
       return verdict;
     }

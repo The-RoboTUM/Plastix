@@ -14,34 +14,22 @@ WHAT IT VERIFIES, AND WHY EACH ONE EXISTS
                with a FAILED pick is not acknowledged, and an arrival while
                disarmed is not acknowledged. Both are irreversible if wrong.
 ``ambiguous``  F-13. Two targets inside ``merge_radius_m`` make the goal fix
-               undecidable, and the gateway refuses rather than guessing - at
-               dispatch, for the goal ALREADY IN FLIGHT, and at the
-               irreversible acknowledgement. Runs past arrival, deliberately:
-               the earlier version of this scenario ended ~22 s before it and
-               that is what hid F-13 (F-6 in its second shape).
+               undecidable; the gateway refuses at dispatch and at the
+               irreversible acknowledgement. Runs past arrival to verify.
 ``link_reset`` F-16. A WebSocket reconnect keeps the blacklist; only evidence
                that their id space restarted drops it.
 ``triggers``   C-8: SEVEN of the NINE auto-disarm triggers of SR-15 rule 7,
-               exercised WITH A GOAL IN FLIGHT. This was structurally impossible
-               before stage 3 and is the reason stage 3 needed an audit first.
-               The other two - `CLOCK_STALLED` (8) and `CLOCK_JUMPED_BACK` (9) -
-               need a `/clock` publisher to misbehave and are therefore in
-               ``clock``, parts B and E, where their CODES are asserted.
+               exercised WITH A GOAL IN FLIGHT. The other two -
+               `CLOCK_STALLED` (8) and `CLOCK_JUMPED_BACK` (9) - need a `/clock`
+               publisher to misbehave and are in ``clock``, parts B and E.
 ``sr9``        C-8: the SR-9 publisher inventory taken in the ARMED state with a
                goal in flight. A-5 only ever covered the disarmed inventory of a
                build that had no action client.
-``clock``      F-24, in BOTH clock modes, and since revision 4 also F-29,
-               F-30 and F-31 - the three ways a clock misbehaves without
-               stopping; since revision 5 also F-37 and F-38 (part H), the two
-               wall-clock statements that were left on the ROS clock when the
-               others were moved off it. Sim time WITH a `/clock` publisher - the mode the
-               launch file produces - dispatching and expiring normally; the
-               same stack with the clock FROZEN under a goal in flight; sim time
-               with no `/clock` at all, which is where the auditor measured zero
-               timer callbacks in 40 s while the node reported itself healthy;
-               the clock RUNNING AT 10% of real time; the clock JUMPING BACK
-               120 s; and ordinary starts in both modes and both publisher
-               orders, which must raise no ERROR at all.
+``clock``      F-24, F-29, F-30, F-31, F-37, F-38. Modes: sim time WITH a
+               `/clock` publisher (dispatching and expiring normally); FROZEN
+               under a goal in flight; no `/clock` at all; running AT 10% real time;
+               JUMPING BACK 120 s; and ordinary starts in both modes and both
+               publisher orders, which must raise no ERROR at all.
 ``clock_fwd``  F-40, and it ASSERTS ALMOST NOTHING on purpose: a forward
                clock jump is recorded as OPEN pending a user decision, so this
                scenario measures what the build does and prints it as `[OBS ]`
@@ -54,18 +42,13 @@ WHAT IT VERIFIES, AND WHY EACH ONE EXISTS
 
 HOW IT OBSERVES
 ===============
-By reading the nodes' own logs, deliberately. ``ros2 topic echo`` and
-``ros2 node info`` generate DDS traffic of their own and this suite kills
-processes on purpose; the SR-9 check is the one place a ``ros2`` CLI call is
-worth its cost, and it is taken once, at a controlled moment.
+By reading the nodes' own logs to avoid DDS traffic. The SR-9 check is the one
+place a ``ros2`` CLI call is worth its cost.
 
 EVERY NUMBER HERE IS A FIXTURE
 ==============================
-The geofence rectangle, the mock's timings and the robot start pose are test
-fixtures chosen to make the decision logic observable. NONE of them is a
-measurement and none may be copied into a config file as one. ``grasp.offset_x_m
-= 0.360`` is passed through exactly as the user specified it and is still a
-SPECIFICATION, not a measurement.
+Test fixtures for observable decision logic; none are measurements and none may
+be copied into config files. All are SPECIFICATIONS, not measurements.
 """
 
 from __future__ import annotations
@@ -148,21 +131,12 @@ class Proc:
 
     def __init__(self, name: str, argv: List[str], env: dict, stdin_pipe: bool = False):
         self.name = name
-        # Per-SCENARIO subdirectory. With one flat directory each scenario
-        # overwrote the previous one's node logs, so after a full run the only
-        # log left was the last scenario's - and a failure in an earlier one
-        # could not be diagnosed at all afterwards. Found exactly that way.
+        # Per-SCENARIO subdirectory to avoid scenarios overwriting each other's logs.
         directory = os.path.join(LOG_DIR, CURRENT_SCENARIO or "scenario")
         os.makedirs(directory, exist_ok=True)
         self.path = os.path.join(directory, f"{name}.log")
         self.file = open(self.path, "w+b")
-        # OWN PROCESS GROUP, and the teardown kills the GROUP. `ros2 run` is a
-        # wrapper that execs the real node as a child, so signalling the wrapper
-        # alone leaves the node running - which is how an earlier run of this
-        # file ended up with five orphaned link nodes on one domain, all
-        # publishing link_status, all interleaving their reconnect counters.
-        # Orphaned motion sources are what SR-5 is about; here they merely
-        # falsify a test, but they falsify it silently.
+        # OWN PROCESS GROUP - tear down kills the entire group.
         self.proc = subprocess.Popen(
             argv,
             stdout=self.file,
@@ -244,10 +218,7 @@ def start_mock(**params) -> Proc:
 
 
 #: The installed entry points, invoked DIRECTLY rather than through `ros2 run`.
-#: `ros2 run` execs the node as a child, so a signal sent for a test lands on
-#: the wrapper as well and the exit code measured is the wrapper's, not the
-#: node's - which is how "SIGTERM is a clean exit" came back as rc=-15 for a
-#: node whose own log showed a clean, complete shutdown.
+#: This avoids wrapper process issues with signal handling.
 _INSTALL = os.path.abspath(
     os.path.join(_PKG, "..", "..", "install", "gripperx_external", "lib", "gripperx_external")
 )
@@ -274,9 +245,7 @@ def start_sim_clock(rate_hz: float = 50.0, scale: float = 1.0,
             "--rate-hz", str(rate_hz), "--scale", str(scale),
             "--epoch-mode", epoch_mode]
     if epoch is not None:
-        # An EXPLICIT seed, for the band between the two modes: a replay of an
-        # hour-old bag is neither "at zero" nor "at wall time", and the two
-        # modes alone cannot say what happens in between.
+        # An explicit seed for the band between the two epochs.
         argv += ["--epoch", str(epoch)]
     return Proc("sim_clock", argv, env_for())
 
@@ -756,9 +725,6 @@ def scenario_ambiguous() -> None:
     check("Refusing rather than guessing" in line or "targets within" in line,
           "  ... and the refusal names both candidates", line[-100:])
 
-    # THE FIX. The goal already in flight is re-correlated on every dispatch
-    # tick and cancelled, rather than driven to arrival on a decision taken
-    # 0.6 s earlier.
     cancelled = gateway.wait_for(r"CANCELLING target .*CORRELATION_LOST", 15)
     check(cancelled is not None,
           "the goal ALREADY IN FLIGHT is cancelled, not just the next one",
@@ -768,8 +734,7 @@ def scenario_ambiguous() -> None:
         "  ... and Nav2 confirms it ended as CANCELED",
     )
 
-    # Now stay past the point at which the old build arrived and acknowledged.
-    # nav_duration_sec is 14; this waits until at least t_dispatch + 25 s.
+    # Wait past the expected arrival time to verify no acknowledgement happens.
     remaining = (t_dispatch + 25.0) - time.time()
     if remaining > 0:
         time.sleep(remaining)
@@ -893,14 +858,7 @@ def scenario_triggers() -> None:
     if in_flight("TIMEOUT", duration=6.0):
         check(gateway.wait_for(r"disarmed by TIMEOUT", 25) is not None,
               "2/7 TIMEOUT disarms when the window expires mid-goal")
-        # Either reason is a pass, and which one appears is itself evidence.
-        # `is_armed` is evaluated at READ time (SAFETY.md F-2 / C-2), so the
-        # window is shut the instant it expires rather than when the poll next
-        # runs - and the dispatch tick's in-flight re-validation can therefore
-        # see NOT_ARMED and cancel BEFORE the safety tick emits the TIMEOUT
-        # event. Observed: cancel at ...655.099 (NOT_ARMED), disarm event at
-        # ...655.185. Two independent paths, both cancelling, neither waiting
-        # for the other. Requiring only one of them would be testing the race.
+        # Two independent paths can detect expiry; either is correct.
         check(gateway.wait_for(r"CANCELLING target .*(disarm:TIMEOUT|NOT_ARMED)", 10) is not None,
               "    ... and cancels it, by whichever gate notices the expiry first")
 
@@ -909,14 +867,7 @@ def scenario_triggers() -> None:
         set_mock(teleop_mode="keyboard")
         check(gateway.wait_for(r"disarmed by MODE_CHANGE", 15) is not None,
               "3/7 MODE_CHANGE disarms when the mux leaves autonomous")
-        # Same two-path shape as TIMEOUT above, and for the same reason: the
-        # dispatch tick re-validates the goal in flight through
-        # `validate_dispatch` and can see MODE_NOT_AUTONOMOUS before the safety
-        # group's mode callback emits the MODE_CHANGE event. Both cancel; the
-        # cancel is idempotent, so whichever arrives first is the one that logs.
-        # Observed both orderings across runs (disarm:MODE_CHANGE at ...883.500,
-        # 1.1 ms after the disarm, in one run; the dispatch gate first in
-        # another). Pinning one of them would be testing the race, not the rule.
+        # Same two-path detection as TIMEOUT; whichever arrives first logs.
         check(gateway.wait_for(r"CANCELLING target .*(disarm:MODE_CHANGE|MODE_NOT_AUTONOMOUS)", 10) is not None,
               "    ... and cancels it, by whichever gate notices the mode first")
         set_mock(teleop_mode="autonomous")
@@ -931,13 +882,7 @@ def scenario_triggers() -> None:
               "    ... a cancel that cannot be confirmed is REPORTED, and only reported")
         check(gateway.wait_for(r"releasing target .*only the upstream mechanisms", 25) is not None,
               "    ... and the goal is then released with what that means spelled out")
-        # The `escalate_to_keyboard_mode` LOG GREP USED TO BE HERE, and SAFETY.md
-        # 6.3 retired it: a rule whose test passes when nothing happens tests
-        # nothing, and it would have passed for the same escalation under any
-        # other name. What is asserted instead is the mechanism, at the one
-        # moment it matters - a cancel that cannot be confirmed is exactly when
-        # a node would be tempted to reach for the mux. The sweep below is this
-        # process's own inventory of every way it can ask anything to act.
+        # Assertion is on the mechanism (no service client), not on log text.
         sweep = gateway.wait_for(r"command-client sweep: 0 service clients", 10)
         check(sweep is not None,
               "    ... and this process has NO service client at all, so the mux's "
@@ -1006,13 +951,7 @@ def scenario_triggers() -> None:
         "LINK_LOST", "EXCESSIVE_ABORTS", "NODE_SHUTDOWN",
     ]
     seen = [t for t in triggers if gateway.count(f"disarmed by {t}") > 0]
-    # Seven, not nine: SR-15 rule 7 enumerates nine since the user split
-    # CLOCK_JUMPED_BACK (9) out of CLOCK_STALLED (8) on 2026-08-19, and the two
-    # clock triggers cannot be raised here - they need a `/clock` publisher that
-    # freezes or rewinds, which is what `--scenario clock` parts B and E build.
-    # Their codes are asserted there. The completeness of the SET ITSELF - that
-    # ArmingState.msg and `arming.TRIGGER_CODES` enumerate the same nine - is an
-    # offline check (`check_validation.py`, part 6).
+    # Seven of nine triggers: CLOCK_STALLED and CLOCK_JUMPED_BACK need /clock misbehavior.
     check(len(seen) == 7,
           "all seven of the non-clock triggers fired in one session",
           ", ".join(seen))
@@ -1329,11 +1268,7 @@ def scenario_sr9() -> None:
     offenders = [t for t in chain if re.search(rf"^{re.escape(t)}: ", armed, re.M)]
     check(not offenders, "no publisher on any motion-chain topic while armed", ", ".join(offenders))
 
-    # SAFETY.md 6.3: the CALLING direction of the same question, taken in the
-    # same armed state and from the same middleware view. The publisher
-    # inventory says what this node can write; this says what it can ask anybody
-    # to do - and a service client for the mux's mode switch would appear here
-    # and nowhere else. This is what replaced the log grep for a parameter name.
+    # SAFETY.md 6.3: the CALLING direction (what it can ask); replaced log grep.
     service_clients = node_info_block("Service Clients:")
     check(
         service_clients == "",
@@ -1447,8 +1382,7 @@ def scenario_clock() -> None:
         gateway.wait_for(r"ACKNOWLEDGED target .* as COLLECTED", 60) is not None,
         "  ... and the whole loop completes, so nothing about sim time is inert",
     )
-    # The arming expiry is the one timer whose failure is invisible: it does not
-    # stop something happening, it stops something STOPPING.
+    # Arming expiry failure is invisible: it stops stopping, not doing.
     set_arming(True, 6.0)
     check(
         gateway.wait_for(r"disarmed by TIMEOUT", 40) is not None,
@@ -1481,8 +1415,7 @@ def scenario_clock() -> None:
         "  ... and it DISARMS with CLOCK_STALLED, reporting ArmingState constant "
         "8: a window whose expiry is inert is not a window. Part E asserts that "
         "the backwards jump reports 9 instead, in this same session (SR-15 r.7)",
-        # Quoted, because this half of the split is only meaningful next to the
-        # other half - and the two parts write to the same log file name.
+    # This half is meaningful only next to the other - same log file.
         (stall_disarm or "").split("]: ")[-1][:70],
     )
     check(
@@ -1539,10 +1472,7 @@ def scenario_clock() -> None:
           "  ... and REFUSES to arm, which is the state every timer being inert "
           "actually means")
     time.sleep(20)
-    # The auditor's three counters, measured again on this build. The first two
-    # are still zero - the timers really are frozen, that is the nature of the
-    # thing - and the difference is that it is now said out loud and the gate
-    # cannot be opened.
+    # Timers are frozen (zero as before); the gate now reports it clearly.
     check(
         gateway.count(r"navigate_to_pose is available") == 0
         and gateway.count(r"DISPATCHING target") == 0,
@@ -1606,13 +1536,7 @@ def scenario_clock() -> None:
         gateway.wait_for(r"disarmed by LINK_LOST", 20) is not None,
         "  ... and it disarms on it, on the slow clock, as it does on wall time",
     )
-    # The other half of the same coin, and the regression the F-29 fix could
-    # have introduced: the link node runs in SIM TIME in the twin config
-    # (octopus_link_twin.yaml), and its `link_status` heartbeat used to be a ROS
-    # timer. A monotonic watchdog reading a sim-time heartbeat would declare
-    # LINK_LOST on a perfectly healthy link at this factor - 1 Hz of sim time is
-    # one publication every 10 wall-seconds against a 5 s tolerance. Both timers
-    # in the link node are on a steady clock for exactly this reason.
+    # Link node timers use steady clock (not sim time) to avoid false LINK_LOST.
     print("      restarting the link node IN SIM TIME, as the twin config runs it")
     link = start_link(name="octopus_link_node_simtime", use_sim_time="true")
     time.sleep(8)
@@ -1648,12 +1572,7 @@ def scenario_clock() -> None:
         "a goal is in flight",
     )
     before_cancels = gateway.count(r"CANCELLING target")
-    # THE FIXTURE FIRST, and separately. Without this the four checks below
-    # report "the gateway did not notice a backwards jump" when the truth may be
-    # that no backwards jump ever happened - which is exactly what one
-    # full-suite run recorded before this guard existed. `clock_fwd` has had the
-    # equivalent guard since it was written; this is the same guard on the older
-    # half of the scenario.
+    # Verify the jump happened before checking detection (no false negatives).
     set_sim_clock_param("jump_back_sec", "120.0")
     fixture_jumped = clock.wait_for(r"/clock JUMPED BACK", 25)
     check(
@@ -1738,9 +1657,7 @@ def scenario_clock() -> None:
 
     quiet = 0
     for attempt in range(3):
-        # The twin's own order: both come up together, so the subscription has
-        # to discover a publisher that is itself still starting. This is where
-        # the auditor measured 3.20 s and 3.48 s, i.e. past clock_stall_sec.
+    # Both come up together; subscription must discover a starting publisher.
         gateway = start_gateway(name="goal_gateway_node_alongside", use_sim_time="true")
         clock = start_sim_clock()
         proven = gateway.wait_for(r"ROS clock observed advancing", 40)
@@ -1761,8 +1678,7 @@ def scenario_clock() -> None:
             quiet += 1
         teardown()
         shm_clean()
-    # Informational, not a check: how quiet the three runs were is a property of
-    # this laptop's DDS discovery on the day, not of the code.
+    # Informational only (DDS discovery property, not code).
     print(f"      ({quiet}/3 alongside-runs were completely silent about the clock)")
 
     gateway_first = start_sim_clock()
@@ -1777,8 +1693,7 @@ def scenario_clock() -> None:
     teardown()
     shm_clean()
 
-    # And the other half: the grace must not be a way of NOT reporting a clock
-    # that really never advances, and it must not relax the gate while it lasts.
+    # Grace must not mask a truly stuck clock or relax the gate while active.
     gateway = start_gateway(
         name="goal_gateway_node_grace", use_sim_time="true",
         clock_stall_sec="0.5", clock_startup_grace_sec="12.0",
@@ -1813,11 +1728,7 @@ def scenario_clock() -> None:
     shm_clean()
 
     # -- H: the two promises F-37 and F-38 make, at a factor of 0.1 -----------
-    # Both findings are about a WALL-CLOCK statement measured or reported in sim
-    # seconds, and both were measured by the auditor at this factor. D above
-    # covers the two promises package E converted; this covers the two it did
-    # not. Run at 0.1x for the same reason D is: at 1.0x every one of these
-    # numbers is right by accident.
+    # Both F-37 and F-38 measure wall-clock values in sim seconds at 0.1x.
     print("-" * 78)
     print("  H: /clock at 0.1x - the ADVERTISED expiry (F-37) and a dead mux (F-38)")
     fake = start_fake()
@@ -1829,10 +1740,7 @@ def scenario_clock() -> None:
         gateway.wait_for(r"ROS clock observed advancing", 60) is not None,
         "the 0.1x clock is proven",
     )
-    # The rate estimate has a ~2 s time constant and is seeded at 1.0, so this
-    # waits for it to have SEEN the slow clock rather than asserting against a
-    # number that is still converging. Nothing gates on the estimate; it feeds
-    # one reported field.
+    # Rate estimate has ~2s time constant; wait for it to see the slow clock.
     time.sleep(12)
     granted = set_arming(True, 60.0)
     check("armed for 60" in granted, "  ... and a 60 s window is granted")
@@ -1868,8 +1776,7 @@ def scenario_clock() -> None:
             f"external/clock -> ros_clock_rate = {reported_rate}",
         )
 
-    # F-38: the dead mux, with a goal in flight. This is A-37 in the suite: the
-    # auditor's probe R4 was ad hoc, so the path had never been exercised here.
+    # F-38: the dead mux scenario, exercised here for the first time.
     set_arming(True, 600.0)
     check(
         gateway.wait_for(r"DISPATCHING target", 120) is not None,
@@ -1908,17 +1815,7 @@ def scenario_clock() -> None:
     shm_clean()
 
     # -- I: the MIRROR of package D's refusal - SAFETY.md F-35 -------------
-    # Package D refuses `use_sim_time: true` where no /clock can exist. The
-    # reverse - a LIVE /clock publisher while we are on WALL time - went
-    # undetected, and the package did not look for a /clock publisher at all.
-    # DECIDED 2026-08-20 (user): build the check. It WARNS; it does not refuse,
-    # disarm or cancel.
-    #
-    # WHAT THIS PART DOES NOT SHOW, stated here because the scenario name
-    # invites the assumption: nothing below is evidence about what the epoch
-    # mismatch DOES. The auditor predicts it is fail-safe and calls it a
-    # prediction; observing it needs the real Gazebo twin, and the user decided
-    # not to make that run. F-35's consequence half stays SUSPECTED.
+    # F-35: reverse check (live /clock with wall time); warns, does not refuse.
     print("-" * 78)
     print("  I: a LIVE /clock while use_sim_time is FALSE - the F-35 mirror")
     mismatch = r"a /clock publisher is LIVE"
@@ -1968,9 +1865,7 @@ def scenario_clock() -> None:
     teardown()
     shm_clean()
 
-    # I.2 the node starts FIRST and the clock appears afterwards. This is the
-    # case a startup-only check misses completely, and it is why the auditor
-    # asked for the check to run again on the first /clock message.
+    # I.2: node starts first, clock appears after - check runs on first /clock message.
     gateway = start_gateway(use_sim_time="false")
     time.sleep(12)
     check(
@@ -2009,15 +1904,7 @@ def scenario_clock() -> None:
     shm_clean()
 
     # -- J: F-35's CONSEQUENCE, across the epoch distance ------------------
-    # The real-Gazebo run of 2026-08-20 showed the mismatch is fail-safe when
-    # sim time starts at 0. It could not show what happens when the epochs are
-    # CLOSE, which is the bag-replay case F-35 was argued from (§6.4 item 8).
-    # `sim_clock.py --epoch-mode` exists for that, by user decision 2026-08-21.
-    #
-    # The DETECTOR firing is decided behaviour and is checked. What follows the
-    # detection is a FINDING IN PROGRESS - F-35 is report-only by decision, and
-    # asserting today's downstream behaviour would quietly turn an observation
-    # into a specification. Those lines are `[OBS ]`.
+    # F-35 behaviour is fail-safe; detailed consequence is report-only.
     print("-" * 78)
     print("  J: F-35's consequence at three epoch distances (gateway on WALL time)")
     for tag, kwargs in (
@@ -2257,18 +2144,12 @@ def scenario_permissive() -> None:
         "  ... after which the SAME configuration dispatches, so nothing else blocked it",
     )
 
-    # F-8: a startup-only parameter is REFUSED with a reason, never accepted and
-    # then ignored. The four the re-audit named plus the two carried forward,
-    # taken against a RUNNING node with a goal in flight - the state in which an
-    # operator would actually reach for one of them.
+    # F-8: startup-only parameters are REFUSED with a reason; tested with goal in flight.
     for name, value in (
-        # SAFETY.md F-24. Not one of this node's own parameters - rclpy declares
-        # it on every node - which is exactly how it escaped F-8's fix and stayed
-        # settable at runtime while every safety timeout was measured on it.
+        # SAFETY.md F-24: rclpy declares use_sim_time on every node.
         ("use_sim_time", "true"),
         ("clock_stall_sec", "60.0"),
-        # SAFETY.md F-31: it never widens the gate, but a running node must not
-        # be able to quieten the report either.
+        # SAFETY.md F-31: it never widens the gate, do not quieten the report.
         ("clock_startup_grace_sec", "600.0"),
         ("max_target_list_age_sec", "600.0"),
         ("link_lost_sec", "1.0"),
@@ -2353,11 +2234,7 @@ def scenario_reach_ack() -> None:
     )
     check(fake.count(r"acknowledged as collected") == 0, "  ... and the source never advances")
 
-    # Structure, not only behaviour: the switch that could change this must not
-    # exist. A parameter that must never be set is a parameter that must not be
-    # present - and this one is checked over the SOURCE, where its absence is a
-    # fact, rather than over a runtime log, where it could only ever be silence
-    # (the distinction SAFETY.md 6.3 drew when it retired the other grep).
+    # Parameter must not be present - absence is a fact, checked from source.
     sources = subprocess.run(
         ["grep", "-rl", "acknowledge_on_reach", os.path.join(_PKG, "src"),
          os.path.join(_PKG, "config"), os.path.join(_PKG, "launch")],
@@ -2373,8 +2250,7 @@ def scenario_reach_ack() -> None:
         "  (sanity: the service still answers normally without it)",
     )
     check(*_pick_tolerance_gate_structure())
-    # And the twin is deliberately NOT affected: this whole scenario ran with
-    # `grasp.tolerance_m: TO-VERIFY` and the pick path stayed exercisable.
+    # Twin is not affected; runs with grasp.tolerance_m: TO-VERIFY.
     check(
         gateway.count(r"REAL ROBOT domain") == 0,
         "  ... and it is silent on the twin, so the decoupling decision is intact",
@@ -2429,10 +2305,7 @@ def scenario_link_reset() -> None:
     )
 
     # -- the one signal that IS evidence ----------------------------------
-    # Remove the blacklisted target so their goal advances, let the next one be
-    # picked and acknowledged, and wait until their own list reports it
-    # collected - that observation is what makes the later contradiction
-    # evidence rather than a guess about a lost acknowledgement.
+    # Advance their goal so the contradiction becomes evidence not guess.
     fake.send("remove 3")
     set_mock(pick_outcome="succeed")
     set_arming(True, 600.0)
@@ -2530,18 +2403,13 @@ def _forward_jump_probe(tag: str, label: str, mock_sim_time: str,
     )
     jumped_at = time.time()
 
-    # 60 s, and the number matters: the auditor's prediction is that dispatch
-    # RESUMES "one TF and one mode message later", i.e. within ~50 ms. Anything
-    # that has not resumed in 60 wall-seconds has not resumed.
+    # 60 s timeout: auditor predicts resume within ~50 ms (one TF + mode message).
     time.sleep(60)
     after = {key: gateway.count(rx) for key, rx in patterns.items()}
     delta = {key: after[key] - before[key] for key in patterns}
     diag_after = echo_once("/diagnostics", timeout=20.0, expect="external/clock")
 
-    # DECIDED 2026-08-20 (user), so this half is a CHECK and no longer an
-    # observation: report it - WARN plus a /diagnostics value - and do not
-    # disarm and do not cancel. Before the decision this measured 0 in every
-    # run, which is what the decision was taken on.
+    # F-28: check and warn; do not disarm or cancel.
     warned = gateway.wait_for(r"the ROS clock JUMPED FORWARD", 20)
     check(
         warned is not None,
@@ -2708,20 +2576,17 @@ def _forward_jump_race(tag: str, jumps: int, jump_sec: float,
     disarms_before = gateway.count(r"disarmed by")
     for index in range(jumps):
         before_cancel = gateway.count(r"CANCELLING target .*MODE_STALE")
-        # PER ITERATION, not cumulative: this counted the running total once,
-        # which made "N of 8" a sum of counts rather than a count of jumps.
+    # Per-iteration count, not cumulative (fixed: was counting jumps as a sum).
         before_report = gateway.count(r"the ROS clock JUMPED FORWARD")
         set_sim_clock_param("jump_forward_sec", f"{jump_sec:.1f}")
-        # The FIXTURE's line, not the gateway's - they are deliberately
-        # different strings so one cannot be mistaken for the other.
+        # FIXTURE line (different from gateway line intentionally).
         clock.wait_for(r"/clock JUMPED FORWARD", 20)
         time.sleep(spacing_sec)
         if gateway.count(r"CANCELLING target .*MODE_STALE") > before_cancel:
             cancels += 1
         if gateway.count(r"the ROS clock JUMPED FORWARD") > before_report:
             reported += 1
-        # Re-dispatch is what makes the next jump measurable at all; without a
-        # goal in flight there is nothing for the supervisor to cancel.
+    # Re-dispatch enables measuring the next jump; without a goal, nothing cancels.
         gateway.wait_for(r"DISPATCHING target", 10)
 
     observe(
@@ -2745,14 +2610,7 @@ def _forward_jump_race(tag: str, jumps: int, jump_sec: float,
         f"{gateway.count(r'disarmed by') - disarms_before} disarm(s), "
         f"{cancels} cancel(s)",
     )
-    # This was demoted to an observation when it came back `<unread>` in a
-    # full-suite run, on the reading that it measured CLI discovery under
-    # contention. That reading was WRONG and the demotion is reverted: the real
-    # cause was that `/diagnostics` has TWO publishers here - the gateway and
-    # the link node - so `--once` was returning the link node's array, which
-    # contains no `external/clock` at all. `expect=` now selects the message we
-    # mean. The `readable` guard below still covers the genuine transport case,
-    # which is the one the demotion was meant for.
+    # F-37: /diagnostics has two publishers; expect= selects the right message.
     diagnostics = echo_once("/diagnostics", timeout=40.0, expect="external/clock")
     counted = _diag_field(diagnostics, "external/clock", "forward_jumps")
     observe(
@@ -2852,9 +2710,7 @@ def main() -> int:
     shutil.rmtree(LOG_DIR, ignore_errors=True)
     os.makedirs(LOG_DIR, exist_ok=True)
 
-    # BEFORE the first scenario, not only between them: a run inherits whatever
-    # the previous run leaked, and enough leaked segments make the `ros2` CLI
-    # blind while the nodes themselves are fine. See `shm_clean`.
+    # Clean before first scenario (inherits previous run's leaks).
     print("=" * 78)
     shm_clean(announce=True)
 
