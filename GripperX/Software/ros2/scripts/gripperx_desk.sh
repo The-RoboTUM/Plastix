@@ -4,9 +4,12 @@
 # Modes (first argument, default "real"):
 #   real   RViz + teleop against the REAL robot, ROS_DOMAIN_ID=20. Also runs a
 #          strictly read-only health check of the Pi first.
-#   twin   Digital twin: Gazebo (sim_mapping.launch.py, GUI) + standalone
-#          RViz + teleop, ROS_DOMAIN_ID=220. Mirrors the "Current
-#          3-terminal set" in Software/ros2/src/gripperx_gazebo/README.md.
+#   twin   Digital twin: Gazebo (sim_navigation.launch.py, GUI) + standalone
+#          RViz + teleop, ROS_DOMAIN_ID=220. Runs Nav2 like the real robot
+#          (where gripperx-navigation.service does), on live slam_toolbox
+#          like gripperx-mapping.service, so an RViz "2D Goal Pose" is driven
+#          in the twin too. teleop_mux starts in keyboard, as on the robot:
+#          G in the teleop hands over to Nav2 (autonomous), K takes it back.
 #   -h / --help   print this text.
 #
 # Input device (--input keyboard|web, default web, both modes): WHICH front-end
@@ -100,7 +103,10 @@
 # RViz config for "real": gripperx_localization/rviz/localization.rviz, Fixed
 # Frame "map", with Map(/map) + LaserScan(/scan) + RobotModel(/robot_description)
 # + TF - the Pi runs mapping as a systemd service, so /map and the full chain
-# map->odom->base_footprint->base_link exist on domain 20. Price of this config:
+# map->odom->base_footprint->base_link exist on domain 20. It also shows the
+# Octopus preview and line-calibration markers (/gripperx/external/*_markers)
+# and loads the Publish Point tool (/clicked_point) for the two-post line
+# calibration; FilteredOdom has its covariance display off. Price of this config:
 # it carries displays that stay empty without Nav2/robot_localization/a camera
 # (GlobalPlan /plan, FilteredOdom /odometry/filtered, DepthCloud+Camera+Image on
 # /camera/*). Override: RVIZ_CONFIG_REAL.
@@ -115,7 +121,20 @@
 # and kills exactly what it started, nothing else, no ros2 daemon stop, no
 # name-only pkill sweep. The survivor list in that README is stale (see "NFR-10"
 # below); the surviving set is gz sim / clock_ready_gate / parameter_bridge /
-# teleop_mux_node / robot_state_publisher / async_slam_toolbox_node.
+# teleop_mux_node / robot_state_publisher / async_slam_toolbox_node, plus the
+# Nav2 servers and their lifecycle_manager since the twin runs Nav2.
+#
+# Teardown from the teleop's own Q: Enter/Ctrl-C in THIS terminal is not the
+# only way to trigger the teardown above any more. Both teleop front-ends
+# (web_teleop_node's Shift+Q/quit button, keyboard_teleop_node's Q/Ctrl+C) call
+# _signal_desk_quit() in gripperx_teleop/keyboard_teleop_node.py AFTER their own
+# stop/center shutdown has published -- never on SIGTERM or a crash, only on a
+# deliberate operator quit -- which touches a per-run flag file this script
+# hands them through GRIPPERX_DESK_QUIT_FLAG (unset in a standalone run, so
+# that case is untouched). The wait loop below polls for that file exactly
+# like it watches for Enter, and tears the WHOLE session down the same way --
+# RViz, the local mapping stack, everything this run started, not just the
+# teleop that asked for it.
 #
 # NFR-10: swerve_controller is the ACTIVE AND ONLY drive path.
 # real_robot.launch.py does not include control.launch.py, and
@@ -315,6 +334,23 @@ RVIZ_CONFIG_TWIN="${RVIZ_CONFIG_TWIN:-$WS/install/gripperx_localization/share/gr
 LOG_DIR="/tmp/gripperx_desk"
 mkdir -p "$LOG_DIR"
 
+# Deliberate-quit signal path (see "Teardown from the teleop's own Q" above).
+# Keyed on $$ (this script's own PID), not a fixed name: LOG_DIR is shared by
+# every gripperx_desk.sh run on this laptop, and a fixed name would let a
+# second concurrent run (real + a stray twin) read or clear each other's flag,
+# or a stale file from a killed-and-restarted run be mistaken for a fresh quit.
+# Removed at both ends: here before anything is started, and by teardown()
+# once this run is done with it.
+QUIT_FLAG="$LOG_DIR/quit_flag_$$"
+rm -f "$QUIT_FLAG"
+
+# PID of the teleop NODE (not the launch wrapper), set by whichever of
+# start_teleop_keyboard/start_teleop_web actually got one running. Empty means
+# "no teleop is up" -- steer-gate declined, duplicate-front-end refusal, or the
+# node never appeared -- and the wait loop's death check below must stay quiet
+# in that case: there is nothing of ours to have died.
+TELEOP_NODE_PID=""
+
 # Same guard sim_env.sh uses against the unrelated ~/ros2_ws on ~/.bashrc.
 REAL_PRELUDE="unset AMENT_PREFIX_PATH CMAKE_PREFIX_PATH COLCON_PREFIX_PATH; \
 source /opt/ros/jazzy/setup.bash; source '$WS/install/setup.bash'; \
@@ -328,6 +364,15 @@ export ROS_DOMAIN_ID=$REAL_DOMAIN; export RMW_IMPLEMENTATION=$RMW_IMPL;"
 # prelude, so they all land in the same partition and none of them can see or be
 # seen by another track's Gazebo.
 TWIN_PRELUDE="source '$WS/scripts/sim_env.sh' >/dev/null; \
+export GZ_PARTITION='$GZ_PARTITION_TWIN';"
+
+# The twin's sim launch (Gazebo + slam_toolbox + Nav2) additionally needs
+# sim_env_nav2.sh: this laptop has no system Nav2, so it is layered from the
+# locally extracted .rosdeps_local debs, and the launch files hand those libs to
+# the Nav2 processes only (GRIPPERX_ROSDEPS_LIB - see sim_env_nav2.sh for why it
+# must not be global). sim_env_nav2.sh sources sim_env.sh itself. RViz and the
+# teleop keep the plain TWIN_PRELUDE: they need none of it.
+TWIN_NAV_PRELUDE="source '$WS/scripts/sim_env_nav2.sh' >/dev/null; \
 export GZ_PARTITION='$GZ_PARTITION_TWIN';"
 
 TERM_CMD=""
@@ -347,8 +392,10 @@ Usage: gripperx_desk.sh [real|twin|-h|--help] [flags]
 
   real   (default) Pi health check (read-only) + local mapping stack + RViz +
          teleop against the REAL robot, ROS_DOMAIN_ID=20.
-  twin   Digital twin: Gazebo (GUI) + standalone RViz + teleop,
-         ROS_DOMAIN_ID=220, in its own gz-transport partition.
+  twin   Digital twin: Gazebo (GUI) + slam_toolbox + Nav2 + standalone RViz +
+         teleop, ROS_DOMAIN_ID=220, in its own gz-transport partition.
+         teleop_mux starts in keyboard mode, like the real robot: press G in
+         the teleop to let Nav2 drive an RViz "2D Goal Pose", K to take over.
 
 Input device (both modes): --input web (default) or --input keyboard.
   web       web_teleop_node, the browser UI, backgrounded, log in /tmp/
@@ -431,6 +478,19 @@ track() { # label pid pattern
     TRACKED_LABELS+=("$1")
     TRACKED_PIDS+=("$2")
     TRACKED_PATTERNS+=("$3")
+}
+
+# Is the teleop NODE (TELEOP_NODE_PID, set by whichever start_teleop_* branch
+# succeeded) still alive? Used by the main wait loop to tell "the operator quit
+# on purpose" (QUIT_FLAG appears) apart from "the process just died" (it did
+# not) - the second case must NOT tear the rest of the session down, only warn,
+# because a killed/crashed teleop is not the same signal as a deliberate one
+# and RViz/the local map may still be exactly what the operator is looking at.
+# Empty TELEOP_NODE_PID means no teleop ever came up (steer gate declined, a
+# rival front-end refused it, ...) - nothing to have died, so this reports "ok".
+teleop_process_alive() {
+    [ -n "$TELEOP_NODE_PID" ] || return 0
+    kill -0 "$TELEOP_NODE_PID" 2>/dev/null
 }
 
 # THE ros2 CLI DAEMON IS NOT A NODE, AND MUST NOT BE REPORTED AS ONE.
@@ -622,11 +682,17 @@ teardown() {
         # Same NFR-10 / Harmonic correction as the collision guard in
         # start_twin() - the two lists must stay identical, otherwise something
         # is baselined but never cleaned up, or cleaned up but never baselined.
+        # The two launch-file names of the collision guard are not repeated
+        # here: the launch wrapper is tracked and stopped above.
         for pattern2 in "gz sim" "async_slam_toolbox_node" \
                         "ground_truth_odom_bridge" "clock_ready_gate" \
                         "robot_state_publisher" "teleop_mux_node" "spawn_robot" \
                         "ros_gz_bridge" "parameter_bridge" "scan_range_filter" \
-                        "rviz2_mapping"; do
+                        "planner_server" "controller_server" "behavior_server" \
+                        "bt_navigator" "velocity_smoother" "lifecycle_manager" \
+                        "nav2_map_server" "nav2_amcl" "ekf_node" \
+                        "laser_scan_matcher" "localization_input_node" \
+                        "rviz2_mapping" "rviz2_navigation"; do
             for p in $(pids_for_pattern_on_domain "$pattern2" "$TWIN_DOMAIN"); do
                 if [[ " ${TWIN_BASELINE_PIDS} " == *" $p "* ]]; then
                     continue   # pre-existing, not ours - never touch
@@ -647,6 +713,11 @@ teardown() {
         warn "  Repair, if it does not say 'active':"
         warn "    ssh $SSH_HOST 'sudo systemctl restart gripperx-mapping'"
     fi
+    # Consumed or not, this run is done with it - a stale file would be read by
+    # a LATER gripperx_desk.sh run only if PIDs wrapped AND that run reused this
+    # exact filename, which the $$ in its name already rules out; this is
+    # cleanliness, not a safety measure.
+    rm -f "$QUIT_FLAG" 2>/dev/null
     log "Teardown complete. Terminal windows (if any) may remain open (idle shell) - close them manually."
 }
 # PIPE is in the list deliberately. A shell killed by an UNTRAPPED fatal signal
@@ -1368,7 +1439,11 @@ start_teleop_keyboard() { # prelude domain label mode
     # and wheel_radius, which keyboard_teleop_node declares WITHOUT defaults
     # (geometry single source of truth) - without that file the node raises at
     # startup instead of running.
-    local cmd="$prelude exec ros2 launch gripperx_teleop laptop_teleop.launch.py"
+    # GRIPPERX_DESK_QUIT_FLAG: exported into the SAME subshell as the launch, so
+    # keyboard_teleop_node inherits it (ros2 launch passes its own environment
+    # to the nodes it spawns) and _signal_desk_quit() there can find it. See the
+    # "Teardown from the teleop's own Q" paragraph in the header.
+    local cmd="$prelude export GRIPPERX_DESK_QUIT_FLAG='$QUIT_FLAG'; exec ros2 launch gripperx_teleop laptop_teleop.launch.py"
     if [ -z "$TERM_CMD" ]; then
         warn "$label teleop: no terminal emulator found (checked gnome-terminal, x-terminal-emulator)."
         warn "$label teleop: run this manually in your own terminal window instead:"
@@ -1377,8 +1452,20 @@ start_teleop_keyboard() { # prelude domain label mode
         return 1
     fi
 
+    # The trailing "Press Enter to close" prompt is for the ordinary case: the
+    # node exited (crash, SIGTERM from teardown, plain window close) and the
+    # operator should get a moment to read $cmd's own output before the window
+    # vanishes. A Q/Ctrl+C quit in THIS window is different - the operator is
+    # already looking at it, and it is what is DRIVING the desk-wide teardown
+    # that is about to run (see the wait loop in main, below); the flag file
+    # is the one thing on this laptop that knows which case just happened.
     "$TERM_CMD" --title="GripperX teleop ($mode, domain $domain)" -- bash -c \
-        "$cmd; echo; echo '[gripperx_desk] teleop ended.'; read -r -p 'Press Enter to close this window... '" \
+        "$cmd; echo; echo '[gripperx_desk] teleop ended.'; \
+         if [ -f '$QUIT_FLAG' ]; then \
+             echo '[gripperx_desk] quit requested from this window - the whole desk session is stopping, closing.'; \
+         else \
+             read -r -p 'Press Enter to close this window... '; \
+         fi" \
         >/dev/null 2>&1 &
 
     local waited=0 node_pid launch_pid
@@ -1395,6 +1482,7 @@ start_teleop_keyboard() { # prelude domain label mode
     launch_pid=$(pids_for_pattern_on_domain "ros2 launch gripperx_teleop laptop_teleop.launch.py" "$domain" | head -n1)
     track "$label teleop node" "$node_pid" "keyboard_teleop_node"
     [ -n "$launch_pid" ] && track "$label teleop launch" "$launch_pid" "gripperx_teleop laptop_teleop.launch.py"
+    TELEOP_NODE_PID="$node_pid"
     ok "$label teleop started in its own terminal window (node PID $node_pid, domain $domain)."
 }
 
@@ -1444,7 +1532,10 @@ start_teleop_web() { # prelude domain label
     # here, so that the browser opens the URL the NODE actually bound, not one
     # this script guessed.
     local args="web_host:=$WEB_HOST web_port:=$WEB_PORT open_browser:=$WEB_OPEN_BROWSER"
-    bash -c "$prelude exec ros2 launch gripperx_teleop web_teleop.launch.py $args" \
+    # GRIPPERX_DESK_QUIT_FLAG: same mechanism as the keyboard front-end (see
+    # the header) - web_teleop_node inherits it from ros2 launch and writes it
+    # only on a deliberate Shift+Q/quit-button operator quit.
+    bash -c "$prelude export GRIPPERX_DESK_QUIT_FLAG='$QUIT_FLAG'; exec ros2 launch gripperx_teleop web_teleop.launch.py $args" \
         >"$logfile" 2>&1 &
     local lpid=$!
     sleep 2
@@ -1467,6 +1558,7 @@ start_teleop_web() { # prelude domain label
         return 1
     fi
     track "$label teleop node (web)" "$node_pid" "web_teleop_node"
+    TELEOP_NODE_PID="$node_pid"
 
     # A live process is not a served page. Wait for the socket, so the URL below
     # is one that works when it is printed rather than one that will work soon.
@@ -1513,7 +1605,7 @@ TWIN_LAUNCHED=0
 TWIN_BASELINE_PIDS=""
 
 start_twin() {
-    log "== twin: Gazebo + RViz + teleop, ROS_DOMAIN_ID=$TWIN_DOMAIN =="
+    log "== twin: Gazebo + SLAM + Nav2 + RViz + teleop, ROS_DOMAIN_ID=$TWIN_DOMAIN =="
     # Per NFR-10 / Gazebo Harmonic - see the header. Deliberately absent:
     # sim_steer_bridge / swerve_cmd_node / joint_command_bridge (not started on
     # either side), ros2_control_node (in the sim the controller_manager lives
@@ -1523,13 +1615,26 @@ start_twin() {
     # scan_range_filter, which simulate_robot.launch.py starts in the twin as well
     # (/scan_raw -> /scan), where a second instance would republish the same topic.
     # All of these survive a plain Ctrl-C.
-    local patterns=("sim_mapping.launch.py" "gz sim" "async_slam_toolbox_node" \
+    # Nav2 (sim_navigation.launch.py -> gripperx_planning/navigation.launch.py):
+    # the five servers and their lifecycle_manager, the only Nav2 processes the
+    # twin's localization:=slam mode starts. Also listed, although this script's
+    # launch does not start them, because another session's copy on domain 220
+    # would still fight ours for map->odom / odom->base_footprint or answer our
+    # goals: sim_mapping.launch.py (the pre-Nav2 twin launch), the AMCL
+    # alternative (nav2_map_server, nav2_amcl) and the odom_source:=ekf chain
+    # (ekf_node, laser_scan_matcher, localization_input_node).
+    local patterns=("sim_mapping.launch.py" "sim_navigation.launch.py" \
+                     "gz sim" "async_slam_toolbox_node" \
                      "ground_truth_odom_bridge" "clock_ready_gate" \
                      "robot_state_publisher" "teleop_mux_node" "spawn_robot" \
                      "ros_gz_bridge" "parameter_bridge" "scan_range_filter" \
-                     "rviz2_mapping")
+                     "planner_server" "controller_server" "behavior_server" \
+                     "bt_navigator" "velocity_smoother" "lifecycle_manager" \
+                     "nav2_map_server" "nav2_amcl" "ekf_node" \
+                     "laser_scan_matcher" "localization_input_node" \
+                     "rviz2_mapping" "rviz2_navigation")
 
-    # Pre-flight, read-only. spawn_robot.launch.py (via sim_mapping ->
+    # Pre-flight, read-only. spawn_robot.launch.py (via sim_navigation ->
     # simulation -> simulate_robot) starts gripperx_gazebo's clock_ready_gate. If
     # that executable is missing, launch does not degrade - it aborts the ENTIRE
     # launch description and tears Gazebo down again, and the only message is
@@ -1543,10 +1648,20 @@ start_twin() {
     if [ ! -x "$gate_exe" ]; then
         warn "twin: clock_ready_gate is missing from the install tree:"
         warn "  $gate_exe"
-        warn "twin: sim_mapping.launch.py will ABORT on it and take Gazebo down with it."
+        warn "twin: sim_navigation.launch.py will ABORT on it and take Gazebo down with it."
         warn "twin: the laptop install of gripperx_gazebo is stale. Rebuild it yourself:"
         warn "    (cd '$WS' && colcon build --packages-select gripperx_gazebo)"
         warn "twin: continuing so you see the launch's own error; expect Gazebo not to stay up."
+    fi
+    # Same idea for Nav2: this laptop has no system Nav2, it comes from
+    # .rosdeps_local (gitignored; in a git worktree a symlink to the primary
+    # checkout's copy). Without it the Nav2 executables are "not found" and the
+    # launch aborts with Gazebo inside it.
+    if [ ! -d "$WS/.rosdeps_local/opt/ros/jazzy" ] && [ ! -d /opt/ros/jazzy/share/nav2_bt_navigator ]; then
+        warn "twin: Nav2 not found - neither $WS/.rosdeps_local nor a system install."
+        warn "twin: sim_navigation.launch.py will abort on it. Fetch it with"
+        warn "    $WS/scripts/fetch_missing_ros_debs.sh"
+        warn "  or, in a git worktree, symlink the primary checkout's .rosdeps_local."
     fi
     local p pid collisions=()
     TWIN_BASELINE_PIDS=""
@@ -1557,19 +1672,27 @@ start_twin() {
         done
     done
     if [ "${#collisions[@]}" -gt 0 ]; then
-        warn "twin: refusing to launch Gazebo/sim_mapping - already running on domain $TWIN_DOMAIN:"
+        warn "twin: refusing to launch Gazebo/sim_navigation - already running on domain $TWIN_DOMAIN:"
         warn "  ${collisions[*]}"
         warn "twin: this looks like a leftover/other session's sim stack. NOT touching it, NOT starting a duplicate."
         warn "twin: Gazebo skipped. Standalone RViz + teleop for the twin will still be attempted."
         TWIN_LAUNCHED=0
     else
         local logfile="$LOG_DIR/gazebo_twin.log"
-        bash -c "$TWIN_PRELUDE exec ros2 launch gripperx_gazebo sim_mapping.launch.py headless:=false use_rviz:=false" \
+        # localization:=slam + odom_source:=ground_truth are sim_navigation's
+        # defaults, spelled out because they are the choice: live slam_toolbox
+        # is what the robot's gripperx-mapping.service runs (no saved map,
+        # unlike AMCL), and ground-truth odometry is what the pre-Nav2 twin
+        # (sim_mapping) used. The robot's odometry is the EKF chain instead
+        # (odom_source:=ekf here); that switch is an open decision, not made here.
+        # initial_mode:=keyboard overrides sim_navigation's autonomous default
+        # so teleop_mux starts where the robot's does (teleop_mux.yaml).
+        bash -c "$TWIN_NAV_PRELUDE exec ros2 launch gripperx_gazebo sim_navigation.launch.py headless:=false use_rviz:=false localization:=slam odom_source:=ground_truth initial_mode:=keyboard" \
             >"$logfile" 2>&1 &
         local gzpid=$!
         sleep 2
         if kill -0 "$gzpid" 2>/dev/null; then
-            track "twin gazebo/sim_mapping" "$gzpid" "gripperx_gazebo"
+            track "twin gazebo/sim_navigation" "$gzpid" "gripperx_gazebo"
             TWIN_LAUNCHED=1
             ok "twin Gazebo launch started (PID $gzpid, log: $logfile) - GUI window may take a few seconds."
         else
@@ -1649,6 +1772,51 @@ case "$MODE" in
         ;;
 esac
 
-log "Setup done. Press Ctrl-C here (or Enter) to stop everything this script started."
-read -r -p "> " _ || true
+log "Setup done. Press Ctrl-C or Enter here, or Q in the teleop (browser tab or"
+log "  keyboard-teleop terminal window), to stop everything this script started."
+printf '> '
+
+# Was a blocking "read -r -p '> ' _" until the teleop's own Q gained the power
+# to end the whole session too (see "Teardown from the teleop's own Q" in the
+# header) - a single blocking read cannot also notice a flag file appearing.
+# -t 1 polls instead, at the cost of the prompt only being drawn once (a
+# redrawn "> " every second would be worse than losing it).
+#   * a typed line (Enter, or anything else + Enter) -> stop, exactly as before
+#   * EOF/closed stdin (rc=1, e.g. this script's own stdin is not a tty) ->
+#     stop, exactly as the old "|| true" fallthrough did
+#   * timeout (bash gives read -t an exit status > 128) -> keep polling
+TELEOP_DEATH_WARNED=0
+while :; do
+    # $? MUST be captured on the line right after read - "if read...; then...fi"
+    # with a false condition and no else resets $? to 0 by itself (bash's own
+    # rule for the if compound), which silently threw away the timeout code and
+    # broke out on the FIRST tick every time (caught by the offline harness,
+    # not by eye). rc=0 (a line was typed) and rc=1 (EOF/closed stdin) both
+    # stop, exactly like the old blocking "read ... || true" did for both
+    # cases; only a timeout (rc>128) falls through to the checks below.
+    IFS= read -r -t 1 _line
+    rc=$?
+    if [ "$rc" -le 128 ]; then
+        break
+    fi
+
+    if [ -n "$QUIT_FLAG" ] && [ -f "$QUIT_FLAG" ]; then
+        echo
+        log "teleop quit requested - stopping everything this script started."
+        break
+    fi
+
+    # The tracked teleop process died WITHOUT the flag: crashed, or killed by
+    # something other than its own Q/quit button. That is not the same signal
+    # as a deliberate quit - warn once and keep RViz/the local map running
+    # rather than guess. teleop_process_alive() itself returns "ok" (no
+    # warning) when no teleop is tracked at all, e.g. the steer gate was
+    # declined and nothing ever started.
+    if [ "$TELEOP_DEATH_WARNED" = 0 ] && ! teleop_process_alive; then
+        warn "the teleop process is no longer running, and no quit was requested -"
+        warn "  RViz/the local mapping stack etc. are left running. Press Enter here to"
+        warn "  stop them too, or start teleop again yourself."
+        TELEOP_DEATH_WARNED=1
+    fi
+done
 teardown

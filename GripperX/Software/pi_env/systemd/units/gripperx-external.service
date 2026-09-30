@@ -5,13 +5,14 @@
 # comes up on boot and on a Mode R restart (HWR-40 short press — restart the ROS 2
 # stack, the Pi stays up) instead of only from a manual `ros2 launch`.
 #
-# ROLLOUT STAGE 1 — telemetry only, no goal ingress, disarmed, dry-run. The stage
-# and everything it implies is argued at the call site in gripperx-external.sh;
-# `Description=` names it so `systemctl status` cannot be read as "the goal path
-# is live". NOTHING HERE CAN ARM ANYTHING (SR-15 rule 4: no parameter, launch
-# argument, environment variable, config file or service default may result in
-# `armed == true` at startup) and nothing here can move the machine, so starting
-# or restarting this unit is NOT a motion event under SR-1.
+# ROLLOUT STAGE 3 — goal ingress live, `dry_run:=false`, starts DISARMED (user
+# decision 2026-09-24). The stage and everything it implies is argued at the call
+# site in gripperx-external.sh; `Description=` names it so `systemctl status`
+# cannot be read as "the goal path is dead". NOTHING HERE CAN ARM ANYTHING (SR-15
+# rule 4: no parameter, launch argument, environment variable, config file or
+# service default may result in `armed == true` at startup), so starting or
+# restarting this unit does not by itself move the machine and is NOT a motion
+# event under SR-1; arming, by a later explicit SetArming call, is.
 #
 # MODE R IS NOT COVERED BY THIS FILE. A short press runs
 # `gripperx-stack-stop --mode=restart`, which stops and starts an explicit list of
@@ -20,7 +21,7 @@
 # it and the failure is silent (the link simply never comes back).
 
 [Unit]
-Description=GripperX Octopus external-goal link (rollout stage 1: telemetry only, no goal ingress)
+Description=GripperX Octopus external-goal link (rollout stage 3: goal ingress live, motion only when armed)
 After=gripperx-navigation.service network-online.target
 # Wants=, NOT Requires=, and the difference is the whole ordering decision.
 #

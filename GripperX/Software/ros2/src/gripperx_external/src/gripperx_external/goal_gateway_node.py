@@ -129,6 +129,7 @@ that is not itself one of the frozen timers.
 from __future__ import annotations
 
 import math
+import os
 import re
 import signal
 import sys
@@ -139,12 +140,21 @@ from typing import Dict, List, Optional, Sequence, Tuple
 
 import rclpy
 from action_msgs.msg import GoalStatus
+from ament_index_python.packages import (
+    PackageNotFoundError,
+    get_package_share_directory,
+)
 from rcl_interfaces.msg import ParameterDescriptor, SetParametersResult
 from rclpy.action import ActionClient
 from rclpy.callback_groups import MutuallyExclusiveCallbackGroup
 from rclpy.clock import Clock, ClockType
-from rclpy.executors import ExternalShutdownException, MultiThreadedExecutor
+from rclpy.executors import (
+    ExternalShutdownException,
+    MultiThreadedExecutor,
+    SingleThreadedExecutor,
+)
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
 from rclpy.time import Time as RclTime
 
@@ -198,7 +208,14 @@ from .geodesy import (
     latlon_to_map,
     map_to_latlon,
 )
-from .grasp import GraspOffset, check_reached, parse_measured_param
+from .grasp import (
+    GraspOffset,
+    ReaimDecision,
+    check_reached,
+    decide_reaim,
+    object_in_base,
+    parse_measured_param,
+)
 from .line_frame import our_map_to_latlon
 from .octopus_link_node import (
     assert_no_chain_publishers,
@@ -254,6 +271,26 @@ _STARTUP_ONLY_PARAMS = {
         "(SAFETY.md F-24)"
     ),
     "goal_ingress_enabled": _AUTHORITY_REASON,
+    # `grasp.reaim_enabled` is deliberately NOT here: switching it OFF at
+    # runtime is the demo's kill switch and is allowed; switching it ON is
+    # refused in `_on_set_parameters`, because that adds drive motion to a
+    # running, possibly armed node. The bounds below shape that motion.
+    "grasp.reaim_min_deg": (
+        "it decides which arrivals get an extra in-place rotation; the re-aim "
+        "is drive motion and its bounds are fixed with the node"
+    ),
+    "grasp.reaim_max_deg": (
+        "it bounds how far an arrival may be rotated in place; a running node "
+        "must not be able to widen a motion bound"
+    ),
+    "grasp.reaim_timeout_sec": (
+        "it bounds how long an in-place rotation may run before it is "
+        "cancelled; a running node must not be able to lengthen it"
+    ),
+    "grasp.reaim_behavior_tree": (
+        "it is resolved to a file once, at startup, and it selects the goal "
+        "checker the re-aim is judged by"
+    ),
     "allow_arm": _AUTHORITY_REASON,
     "dry_run": _AUTHORITY_REASON,
     "auto_pick": _AUTHORITY_REASON,
@@ -303,6 +340,7 @@ _STARTUP_ONLY_PARAMS = {
     "base_frame": "the TF lookups and every dispatched pose are built with it",
     "costmap_topic": "the subscription is created with it at startup",
     "odom_topic": "the subscription is created with it at startup",
+    "tf_odom_executor": "the side executor is created with it at startup",
     "teleop_mode_topic": (
         "the subscription is created with it at startup, and it is the mux "
         "observation the MODE_CHANGE trigger depends on"
@@ -497,6 +535,58 @@ NAV_UNAVAILABLE = "unavailable"
 NAV_IDLE = "idle"
 NAV_NAVIGATING = "navigating"
 NAV_PICKING = "picking"
+#: Re-aim at arrival: a second NavigateToPose, at the robot's own position,
+#: that only rotates it in place. Supervised exactly like NAV_NAVIGATING.
+NAV_REAIMING = "reaiming"
+#: After ANY Nav2 success that moved the base - the approach and a re-aim - and
+#: after the gateway's own confirmed re-aim cancel: nothing is in flight, and the
+#: gateway waits for the base to STAND STILL before the arrival gate judges the
+#: pose (re-aim decision included) and the arm may actuate (user decision
+#: 2026-09-29: also after the approach). Measured in the headless twin 2026-09-29:
+#: at the re-aim's "Goal succeeded" the base was still turning at ~0.8 rad/s and
+#: coasted another 7-10 deg over ~0.4 s - judging (and picking) at the result
+#: would judge a pose that is not the final one, on a moving base.
+NAV_SETTLING = "settling"
+#: USER DECISIONS 2026-09-29, not measurements: "standing still" means the TF
+#: pose moved less than this between two consecutive dispatch ticks (0.5 s at
+#: dispatch_rate_hz 2.0); if that does not happen within the timeout, the
+#: arrival ends without a pick and the attempt is counted.
+_SETTLE_YAW_EPS_RAD = math.radians(0.5)
+_SETTLE_XY_EPS_M = 0.005
+_SETTLE_TIMEOUT_SEC = 3.0
+#: Minimum advance of the TF stamp between two settle samples (audit F-51/F-54). A
+#: guard margin, not a tuning value: see `_supervise_settle`.
+_SETTLE_STAMP_ADVANCE_SEC = 0.05
+#: Prefix of the cancel reason the gateway uses for its OWN re-aim timeout. A
+#: cancel with this reason ends in the arrival gate on the reached pose; any
+#: other cancel - a disarm, a lost link, a safety re-check - supersedes it
+#: (`_cancel_mission`) and ends without a pick.
+REAIM_TIMEOUT_REASON = "REAIM_TIMEOUT"
+#: The runtime switch-OFF of `grasp.reaim_enabled` cancels a re-aim in flight
+#: with this reason; it ends like a timeout, in the arrival gate (audit F-46).
+REAIM_SWITCHED_OFF_REASON = "REAIM_SWITCHED_OFF"
+#: Correlation statuses that mean only "absence", never "wrong object": the
+#: target is simply not in Octopus's (fresh) list, which is what the robot
+#: occluding the litter itself looks like (#358). TARGETS_STALE is deliberately
+#: NOT here: a frozen list is loss of information, not evidence of occlusion,
+#: and stays a refusal (FR-12 section 6). See `_reaim_correlation_holds`.
+_REAIM_ABSENCE_STATUSES = frozenset((corr.NO_MATCH, corr.NO_TARGETS))
+#: `validate_dispatch` reasons that describe the STATE of the gate, not the
+#: re-aim pose. A re-aim refused for one of these does not fall back to the
+#: arrival gate: disarmed, dry run, link down, mode wrong or stale, Nav2 gone,
+#: datum or line calibration moved - all "cancel-by-safety", never a pick.
+_REAIM_STATE_REJECTIONS = frozenset(
+    (
+        val.NOT_ARMED,
+        val.DRY_RUN,
+        val.LINK_LOST,
+        val.MODE_NOT_AUTONOMOUS,
+        val.MODE_STALE,
+        val.NAV2_UNAVAILABLE,
+        val.DATUM_CHANGED,
+        val.LINE_CALIBRATION_CHANGED,
+    )
+)
 NAV_CANCELLING = "cancelling"
 
 #: Why an acknowledgement that could otherwise have gone out did not. Every one
@@ -518,6 +608,9 @@ ACK_CORRELATION_CHANGED = "CORRELATION_CHANGED"
 #: unsupported claim (SAFETY.md F-14). Structurally unreachable on the twin -
 #: see `_pick_needs_measured_tolerance`.
 ACK_TOLERANCE_UNMEASURED = "GRASP_TOLERANCE_UNMEASURED"
+#: Telemetry / diagnostics reason when the /tf + odometry side executor thread
+#: has died (see `GoalGatewayNode._side_executor_dead`).
+SIDE_EXECUTOR_DEAD = "TF_ODOM_EXECUTOR_DEAD"
 
 
 @dataclass
@@ -592,6 +685,34 @@ class Mission:
     #: re-validation runs on the same object rather than on a fresh
     #: interpretation of a message that may have changed underneath it.
     incoming: Optional[val.IncomingGoal] = None
+    #: RE-AIM AT ARRIVAL. `reaim_pose` is the in-place goal (own x/y, new yaw)
+    #: while one is in flight; `reaim_done` is set once the re-aim phase is
+    #: OVER - succeeded, or fallen back after a timeout / rejection (user
+    #: decision 2026-09-29) - so the arrival gate runs its second pass on the
+    #: pose actually held and never asks for a second re-aim.
+    #: `reaim_own_cancel_reason` is the reason of a cancel the GATEWAY itself
+    #: requested for the re-aim (timeout, runtime switch-OFF): its confirmed
+    #: result ends in the arrival gate, unless a safety cancel superseded it.
+    #: `reaim_outcome` names how the phase ended, for the log.
+    reaim_pose: Optional[Tuple[float, float, float]] = None
+    reaim_started_at_sec: Optional[float] = None
+    reaim_done: bool = False
+    reaim_own_cancel_reason: str = ""
+    #: NAV_SETTLING bookkeeping: `settling` is true from the end of a re-aim
+    #: that moved the base until the arrival gate runs; a cancel while it is
+    #: true has no goal to wait for and releases the mission at once.
+    settling: bool = False
+    settle_started_at_sec: Optional[float] = None
+    settle_last_pose: Optional[Tuple[float, float, float]] = None
+    settle_last_stamp: Optional[float] = None
+    #: COAST EVIDENCE for the robot test (user request 2026-09-29): the pose at
+    #: the Nav2 result that started the settle, and a one-line summary of how
+    #: far the base coasted and how long it took, appended to the ARRIVAL /
+    #: AFTER RE-AIM lines.
+    settle_phase: str = ""
+    settle_result_pose: Optional[Tuple[float, float, float]] = None
+    coast_summary: str = ""
+    reaim_outcome: str = ""
     #: Set when the mission reaches a terminal state or a cancel is confirmed.
     #: `prepare_shutdown` waits on it - on the MAIN thread, with the executor
     #: still spinning, which is the only place in this package that waits at all.
@@ -604,6 +725,16 @@ class Mission:
 
 class GoalGatewayNode(Node):
     def __init__(self, **node_kwargs) -> None:
+        # The side executor (`_start_side_executor`) is started part-way through
+        # construction; if anything after it raises - a sweep, a SystemExit -
+        # its thread and node must not outlive the half-built node.
+        try:
+            self._construct(**node_kwargs)
+        except BaseException:
+            self._stop_side_executor()
+            raise
+
+    def _construct(self, **node_kwargs) -> None:
         # `node_kwargs` (e.g. parameter_overrides) exist for the checks, which
         # build this node with values read from the config files.
         super().__init__("goal_gateway_node", **node_kwargs)
@@ -642,6 +773,21 @@ class GoalGatewayNode(Node):
         self.declare_parameter("grasp.tolerance_m", _TO_VERIFY, _measured_descriptor())
         self.declare_parameter("grasp.approach_candidates", 12)
         self.declare_parameter("grasp.verify_path", False)
+        # RE-AIM AT ARRIVAL (see `_start_reaim`). Off by default: it is extra
+        # drive motion, so it must be switched on by a config file, never by a
+        # missing one. The three numbers below are the node's fallbacks only;
+        # the configs carry the values in force and say what kind of values
+        # they are (decisions, not measurements).
+        self.declare_parameter("grasp.reaim_enabled", False)
+        self.declare_parameter("grasp.reaim_min_deg", 5.0)
+        self.declare_parameter("grasp.reaim_max_deg", 20.0)
+        self.declare_parameter("grasp.reaim_timeout_sec", 15.0)
+        # "<package>/<path inside its share directory>" or an absolute path.
+        # Sent as NavigateToPose.behavior_tree, which is how the re-aim goal
+        # selects its own goal checker without touching the approach's.
+        self.declare_parameter(
+            "grasp.reaim_behavior_tree", "gripperx_planning/config/reaim_in_place.xml"
+        )
 
         self.declare_parameter("max_goal_cost", 200)
         self.declare_parameter("max_stamp_age_sec", 5.0)
@@ -766,6 +912,13 @@ class GoalGatewayNode(Node):
         )
         self.declare_parameter("costmap_topic", "/global_costmap/costmap")
         self.declare_parameter("odom_topic", "/odometry/filtered")
+        # Which executor spins the /tf + odometry side node (see
+        # `_start_side_executor`): "single_threaded" (rclpy's Python
+        # SingleThreadedExecutor, the default) or "events" (rclpy's
+        # `experimental` C++ EventsExecutor - about half the CPU again, but
+        # experimental in Jazzy, and a crash in C++ ends this process without
+        # `prepare_shutdown`'s cancel). Anything else refuses to start.
+        self.declare_parameter("tf_odom_executor", "single_threaded")
         self.declare_parameter("teleop_mode_topic", "/teleop/active_mode")
 
         # --- SR-8, BEFORE anything is created -----------------------------
@@ -831,6 +984,12 @@ class GoalGatewayNode(Node):
         # domain cannot silently remove the arrival check. Do not invert this
         # to an equality test against a known simulation/real domain id.
         self._pick_needs_measured_tolerance = not is_simulation_domain()
+        self._reaim_min_rad, self._reaim_max_rad, self._reaim_timeout_sec = (
+            math.radians(float(self.get_parameter("grasp.reaim_min_deg").value)),
+            math.radians(float(self.get_parameter("grasp.reaim_max_deg").value)),
+            float(self.get_parameter("grasp.reaim_timeout_sec").value),
+        )
+        self._reaim_bt_path, self._reaim_config_error = self._resolve_reaim_config()
 
         configured_max = float(self.get_parameter("arming.max_duration_sec").value)
         if configured_max > HARD_MAX_ARMING_DURATION_SEC:
@@ -894,6 +1053,10 @@ class GoalGatewayNode(Node):
         self._costmap: Optional[OccupancyGrid] = None
         self._odom: Optional[Odometry] = None
         self._odom_stamp_sec: Optional[float] = None
+        # Written on the side executor's thread (`_start_side_executor`), read
+        # by the telemetry tick: the pair is swapped and read under this lock so
+        # a speed is never reported with another sample's age.
+        self._odom_lock = threading.Lock()
         self._teleop_mode = ""
         # MONOTONIC since SAFETY.md F-38, and named for it: `/teleop/active_mode`
         # is a `std_msgs/String` with no stamp, so this is OUR reception time and
@@ -1103,19 +1266,33 @@ class GoalGatewayNode(Node):
         # `_safety_group` carries everything that can CLOSE the gate: the arming
         # service, the teleop-mode observation, the link-status observation and
         # the safety tick (expiry poll + link watchdog). `_work_group` carries
-        # everything else - datum, targets, goal, odometry, costmap, preview,
-        # telemetry. Both are mutually exclusive internally, so the safety
-        # observations still serialise against each other and no lock is needed
-        # between them; the two groups run concurrently, so a slow costmap, a
-        # large marker burst or (in stage 3) an action callback cannot starve
-        # the poll that shuts the window. Blocking waits are forbidden in ANY
-        # callback of either group - stage 3 cancels asynchronously and confirms
-        # on the result callback.
+        # everything else - datum, targets, goal, costmap, preview, telemetry
+        # (/tf and odometry: side executor, below). Both are mutually exclusive
+        # internally, so the safety observations still serialise against each
+        # other and no lock is needed between them; the two groups run
+        # concurrently, so a slow costmap, a large marker burst or (in stage 3)
+        # an action callback cannot starve the poll that shuts the window.
+        # Blocking waits are forbidden in ANY callback of either group - stage 3
+        # cancels asynchronously and confirms on the result callback.
         self._safety_group = MutuallyExclusiveCallbackGroup()
         self._work_group = MutuallyExclusiveCallbackGroup()
         group = self._work_group
         self._tf_buffer = tf2_ros.Buffer()
-        self._tf_listener = tf2_ros.TransformListener(self._tf_buffer, self, spin_thread=False)
+        # /tf (~100 Hz) and odometry (~30 Hz) are delivered by a SIDE node on
+        # its own executor thread, not by this node's executor - CPU, not
+        # safety: rclpy's executor rebuilds its whole wait set in Python on
+        # every wake-up, and with ~60 wait-set entries here /tf plus odometry
+        # cost ~29 % of a Pi 5 core in the spin thread alone (measured
+        # 2026-09-29). Neither feeds the arming gate: the buffer is thread-safe
+        # and only read by `_robot_pose`, odometry only by telemetry. A dead
+        # side thread fails CLOSED - the pose ages past `max_tf_age_sec` and
+        # the goal is refused. Both callback groups (SAFETY.md F-2) unchanged.
+        self._side_node, self._side_executor, self._side_thread = (
+            self._start_side_executor()
+        )
+        self._tf_listener = tf2_ros.TransformListener(
+            self._tf_buffer, self._side_node, spin_thread=False
+        )
 
         self.create_subscription(
             GeodeticDatum, "datum", self._on_datum, _latched(), callback_group=group
@@ -1139,12 +1316,11 @@ class GoalGatewayNode(Node):
         # SR-15 rule 6: SUBSCRIBED, never published. Publishing the mode would
         # let the external path arm the very chain it is gated by, and would add
         # a second writer to a mode-arbitration topic (SR-9 / OP-19).
-        self.create_subscription(
+        self._side_node.create_subscription(
             Odometry,
             str(self.get_parameter("odom_topic").value),
             self._on_odom,
             _reliable(1),
-            callback_group=group,
         )
         self.create_subscription(
             OccupancyGrid,
@@ -1288,6 +1464,10 @@ class GoalGatewayNode(Node):
                 (self._pick_action_name, PickPlastic),
             ),
         )
+        # The same two sweeps on the /tf + odometry side node: no publisher
+        # and no client of any kind may hide there either.
+        assert_no_chain_publishers(self._side_node)
+        assert_no_command_clients(self._side_node)
 
         self.get_logger().info(
             f"clock: use_sim_time={self._use_sim_time} "
@@ -1373,6 +1553,7 @@ class GoalGatewayNode(Node):
                     "'arrived' would be an unsupported claim to actuate the arm "
                     "on (user decision 2026-08-19, SAFETY.md F-14)."
                 )
+            self._log_reaim_config()
 
     # ==================================================================
     # the authority gate
@@ -1803,6 +1984,17 @@ class GoalGatewayNode(Node):
                 )
                 self.get_logger().warn(f"REFUSED parameter change - {reason}")
                 return SetParametersResult(successful=False, reason=reason)
+            if param.name == "grasp.reaim_enabled" and param.value is not False:
+                # One direction only. OFF is the kill switch and always safe;
+                # ON adds drive motion to a running node that may be armed.
+                reason = (
+                    "grasp.reaim_enabled may be switched OFF at runtime, never "
+                    "ON: enabling adds an in-place rotation to every arrival of "
+                    "a running, possibly armed node. Set it in the config and "
+                    "restart the link nodes."
+                )
+                self.get_logger().warn(f"REFUSED parameter change - {reason}")
+                return SetParametersResult(successful=False, reason=reason)
             if param.name.startswith(("grasp.offset", "grasp.tolerance")) or (
                 param.name == "datum_jump_warn_m"
             ):
@@ -1821,6 +2013,8 @@ class GoalGatewayNode(Node):
                 f"parameter {param.name} set to {param.value!r}; re-validating on the "
                 "next tick (this is not an arming event and dispatches nothing)"
             )
+            if param.name == "grasp.reaim_enabled":
+                self._switch_off_reaim_in_flight()
         self._preview_dirty = True
         return SetParametersResult(successful=True)
 
@@ -1832,6 +2026,97 @@ class GoalGatewayNode(Node):
             self.get_parameter("grasp.offset_x_m").value,
             self.get_parameter("grasp.offset_y_m").value,
             self.get_parameter("grasp.tolerance_m").value,
+        )
+
+    def _resolve_reaim_config(self) -> Tuple[str, str]:
+        """``(behavior tree path, error)``. A non-empty error disables the re-aim.
+
+        Resolved once at startup. A broken re-aim configuration falls back to
+        the arrival behaviour without re-aim and says so at ERROR, rather than
+        refusing the node: the re-aim is an accuracy improvement, and refusing
+        to start would take the whole external path down for it.
+        """
+        if not (0.0 <= self._reaim_min_rad < self._reaim_max_rad <= math.pi / 2.0):
+            return "", (
+                "need 0 <= grasp.reaim_min_deg < grasp.reaim_max_deg <= 90, got "
+                f"{math.degrees(self._reaim_min_rad):.1f} / "
+                f"{math.degrees(self._reaim_max_rad):.1f}"
+            )
+        if not (math.isfinite(self._reaim_timeout_sec) and self._reaim_timeout_sec > 0.0):
+            return "", f"grasp.reaim_timeout_sec={self._reaim_timeout_sec} is not > 0"
+        spec = str(self.get_parameter("grasp.reaim_behavior_tree").value).strip()
+        if not spec:
+            return "", "grasp.reaim_behavior_tree is empty"
+        path = spec
+        if not os.path.isabs(spec):
+            package, _, rest = spec.partition("/")
+            try:
+                path = os.path.join(get_package_share_directory(package), rest)
+            except PackageNotFoundError:
+                return "", f"grasp.reaim_behavior_tree: package '{package}' not found"
+        if not os.path.isfile(path):
+            return "", f"grasp.reaim_behavior_tree: no file at {path}"
+        return path, ""
+
+    def _switch_off_reaim_in_flight(self) -> None:
+        """Audit F-46: switching the re-aim OFF also ends one that is running.
+
+        Cancelled with the gateway's OWN reason, so the confirmed result ends in
+        the arrival gate on the pose actually held - i.e. exactly what an
+        arrival without the re-aim would have done. This is not a stop: the
+        stop is the disarm or the E-stop, which cancel with a safety reason and
+        supersede this one.
+        """
+        with self._mission_lock:
+            mission = self._mission
+            running = (
+                mission is not None
+                and mission.state == NAV_REAIMING
+                and not mission.cancelling
+            )
+            if running:
+                mission.reaim_own_cancel_reason = REAIM_SWITCHED_OFF_REASON
+        if running:
+            self._cancel_mission(
+                f"{REAIM_SWITCHED_OFF_REASON}: grasp.reaim_enabled switched off with "
+                "a re-aim in flight; the arrival gate decides on the pose reached",
+                self._ros_now(),
+                error=False,
+            )
+
+    def _reaim_enabled(self) -> bool:
+        """Re-read at every arrival, so a runtime switch-OFF takes effect at once."""
+        return bool(self.get_parameter("grasp.reaim_enabled").value) and not (
+            self._reaim_config_error
+        )
+
+    def _log_reaim_config(self) -> None:
+        enabled = bool(self.get_parameter("grasp.reaim_enabled").value)
+        if enabled and self._reaim_config_error:
+            self.get_logger().error(
+                f"grasp.reaim_enabled is true but the re-aim is UNUSABLE: "
+                f"{self._reaim_config_error}. Arrivals proceed WITHOUT re-aim."
+            )
+            return
+        self.get_logger().info(
+            f"re-aim at arrival: enabled={enabled} "
+            f"min={math.degrees(self._reaim_min_rad):.1f}deg "
+            f"max={math.degrees(self._reaim_max_rad):.1f}deg "
+            f"timeout={self._reaim_timeout_sec:.1f}s "
+            f"behavior_tree={self._reaim_bt_path or '<unresolved>'}"
+            + (
+                ". An arrival whose aim error exceeds the minimum is rotated in "
+                "place by a second NavigateToPose under the SAME gates as the "
+                "approach; in the re-aim phase the correlation tolerates the "
+                "target's ABSENCE only (user decision 2026-09-29, #358). A "
+                "timed-out or rejected re-aim falls back to the arrival gate on the "
+                "pose actually held; an aborted or safety-cancelled one does NOT "
+                "pick. Switch off at runtime (stops future re-aims and ends one in "
+                "flight; NOT a stop - disarm or E-stop for that): ros2 param set "
+                "<gateway> grasp.reaim_enabled false"
+                if enabled
+                else ""
+            )
         )
 
     def _unmeasured_clock_thresholds(self) -> List[str]:
@@ -2255,8 +2540,11 @@ class GoalGatewayNode(Node):
         self._handle_disarm(event)
 
     def _on_odom(self, msg: Odometry) -> None:
-        self._odom = msg
-        self._odom_stamp_sec = self._ros_now()
+        # Side executor thread (see `_start_side_executor`).
+        stamp = self._ros_now()
+        with self._odom_lock:
+            self._odom = msg
+            self._odom_stamp_sec = stamp
 
     def _on_costmap(self, msg: OccupancyGrid) -> None:
         self._costmap = msg
@@ -2354,6 +2642,15 @@ class GoalGatewayNode(Node):
     # world queries handed to the pure pipeline
     # ==================================================================
     def _robot_pose(self) -> Tuple[Optional[Tuple[float, float, float]], Optional[float], str]:
+        pose, age, error, _stamp = self._robot_pose_stamped()
+        return pose, age, error
+
+    def _robot_pose_stamped(
+        self,
+    ) -> Tuple[Optional[Tuple[float, float, float]], Optional[float], str, Optional[float]]:
+        """`_robot_pose()` plus the transform's OWN stamp (ROS seconds). The
+        settle step compares stamps directly: an `age` clamped at zero or a
+        stall between two clock reads cannot fake an advance (audit F-54)."""
         try:
             tf = self._tf_buffer.lookup_transform(
                 self._map_frame, self._base_frame, RclTime()
@@ -2364,12 +2661,12 @@ class GoalGatewayNode(Node):
             tf2_ros.ExtrapolationException,
             tf2_ros.TransformException,
         ) as exc:
-            return None, None, f"{type(exc).__name__}: {exc}"
+            return None, None, f"{type(exc).__name__}: {exc}", None
         t = tf.transform.translation
         q = tf.transform.rotation
         stamp = RclTime.from_msg(tf.header.stamp).nanoseconds * 1e-9
         age = max(0.0, self._ros_now() - stamp)
-        return (t.x, t.y, _yaw_from_quaternion(q.x, q.y, q.z, q.w)), age, ""
+        return (t.x, t.y, _yaw_from_quaternion(q.x, q.y, q.z, q.w)), age, "", stamp
 
     def _costmap_cost(self, x: float, y: float) -> Optional[int]:
         grid = self._costmap
@@ -2603,7 +2900,10 @@ class GoalGatewayNode(Node):
 
         targets = self._latest_targets
         if targets is None:
-            return corr.CorrelationResult(corr.NO_TARGETS)
+            return corr.CorrelationResult(
+                corr.NO_TARGETS,
+                detail="no target list received yet; the goal fix carries no id of its own",
+            )
         positions = []
         for target in targets.targets:
             try:
@@ -2733,6 +3033,49 @@ class GoalGatewayNode(Node):
         held, why = self._occlusion_latch_holds(mission, result)
         if held:
             return True, why
+        return False, f"{result.status}: {result.detail}"
+
+    def _reaim_correlation_holds(self, mission: Mission) -> Tuple[bool, str]:
+        """The correlation rule of the RE-AIM PHASE: the re-aim in flight and the
+        pick gate after it. The first pass of the arrival gate and the
+        acknowledgement keep the full `_correlation_holds`.
+
+        USER DECISION 2026-09-29, recorded in REQUIREMENTS.md SR-16 as a DECIDED
+        block (the pick-time correlation guarantee of SAFETY.md F-13 is narrowed
+        for the re-aim window; issue #358): the robot standing at the grasp
+        standoff can occlude the litter itself, so the target may leave
+        Octopus's list during exactly this phase.
+
+        ABSENCE is tolerated - NO_MATCH, NO_TARGETS (empty list). Everything
+        else refuses: AMBIGUOUS (a second object may be the one the arm closes
+        on), a unique match with a DIFFERENT id, ID_MISMATCH, a STALE list
+        (loss of information, not evidence of occlusion - FR-12 section 6), or a
+        re-correlation that could not be completed. So "nothing we cannot name
+        is picked" (SR-16, F-13 guarantee, DECIDED 2026-09-29) holds for every
+        case except "it vanished from a live list".
+        """
+        try:
+            result = self._recorrelate_mission(mission)
+        except Exception as exc:  # noqa: BLE001 - refusing is the fail-safe answer
+            self._mission_correlation = "RECHECK_FAILED"
+            return False, f"the re-correlation itself failed ({exc!r})"
+        self._mission_correlation = result.status
+        if result.unique:
+            if result.target_id == mission.target_id:
+                return True, result.detail
+            return False, (
+                f"the mission's own fix now names target {result.target_id}, not "
+                f"target {mission.target_id}"
+            )
+        # Audit F-52: the STATUS alone is not enough - NO_MATCH also means "the
+        # only match is flagged collected", "no datum", "geodesy error" and
+        # "unusable tolerance". Only `absence` (set by `correlate()` for "no
+        # target within tolerance" and an EMPTY list) is the occlusion case.
+        if result.status in _REAIM_ABSENCE_STATUSES and result.absence:
+            return True, (
+                f"{result.status} tolerated in the re-aim phase (absence only - "
+                "the robot can occlude the litter itself, #358)"
+            )
         return False, f"{result.status}: {result.detail}"
 
     def _occlusion_latch_holds(self, mission: Mission, result) -> Tuple[bool, str]:
@@ -2903,9 +3246,7 @@ class GoalGatewayNode(Node):
             )
 
     # -- sending -------------------------------------------------------
-    def _send_nav_goal(
-        self, resolution: GoalResolution, pose: Tuple[float, float, float], now: float
-    ) -> None:
+    def _nav_goal_msg(self, pose: Tuple[float, float, float]) -> NavigateToPose.Goal:
         goal = NavigateToPose.Goal()
         goal.pose.header.frame_id = self._map_frame
         goal.pose.header.stamp = self.get_clock().now().to_msg()
@@ -2915,6 +3256,12 @@ class GoalGatewayNode(Node):
         goal.pose.pose.orientation.y = qy
         goal.pose.pose.orientation.z = qz
         goal.pose.pose.orientation.w = qw
+        return goal
+
+    def _send_nav_goal(
+        self, resolution: GoalResolution, pose: Tuple[float, float, float], now: float
+    ) -> None:
+        goal = self._nav_goal_msg(pose)
 
         mission = Mission(
             target_id=resolution.target_id,
@@ -2991,7 +3338,9 @@ class GoalGatewayNode(Node):
             mission.cancel_confirmed = True  # a terminal result ends the cancel question
 
         if status == GoalStatus.STATUS_SUCCEEDED:
-            self._on_arrival(mission)
+            # Never judged on a moving base: the arrival gate (and the re-aim
+            # decision in it) runs once the base stands still.
+            self._begin_settle(mission, "approach")
             return
         if status == GoalStatus.STATUS_CANCELED:
             self.get_logger().warn(
@@ -3014,13 +3363,65 @@ class GoalGatewayNode(Node):
 
     # -- arrival, the reached check and the pick ------------------------
     def _on_arrival(self, mission: Mission) -> None:
-        """Nav2 says we are there. SR-16 condition 3 starts here and nowhere else."""
+        """Nav2 says we are there. SR-16 condition 3 starts here and nowhere else.
+
+        Runs TWICE when a re-aim happens: first on the approach's success, where
+        it may end in `_start_reaim` instead of the pick, and again on the
+        re-aim's success (`mission.reaim_done`), where every gate below is taken
+        afresh on the pose the robot now holds. Nothing from the first pass is
+        inherited by the second except the fact that the re-aim is done.
+        """
         offset = self._grasp_offset()
-        pose, age, _ = self._robot_pose()
-        reached_detail = "no TF, reached check not possible"
-        if pose is not None and offset.configured:
-            verdict = check_reached(mission.object_xy, pose, offset)
-            reached_detail = verdict.detail
+        pose, age, tf_error = self._robot_pose()
+        first_pass = not mission.reaim_done
+        # FAIL CLOSED on the pose (audit F-15/F-44, FR-12 section 4), in BOTH
+        # passes: without a FRESH pose there is no reached check, no re-aim
+        # geometry and no fallback judgement - and "Nav2 said so" is not a
+        # substitute for any of them. Same bound as dispatch (max_tf_age_sec).
+        max_tf_age = float(self.get_parameter("max_tf_age_sec").value)
+        if pose is None or age is None or age > max_tf_age:
+            why = (
+                f"no robot pose ({tf_error or 'TF lookup failed'})"
+                if pose is None
+                else f"robot pose is {age:.2f}s old (max_tf_age_sec {max_tf_age:.2f})"
+            )
+            self.get_logger().error(
+                f"target {mission.target_id} arrived, but {why}. NOT picking on "
+                "Nav2's word alone: the reached check cannot run (F-15)."
+            )
+            self._fail_attempt(mission, "POSE_UNAVAILABLE", why)
+            return
+        reaim: Optional[ReaimDecision] = None
+        reached_detail = "grasp offset TO-VERIFY, reached check not possible"
+        if offset.configured:
+            judged = pose
+            if first_pass:
+                reaim = decide_reaim(
+                    mission.object_xy,
+                    pose,
+                    offset,
+                    self._reaim_enabled(),
+                    self._reaim_min_rad,
+                    self._reaim_max_rad,
+                )
+                self._log_arrival_geometry(
+                    mission, "ARRIVAL", pose, reaim.reason,
+                    reaim.detail + (f"; {mission.coast_summary}" if mission.coast_summary else ""),
+                )
+                if reaim.rotate:
+                    # Judged at the pose the pick will actually be taken from.
+                    # The rotation cannot change the range, so this is exactly
+                    # what the second pass will re-check on the real pose.
+                    judged = (pose[0], pose[1], reaim.target_yaw)
+            else:
+                self._log_arrival_geometry(
+                    mission, f"AFTER RE-AIM ({mission.reaim_outcome})", pose,
+                    "settle" if mission.coast_summary else "", mission.coast_summary,
+                )
+            verdict = check_reached(mission.object_xy, judged, offset)
+            reached_detail = verdict.detail + (
+                " - judged at the re-aimed heading" if judged is not pose else ""
+            )
             if not verdict.known:
                 # Loud, and it proceeds. The alternative - treating unknown as
                 # "not reached" - would blacklist every target after two
@@ -3038,20 +3439,32 @@ class GoalGatewayNode(Node):
                 return
 
         self.get_logger().info(
-            f"target {mission.target_id} REACHED ({reached_detail})"
+            f"target {mission.target_id} "
+            + ("REACHED" if first_pass else "re-checked after re-aim")
+            + f" ({reached_detail})"
         )
         # ARRIVAL IS REPORTED IN ITS OWN RIGHT, on its own state, BEFORE anything
         # decides what follows: since C-7 an acknowledgement means a successful
         # pick and nothing else, so "we got there" needs a signal that does not
         # depend on what happens next. Every later outcome - picked, suppressed,
         # blacklisted - overwrites this with its own state, and none of them can
-        # erase the fact that it was published.
-        self._reached.append(mission.target_id)
+        # erase the fact that it was published. Once per arrival: the re-aim's
+        # second pass is the same arrival, not a new one.
         self._last_reached_detail = reached_detail
-        self._publish_mission_status(mission, ExternalGoalStatus.STATE_REACHED, "")
+        if first_pass:
+            self._reached.append(mission.target_id)
+            self._publish_mission_status(mission, ExternalGoalStatus.STATE_REACHED, "")
         with self._arming_lock:
             armed = self._arming.is_armed(self._safety_now())
-            self._arming.note_goal_succeeded()
+            # Audit F-47: a Nav2 success resets the consecutive-abort budget -
+            # but NOT the approach's success when a re-aim follows it, or a
+            # re-aim that fails every time could never exhaust the budget. The
+            # re-aim's own success resets it instead; its timeouts and aborts
+            # count against it.
+            if (first_pass and not (reaim is not None and reaim.rotate)) or (
+                mission.reaim_outcome == "succeeded"
+            ):
+                self._arming.note_goal_succeeded()
 
         # SR-16, conditions enumerated at the call site as the requirement asks:
         #  1. only /pick_plastic, the fixed blind sequence of FR-3;
@@ -3076,7 +3489,16 @@ class GoalGatewayNode(Node):
         # sequence that closes on an object we can no longer name collects
         # something we can never report. Not structural - an ambiguity can clear
         # - so it spends an attempt rather than condemning the target at once.
-        holds, correlation_detail = self._correlation_holds(mission)
+        # In the second pass after a re-aim, the RE-AIM-PHASE rule applies
+        # (`_reaim_correlation_holds`, USER DECISION 2026-09-29, issue #358):
+        # at the standoff the robot can occlude the litter itself, so the
+        # target may drop out of Octopus's list exactly during the re-aim.
+        # Every other gate below still runs in both passes.
+        holds, correlation_detail = (
+            self._correlation_holds(mission)
+            if first_pass
+            else self._reaim_correlation_holds(mission)
+        )
         if not holds:
             self.get_logger().error(
                 f"target {mission.target_id} arrived, but its correlation no "
@@ -3109,10 +3531,48 @@ class GoalGatewayNode(Node):
             self._finish_unacknowledged(mission, ACK_NO_PICK_CLIENT, structural=True)
             return
 
+        # RE-AIM AT ARRIVAL - here, and only here: after every SR-16 condition
+        # has passed, so the robot never rotates for a pick that would not be
+        # sent anyway, and instead of the pick, whose gates then all run again
+        # in the second pass. The rotation itself is drive motion and is gated
+        # like the approach (see `_start_reaim`), not by SR-16.
+        refusal = self._state_refusal(mission, pose)
+        if refusal is not None:
+            # Withdrawn, not a failed attempt: the gate's state is shut or
+            # stale (audit F-50), exactly as for an in-flight re-check cancel.
+            self.get_logger().error(
+                f"target {mission.target_id}: NOT "
+                + ("re-aiming" if reaim is not None and reaim.rotate else "picking")
+                + f" - {refusal.reason}: {refusal.detail}. Withdrawn."
+            )
+            self._clear_mission(mission)
+            return
+        if reaim is not None and reaim.rotate:
+            self._start_reaim(mission, pose, reaim)
+            return
+
         with self._mission_lock:
             if mission.cancelling:
-                return
-            mission.state = NAV_PICKING
+                # A cancel landed after the arrival (a disarm, or our own re-aim
+                # timeout racing the re-aim's success). The goal it was meant
+                # for has already finished, so no result will come to release
+                # the slot - release it here, or the gateway holds a dead
+                # mission for ever and dispatches nothing again.
+                cancel_reason = mission.cancel_reason
+            else:
+                cancel_reason = None
+                mission.state = NAV_PICKING
+                # Audit F-53: a fresh goal. The navigation's confirmed terminal
+                # result must not stand in for the pick's, or an unconfirmed
+                # pick cancel is never reported (SR-15 rule 9).
+                mission.cancel_confirmed = False
+        if cancel_reason is not None:
+            self.get_logger().warn(
+                f"target {mission.target_id}: NOT picking, the mission was "
+                f"cancelled after arrival ({cancel_reason or 'no reason recorded'})"
+            )
+            self._clear_mission(mission)
+            return
         self._nav_state = NAV_PICKING
         self.get_logger().warn(
             f"SR-16: sending PickPlastic for target {mission.target_id} while armed. "
@@ -3122,6 +3582,450 @@ class GoalGatewayNode(Node):
         goal.execute = True
         future = self._pick_client.send_goal_async(goal)
         future.add_done_callback(lambda f: self._on_pick_goal_response(mission, f))
+
+    # -- re-aim at arrival ---------------------------------------------
+    def _log_arrival_geometry(
+        self,
+        mission: Mission,
+        label: str,
+        pose: Optional[Tuple[float, float, float]],
+        reason: str,
+        detail: str,
+    ) -> None:
+        """The arrival evidence: where the robot stands and where the object is
+        seen from it. Logged at every stage of the re-aim, enabled or not."""
+        if pose is None:
+            self.get_logger().warn(f"{label} target {mission.target_id}: no TF, no pose")
+            return
+        range_m, bearing_rad = object_in_base(mission.object_xy, pose)
+        self.get_logger().info(
+            f"{label} target {mission.target_id}: {self._base_frame} at "
+            f"({pose[0]:.3f}, {pose[1]:.3f}, {math.degrees(pose[2]):.1f} deg) in "
+            f"{self._map_frame}; object at ({mission.object_xy[0]:.3f}, "
+            f"{mission.object_xy[1]:.3f}) is {range_m:.3f} m away at bearing "
+            f"{math.degrees(bearing_rad):+.1f} deg (ahead "
+            f"{range_m * math.cos(bearing_rad):+.3f} m, left "
+            f"{range_m * math.sin(bearing_rad):+.3f} m)"
+            + (f"; re-aim {reason}: {detail}" if reason else "")
+        )
+
+    def _state_refusal(
+        self, mission: Mission, pose: Tuple[float, float, float]
+    ) -> Optional[val.ValidationResult]:
+        """The STATE half of the dispatch gate, for a mission that has arrived.
+
+        Audit F-50: while the base settles and at the pick point nothing is in
+        flight, so the in-flight re-validation does not run - yet a datum move,
+        a replaced line calibration, a dead mux or a lost link must still stop
+        the arm. Runs the one gate there is (`validate_dispatch`, C-5) and keeps
+        only its STATE verdicts; its pose verdicts (geofence, costmap at the
+        robot's own cell) are for goals, not for a robot already standing there.
+        """
+        if mission.incoming is None:
+            return val.ValidationResult(
+                verdict=val.VERDICT_REJECTED,
+                reason="NO_VALIDATED_GOAL",
+                detail="the mission kept no validated goal to re-check against",
+            )
+        verdict = val.validate_dispatch(
+            self._mission_dispatch_context(mission, pose),
+            self._make_context(mission.incoming, current_goal_id=None),
+        )
+        if not verdict.accepted and verdict.reason in _REAIM_STATE_REJECTIONS:
+            return verdict
+        return None
+
+    def _mission_dispatch_context(
+        self, mission: Mission, pose: Tuple[float, float, float]
+    ) -> val.DispatchContext:
+        """The second gate's inputs for a goal of an EXISTING mission: the
+        in-flight re-validation and the re-aim goal. Same sources as
+        `_dispatch_context`, against the datum and calibration the mission was
+        resolved with."""
+        return val.DispatchContext(
+            armed=self._is_armed(),
+            dry_run=self._dry_run,
+            link_alive=bool(self._link_connected),
+            teleop_mode=self._teleop_mode,
+            # Monotonic on both sides (SAFETY.md F-38); see `_dispatch_context`.
+            teleop_mode_age_sec=(
+                None
+                if self._teleop_mode_mono_sec is None
+                else max(0.0, self._safety_now() - self._teleop_mode_mono_sec)
+            ),
+            nav2_available=self._nav2_available,
+            datum_unchanged=self._datum_unchanged_since(
+                mission.datum_lat, mission.datum_lon
+            ),
+            line_calibration_unchanged=self._line_calibration_unchanged_since(
+                mission.line_calibration
+            ),
+            pose=pose,
+            max_teleop_mode_age_sec=float(
+                self.get_parameter("max_teleop_mode_age_sec").value
+            ),
+        )
+
+    def _start_reaim(
+        self,
+        mission: Mission,
+        pose: Tuple[float, float, float],
+        decision: ReaimDecision,
+    ) -> None:
+        """Rotate in place so the object lies on the grasp ray. DRIVE MOTION.
+
+        Gated exactly like the approach, because it is the same kind of act:
+        a NavigateToPose goal, through the same client, past `validate_dispatch`
+        on the pose about to be sent (C-5 - there is no second inline gate), with
+        the mission already published so that a disarm arriving during the send
+        finds something to cancel and cancels it the moment Nav2 accepts it
+        (SR-15 rule 13, the construction `_send_nav_goal` uses). While it runs,
+        `_supervise_mission` re-takes the whole dispatch gate and the re-aim-phase
+        correlation rule on it every tick, and every disarm trigger cancels it
+        via `nav_handle`.
+
+        WHY A NavigateToPose AND NOT A SPIN: Nav2's Spin behavior is not loaded
+        on this robot, it integrates yaw in the odom frame and floors its command
+        at min_rotational_vel. The goal carries its own behavior tree
+        (`grasp.reaim_behavior_tree`), which plans to the robot's own position
+        and follows with `reaim_goal_checker` - a tighter yaw tolerance than the
+        approach's, which alone would declare a residual below 0.10 rad
+        "succeeded" without moving at all - and has NO recovery branch, so a
+        failure ends the goal instead of backing up or crabbing next to the
+        object.
+
+        WHEN IT DOES NOT COMPLETE - USER DECISION 2026-09-29, option (b):
+          * timed out -> cancelled; once the CANCELED result confirms it, the
+            normal arrival gate runs on the pose ACTUALLY reached and picks if
+            it passes (`_reaim_fall_back`);
+          * rejected / send failed / refused on the POSE by validate_dispatch
+            -> the robot has not moved; same fallback on the current pose;
+          * refused on the gate's STATE (disarmed, link, mode, Nav2, datum,
+            calibration), cancelled by any safety trigger, or superseding our
+            own timeout cancel -> NO pick, withdrawn;
+          * ABORTED -> NO pick, a failed attempt (see `_on_reaim_result`).
+        The arrival gate of the fallback is the second pass of `_on_arrival`:
+        FRESH pose, armed, reached check, measured tolerance, auto_pick, pick
+        server - all re-taken; the correlation by the re-aim-phase rule
+        (`_reaim_correlation_holds`, user decision 2026-09-29, #358).
+        """
+        target = (float(pose[0]), float(pose[1]), float(decision.target_yaw))
+        with self._mission_lock:
+            withdrawn = mission.cancelling
+        if withdrawn:
+            self.get_logger().warn(
+                f"target {mission.target_id}: re-aim not started, the mission was "
+                f"cancelled after arrival ({mission.cancel_reason})"
+            )
+            self._clear_mission(mission)
+            return
+        if mission.incoming is None:
+            self._reaim_fall_back(
+                mission, "not dispatchable", "no validated goal to re-check against"
+            )
+            return
+        verdict = val.validate_dispatch(
+            self._mission_dispatch_context(mission, target),
+            self._make_context(mission.incoming, current_goal_id=None),
+        )
+        if not verdict.accepted:
+            if verdict.reason in _REAIM_STATE_REJECTIONS:
+                # The GATE is shut or stale, not the pose: a safety refusal,
+                # which never ends in a pick. A withdrawal, like an in-flight
+                # re-check cancel.
+                self.get_logger().error(
+                    f"target {mission.target_id}: re-aim NOT sent ({verdict.reason}: "
+                    f"{verdict.detail}). Not picking; withdrawn."
+                )
+                self._clear_mission(mission)
+                return
+            self._reaim_fall_back(
+                mission, "not dispatchable", f"{verdict.reason}: {verdict.detail}"
+            )
+            return
+
+        with self._mission_lock:
+            withdrawn = mission.cancelling
+            if not withdrawn:
+                mission.state = NAV_REAIMING
+                mission.reaim_pose = target
+                mission.reaim_started_at_sec = self._ros_now()
+                # A fresh goal: the approach's handle is finished, and its
+                # confirmed terminal result must not stand in for this goal's
+                # (`_check_cancel_timeout` reads `cancel_confirmed`).
+                mission.nav_handle = None
+                mission.nav_accepted = False
+                mission.cancel_confirmed = False
+        if withdrawn:
+            self._clear_mission(mission)
+            return
+        self._nav_state = NAV_REAIMING
+        self.get_logger().warn(
+            f"RE-AIM target {mission.target_id}: rotating IN PLACE by "
+            f"{math.degrees(decision.aim_error_rad):+.1f} deg to "
+            f"{math.degrees(target[2]):.1f} deg at ({target[0]:.3f}, {target[1]:.3f}), "
+            f"timeout {self._reaim_timeout_sec:.1f}s. Drive motion under the same "
+            "arming gate as the approach."
+        )
+        goal = self._nav_goal_msg(target)
+        goal.behavior_tree = self._reaim_bt_path
+        future = self._nav_client.send_goal_async(goal)
+        future.add_done_callback(lambda f: self._on_reaim_goal_response(mission, f))
+
+    def _on_reaim_goal_response(self, mission: Mission, future) -> None:
+        try:
+            handle = future.result()
+        except Exception as exc:  # noqa: BLE001 - a dead server must not kill the node
+            self.get_logger().error(f"re-aim send_goal failed: {exc!r}")
+            self._reaim_fall_back(mission, "send failed", repr(exc))
+            return
+        if not handle.accepted:
+            self.get_logger().error(
+                f"{self._nav_action_name} REJECTED the re-aim goal for target "
+                f"{mission.target_id} (behavior tree {self._reaim_bt_path})."
+            )
+            self._reaim_fall_back(mission, "rejected", "the server rejected the re-aim goal")
+            return
+        with self._mission_lock:
+            mission.nav_handle = handle
+            mission.nav_accepted = True
+            cancelling = mission.cancelling
+        handle.get_result_async().add_done_callback(
+            lambda f: self._on_reaim_result(mission, f)
+        )
+        if cancelling:
+            self.get_logger().error(
+                f"re-aim for target {mission.target_id} was accepted by Nav2 AFTER "
+                f"the gate closed ({mission.cancel_reason}); cancelling immediately"
+            )
+            self._send_cancel(mission, handle, "navigate_to_pose (re-aim)")
+
+    def _reaim_fall_back(
+        self, mission: Mission, outcome: str, detail: str
+    ) -> None:
+        """The re-aim did not complete: judge the pose actually held instead.
+
+        USER DECISION 2026-09-29 (option b). Runs the second pass of
+        `_on_arrival` - every pick gate except the correlation - and picks only
+        if it passes. Never reached for a safety cancel: a mission that is
+        cancelling here was withdrawn by a gate, and nothing picks for it.
+        """
+        with self._mission_lock:
+            withdrawn = mission.cancelling
+            if not withdrawn:
+                mission.reaim_done = True
+                mission.reaim_outcome = outcome
+        if withdrawn:
+            self.get_logger().warn(
+                f"target {mission.target_id}: re-aim {outcome}, and the mission was "
+                f"cancelled meanwhile ({mission.cancel_reason}). Not picking."
+            )
+            self._clear_mission(mission)
+            return
+        self.get_logger().warn(
+            f"target {mission.target_id}: re-aim {outcome} ({detail}); the arrival "
+            "gate decides on the pose actually held (user decision 2026-09-29)"
+        )
+        # Always through the settle step (audit F-49), including the paths on
+        # which the re-aim never moved the base: the gate must never judge a
+        # pose taken microseconds after a Nav2 result.
+        self._begin_settle(mission)
+
+    def _begin_settle(self, mission: Mission, phase: str = "re-aim") -> None:
+        """Wait for the base to stand still, then run the arrival gate.
+
+        Called after the approach's success and after a re-aim that commanded
+        rotation (success, or our own confirmed cancel). Non-blocking:
+        `_supervise_settle` polls on the dispatch tick. The arm never actuates
+        on a base that is still turning, and the reached check - and the
+        re-aim decision - judge the pose the base comes to rest in.
+        """
+        result_pose, result_age, _ = self._robot_pose()
+        with self._mission_lock:
+            withdrawn = mission.cancelling
+            if not withdrawn:
+                mission.state = NAV_SETTLING
+                mission.settling = True
+                mission.settle_started_at_sec = self._ros_now()
+                mission.settle_last_pose = None
+                mission.settle_last_stamp = None
+                mission.settle_phase = phase
+                mission.settle_result_pose = result_pose
+                mission.coast_summary = ""
+        if withdrawn:
+            self._clear_mission(mission)
+            return
+        self._nav_state = NAV_SETTLING
+        at_result = (
+            f"yaw at Nav2 result {math.degrees(result_pose[2]):.1f} deg "
+            f"(pose age {result_age:.2f}s)"
+            if result_pose is not None and result_age is not None
+            else "no pose at Nav2 result"
+        )
+        self.get_logger().info(
+            f"target {mission.target_id}: {phase} "
+            + (mission.reaim_outcome if phase == "re-aim" else "succeeded")
+            + f", {at_result}; waiting for "
+            f"the base to stand still (< {math.degrees(_SETTLE_YAW_EPS_RAD):.1f} deg "
+            f"and < {_SETTLE_XY_EPS_M * 1000:.0f} mm between ticks, at most "
+            f"{_SETTLE_TIMEOUT_SEC:.1f}s) before the arrival gate judges it"
+        )
+
+    def _supervise_settle(self, mission: Mission, now: float) -> None:
+        pose, age, _, tf_stamp = self._robot_pose_stamped()
+        fresh = (
+            pose is not None
+            and age is not None
+            and age <= float(self.get_parameter("max_tf_age_sec").value)
+        )
+        # Audit F-50: the gate's STATE on every settle tick - nothing else
+        # watches it while nothing is in flight.
+        refusal = self._state_refusal(
+            mission, pose if pose is not None else mission.pose
+        )
+        if refusal is not None:
+            self._cancel_mission(
+                f"{refusal.reason}: {refusal.detail} (while settling)", now, error=True
+            )
+            return
+        # Audit F-51/F-54: two samples of a FROZEN transform are identical and
+        # would read as "still". The transform's OWN stamp must have advanced
+        # between the two samples - compared directly, never reconstructed
+        # from `age` (clamped at zero, and exposed to a stall between clock
+        # reads). The margin only ignores sub-tick jitter of a live stamp.
+        stamp = tf_stamp if fresh else None
+        last = mission.settle_last_pose
+        advanced = (
+            stamp is not None
+            and mission.settle_last_stamp is not None
+            and stamp > mission.settle_last_stamp + _SETTLE_STAMP_ADVANCE_SEC
+        )
+        if fresh and last is not None and not advanced:
+            fresh = False
+        if fresh and last is not None:
+            dyaw = abs(math.remainder(pose[2] - last[2], math.tau))
+            dxy = math.hypot(pose[0] - last[0], pose[1] - last[1])
+            if dyaw <= _SETTLE_YAW_EPS_RAD and dxy <= _SETTLE_XY_EPS_M:
+                with self._mission_lock:
+                    if mission.cancelling:
+                        return
+                    mission.settling = False
+                mission.coast_summary = self._coast_summary(mission, pose, now)
+                self.get_logger().info(
+                    f"SETTLED target {mission.target_id} after {mission.settle_phase}: "
+                    f"{mission.coast_summary}"
+                )
+                self._on_arrival(mission)
+                return
+        if fresh:
+            mission.settle_last_pose = pose
+            mission.settle_last_stamp = stamp
+        if now - (mission.settle_started_at_sec or now) > _SETTLE_TIMEOUT_SEC:
+            with self._mission_lock:
+                mission.settling = False
+            summary = self._coast_summary(
+                mission, pose if fresh else None, now, settled=False
+            )
+            self._fail_attempt(
+                mission,
+                "NOT_SETTLED" if mission.settle_phase == "approach" else "REAIM_NOT_SETTLED",
+                f"the base did not stand still within {_SETTLE_TIMEOUT_SEC:.1f}s "
+                f"after the {mission.settle_phase}; not judging or picking on a "
+                f"moving base ({summary})",
+            )
+
+    def _coast_summary(
+        self,
+        mission: Mission,
+        pose: Optional[Tuple[float, float, float]],
+        now: float,
+        settled: bool = True,
+    ) -> str:
+        """How far the base moved after Nav2 said it was done, and how long it
+        took to stop - the robot test's coast measurement, in one line."""
+        waited = now - (mission.settle_started_at_sec or now)
+        start = mission.settle_result_pose
+        if start is None or pose is None:
+            return f"coast not measurable (no pose), settle time {waited:.2f}s"
+        coast = math.degrees(math.remainder(pose[2] - start[2], math.tau))
+        return (
+            f"yaw at Nav2 result {math.degrees(start[2]):.1f} deg, "
+            + ("settled " if settled else "last seen (NOT settled) ")
+            + f"{math.degrees(pose[2]):.1f} deg, coast {coast:+.1f} deg / "
+            f"{math.hypot(pose[0] - start[0], pose[1] - start[1]) * 1000:.0f} mm, "
+            + ("settle time" if settled else "waited")
+            + f" {waited:.2f}s (dispatch-tick resolution)"
+        )
+
+    def _on_reaim_result(self, mission: Mission, future) -> None:
+        try:
+            outcome = future.result()
+        except Exception as exc:  # noqa: BLE001
+            self.get_logger().error(f"re-aim result failed: {exc!r}")
+            self._fail_attempt(mission, "REAIM_RESULT_FAILED", repr(exc))
+            return
+        status = outcome.status
+        with self._mission_lock:
+            mission.cancel_confirmed = True
+            # Our own timeout cancel, not superseded by a safety cancel, is
+            # CONFIRMED by this terminal result. It is not a withdrawal: clear
+            # the cancel so the arrival gate below can run. A superseding
+            # safety cancel has replaced the reason and is left in place.
+            own = mission.reaim_own_cancel_reason
+            own_cancel = bool(own) and mission.cancel_reason.startswith(own)
+            if own_cancel:
+                mission.cancel_requested_at_sec = None
+                mission.cancel_reason = ""
+                mission.state = NAV_REAIMING
+        if status == GoalStatus.STATUS_SUCCEEDED:
+            with self._mission_lock:
+                mission.reaim_done = True
+                mission.reaim_outcome = "succeeded"
+            # The second pass runs once the base stands still.
+            self._begin_settle(mission)
+            return
+        pose, _, _ = self._robot_pose()
+        result = getattr(outcome, "result", None)
+        error = (
+            f" error_code {getattr(result, 'error_code', '?')} "
+            f"'{getattr(result, 'error_msg', '')}'"
+            if result is not None
+            else ""
+        )
+        self._log_arrival_geometry(
+            mission, f"RE-AIM ENDED (status {status}{error})", pose, "", ""
+        )
+        if status == GoalStatus.STATUS_CANCELED:
+            if own_cancel:
+                self._reaim_fall_back(
+                    mission,
+                    "timed out" if own == REAIM_TIMEOUT_REASON else "switched off",
+                    "the gateway's own cancel is confirmed",
+                )
+                return
+            self.get_logger().warn(
+                f"re-aim for target {mission.target_id} was CANCELLED "
+                f"({mission.cancel_reason or 'no reason recorded'}). Not picking and "
+                "not counted as an attempt: we withdrew."
+            )
+            self._clear_mission(mission)
+            return
+        # ABORTED: NO pick, deliberately not the fallback. The re-aim tree has
+        # no recoveries and our timeout (15 s) ends a merely slow rotation
+        # before the progress checker (20 s) can, so an abort here is Nav2
+        # reporting a FAULT - a rotational collision ahead, a failed plan, a TF
+        # failure, an unusable goal checker - which the reached check cannot
+        # see. Counted like every other Nav2 abort.
+        self.get_logger().error(
+            f"re-aim for target {mission.target_id} ended with status {status} "
+            f"(ABORTED{error}). Not picking: an abort is a fault report, not a slow "
+            "rotation. Counted against the attempts and the consecutive-abort "
+            "budget like any other Nav2 abort."
+        )
+        with self._arming_lock:
+            event = self._arming.note_goal_aborted(self._safety_now())
+        self._handle_disarm(event)
+        self._fail_attempt(mission, "REAIM_ABORTED", f"action status {status}{error}")
 
     def _on_pick_goal_response(self, mission: Mission, future) -> None:
         try:
@@ -3354,6 +4258,16 @@ class GoalGatewayNode(Node):
         that left `autonomous` all cancel the goal in flight here - through
         `validate_dispatch`, not through a second set of inline checks (C-5).
         """
+        if mission.cancelling and mission.settling:
+            # Nothing is in flight while the base settles, so no result will
+            # ever come to release this mission: a cancel here ends it at once,
+            # without a pick.
+            self.get_logger().warn(
+                f"target {mission.target_id}: cancelled while settling after the "
+                f"re-aim ({mission.cancel_reason}). Not picking."
+            )
+            self._clear_mission(mission)
+            return
         if mission.cancelling:
             # The server that owned the goal is gone, so no result is coming
             # and there is nothing left for us to supervise. Releasing the slot
@@ -3380,12 +4294,16 @@ class GoalGatewayNode(Node):
                 )
                 self._clear_mission(mission)
             return
-        if mission.state != NAV_NAVIGATING or mission.incoming is None:
+        if mission.state == NAV_SETTLING:
+            self._supervise_settle(mission, now)
+            return
+        if mission.state not in (NAV_NAVIGATING, NAV_REAIMING) or mission.incoming is None:
             # While the arm is picking there is no navigation goal to re-check,
             # and the costmap has nothing to say about a stationary robot. The
             # correlation is still re-checked in that window - at the pick gate
             # and at the acknowledgement - it is only the CANCEL that stops
             # here; see the comment on the correlation block just below.
+            # A RE-AIM is a navigation goal and is supervised like the approach.
             return
 
         # THE CORRELATION, RE-TAKEN ON THE GOAL IN FLIGHT (SAFETY.md F-13).
@@ -3405,7 +4323,15 @@ class GoalGatewayNode(Node):
         # The asymmetry decides it. This is the same reasoning `_resolve_goal`
         # already applies before a dispatch - a goal we cannot NAME is a goal we
         # must not drive to - applied to the goal that is already driving.
-        holds, detail = self._correlation_holds(mission)
+        # During the re-aim the RE-AIM-PHASE rule applies (USER DECISION
+        # 2026-09-29, issue #358): the robot standing at the grasp standoff can
+        # occlude the litter itself, so the target may leave Octopus's list
+        # exactly now. See `_reaim_correlation_holds`; the dispatch gate below
+        # still runs on every tick either way.
+        if mission.state == NAV_REAIMING:
+            holds, detail = self._reaim_correlation_holds(mission)
+        else:
+            holds, detail = self._correlation_holds(mission)
         if not holds:
             self._correlation_cancels += 1
             self._cancel_mission(
@@ -3416,29 +4342,35 @@ class GoalGatewayNode(Node):
             )
             return
 
+        reaiming = mission.state == NAV_REAIMING and mission.reaim_pose is not None
+        if reaiming and mission.reaim_started_at_sec is not None:
+            elapsed = now - mission.reaim_started_at_sec
+            if elapsed > self._reaim_timeout_sec:
+                # Marked BEFORE the cancel, so the CANCELED result that follows
+                # ends in the arrival-gate fallback rather than as a withdrawal
+                # - unless a safety cancel supersedes it (`_cancel_mission`).
+                with self._mission_lock:
+                    mission.reaim_own_cancel_reason = REAIM_TIMEOUT_REASON
+                # Audit F-47: a timed-out re-aim counts like a Nav2 abort. If
+                # that exhausts the budget, the EXCESSIVE_ABORTS disarm cancels
+                # first and the result ends without a pick.
+                with self._arming_lock:
+                    event = self._arming.note_goal_aborted(self._safety_now())
+                self._handle_disarm(event)
+                self._cancel_mission(
+                    f"{REAIM_TIMEOUT_REASON}: in-place re-aim still running after "
+                    f"{elapsed:.1f}s (grasp.reaim_timeout_sec "
+                    f"{self._reaim_timeout_sec:.1f}); the arrival gate decides on "
+                    "the pose reached once the cancel is confirmed",
+                    now,
+                    error=False,
+                )
+                return
+
         ctx = self._make_context(mission.incoming, current_goal_id=None)
-        dctx = val.DispatchContext(
-            armed=self._is_armed(),
-            dry_run=self._dry_run,
-            link_alive=bool(self._link_connected),
-            teleop_mode=self._teleop_mode,
-            # Monotonic on both sides (SAFETY.md F-38); see `_dispatch_context`.
-            teleop_mode_age_sec=(
-                None
-                if self._teleop_mode_mono_sec is None
-                else max(0.0, self._safety_now() - self._teleop_mode_mono_sec)
-            ),
-            nav2_available=self._nav2_available,
-            datum_unchanged=self._datum_unchanged_since(
-                mission.datum_lat, mission.datum_lon
-            ),
-            line_calibration_unchanged=self._line_calibration_unchanged_since(
-                mission.line_calibration
-            ),
-            pose=mission.pose,
-            max_teleop_mode_age_sec=float(
-                self.get_parameter("max_teleop_mode_age_sec").value
-            ),
+        # The re-aim is re-validated at the pose it is actually driving to.
+        dctx = self._mission_dispatch_context(
+            mission, mission.reaim_pose if reaiming else mission.pose
         )
         verdict = val.validate_dispatch(dctx, ctx)
         if verdict.accepted:
@@ -3477,13 +4409,34 @@ class GoalGatewayNode(Node):
             if mission is None:
                 return False
             if mission.cancelling:
-                return True
-            mission.cancel_requested_at_sec = now
-            mission.cancel_reason = reason
-            mission.state = NAV_CANCELLING
-            nav_handle = mission.nav_handle
-            pick_handle = mission.pick_handle
-            accepted = mission.nav_accepted
+                own = mission.reaim_own_cancel_reason
+                if (
+                    own
+                    and mission.cancel_reason.startswith(own)
+                    and not reason.startswith(own)
+                ):
+                    # A safety cancel landing on our own re-aim cancel
+                    # SUPERSEDES it: the request is already out, but its result
+                    # must now end WITHOUT the fallback pick.
+                    mission.cancel_reason = reason
+                    superseded = True
+                else:
+                    return True
+            else:
+                superseded = False
+                mission.cancel_requested_at_sec = now
+                mission.cancel_reason = reason
+                mission.state = NAV_CANCELLING
+                nav_handle = mission.nav_handle
+                pick_handle = mission.pick_handle
+                accepted = mission.nav_accepted
+        if superseded:
+            self._log_at(
+                "error" if error else "warn",
+                f"target {mission.target_id}: {reason} supersedes the gateway's "
+                "own re-aim cancel already in flight - no fallback pick",
+            )
+            return True
         self._nav_state = NAV_CANCELLING
 
         self._log_at(
@@ -4475,15 +5428,16 @@ class GoalGatewayNode(Node):
         msg.device_id = "gripperx"
         calibration = self._live_line_calibration()
 
+        side_dead = self._side_executor_dead()
         pose, age, err = self._robot_pose()
         if pose is None:
             msg.pose_valid = False
-            msg.pose_reason = "TF_UNAVAILABLE"
+            msg.pose_reason = SIDE_EXECUTOR_DEAD if side_dead else "TF_UNAVAILABLE"
             msg.map_x = msg.map_y = msg.yaw_deg = float("nan")
             msg.pose_age_sec = -1.0
         elif age is not None and age > float(self.get_parameter("max_tf_age_sec").value):
             msg.pose_valid = False
-            msg.pose_reason = "TF_STALE"
+            msg.pose_reason = SIDE_EXECUTOR_DEAD if side_dead else "TF_STALE"
             msg.map_x = msg.map_y = msg.yaw_deg = float("nan")
             msg.pose_age_sec = float(age)
         else:
@@ -4529,17 +5483,20 @@ class GoalGatewayNode(Node):
             msg.latlon_valid = True
             msg.latitude_deg, msg.longitude_deg = lat, lon
 
-        if self._odom is None:
+        with self._odom_lock:
+            odom, odom_stamp_sec = self._odom, self._odom_stamp_sec
+        if odom is None:
             msg.odom_valid = False
-            msg.odom_reason = "NO_ODOM"
+            msg.odom_reason = SIDE_EXECUTOR_DEAD if side_dead else "NO_ODOM"
             msg.speed_mps = float("nan")
             msg.odom_age_sec = -1.0
         else:
-            twist = self._odom.twist.twist.linear
-            msg.odom_valid = True
-            msg.speed_mps = math.hypot(twist.x, twist.y)
+            twist = odom.twist.twist.linear
+            msg.odom_valid = not side_dead
+            msg.odom_reason = SIDE_EXECUTOR_DEAD if side_dead else ""
+            msg.speed_mps = float("nan") if side_dead else math.hypot(twist.x, twist.y)
             msg.odom_age_sec = float(
-                max(0.0, self._ros_now() - (self._odom_stamp_sec or self._ros_now()))
+                max(0.0, self._ros_now() - (odom_stamp_sec or self._ros_now()))
             )
 
         # "unavailable" and "idle" are different statements and are kept apart:
@@ -4594,6 +5551,10 @@ class GoalGatewayNode(Node):
         msg.battery_percent = float("nan")
 
         self._telemetry_pub.publish(msg)
+        if side_dead:
+            # /diagnostics is otherwise only published on a preview render, which
+            # may not come; keep the ERROR status current while the cause lasts.
+            self._publish_diagnostics()
 
     def _dispatch_diagnostic(self):
         """The dispatch path as one status. See `diagnostics.dispatch_status`."""
@@ -4743,6 +5704,7 @@ class GoalGatewayNode(Node):
                         },
                     ),
                     diag.config_status(self._unset_items()),
+                    self._side_executor_diagnostic(),
                 ],
             )
         )
@@ -4765,7 +5727,118 @@ class GoalGatewayNode(Node):
                 self._handle_disarm(event)
             except Exception as exc:  # noqa: BLE001 - teardown must not raise
                 self.get_logger().error(f"disarm during teardown failed: {exc!r}")
+        self._stop_side_executor()
         return super().destroy_node()
+
+    def _start_side_executor(
+        self,
+    ) -> Tuple[Node, object, threading.Thread]:
+        """A subscriptions-only helper node on its own executor thread.
+
+        Carries /tf, /tf_static and odometry - see the comment at the call site.
+        It publishes nothing but rclpy's own ``/parameter_events``, calls
+        nothing and offers no services (parameter and type-description services
+        are both switched off); the SR-15 rule 9 / SAFETY.md 6.3 sweeps
+        are run on it as well (see the end of ``__init__``). Its own
+        ``__node`` remap overrides a launch-level ``name=``, which would
+        otherwise give both nodes the same name (the same trick tf2_ros uses
+        for its own listener node). ``use_sim_time`` is pinned false: the node
+        reads no clock, and a /clock subscription would only cost wake-ups -
+        every stamp is taken with THIS node's clock. Daemon thread, so a stuck
+        side executor can never hold the process up; the orderly stop is
+        `_stop_side_executor`, from `destroy_node`.
+        """
+        name = f"{self.get_name()}_tf_odom"
+        side = Node(
+            name,
+            namespace=self.get_namespace(),
+            cli_args=["--ros-args", "-r", f"__node:={name}"],
+            enable_rosout=False,
+            start_parameter_services=False,
+            parameter_overrides=[
+                Parameter("use_sim_time", value=False),
+                # Jazzy's per-node ~/get_type_description service: a server this
+                # listener has no use for, and one more wait-set entry.
+                Parameter("start_type_description_service", value=False),
+            ],
+        )
+        kind = str(self.get_parameter("tf_odom_executor").value)
+        if kind == "single_threaded":
+            executor = SingleThreadedExecutor()
+        elif kind == "events":
+            from rclpy.experimental.events_executor import EventsExecutor
+            executor = EventsExecutor()
+        else:
+            side.destroy_node()
+            raise ValueError(
+                f"tf_odom_executor must be 'single_threaded' or 'events', got {kind!r}"
+            )
+        executor.add_node(side)
+        self._side_stopping = threading.Event()
+        self._side_dead_lock = threading.Lock()
+        self._side_dead_logged = False
+
+        def _run() -> None:
+            try:
+                executor.spin()
+            except ExternalShutdownException:
+                pass
+            except Exception as exc:  # noqa: BLE001 - report, never propagate
+                if not self._side_stopping.is_set():  # else a stop raced the wait set
+                    self.get_logger().error(
+                        f"tf/odom side executor stopped with {exc!r}: the robot pose "
+                        "will go stale and every goal will be refused on TF age"
+                    )
+
+        thread = threading.Thread(target=_run, name="gateway_tf_odom_spin", daemon=True)
+        thread.start()
+        return side, executor, thread
+
+    def _stop_side_executor(self) -> None:
+        executor = getattr(self, "_side_executor", None)
+        if executor is None:
+            return
+        self._side_executor = None
+        self._side_stopping.set()
+        try:
+            executor.shutdown(timeout_sec=2.0)
+            self._side_thread.join(timeout=2.0)
+            self._side_node.destroy_node()
+        except Exception as exc:  # noqa: BLE001 - teardown must not raise
+            try:
+                self.get_logger().warn(f"tf/odom side executor teardown: {exc!r}")
+            except Exception:  # noqa: BLE001
+                print(f"tf/odom side executor teardown: {exc!r}", file=sys.stderr)
+
+    def _side_executor_dead(self) -> bool:
+        """True once the side thread has ended without being asked to.
+
+        Supervision only - it changes no gate. The consequence is already fail
+        closed (the pose ages past `max_tf_age_sec`); this names the ROOT CAUSE
+        in telemetry and /diagnostics, so an operator does not chase TF_STALE.
+        Logged at ERROR once.
+        """
+        thread = getattr(self, "_side_thread", None)
+        if thread is None or thread.is_alive() or self._side_stopping.is_set():
+            return False
+        with self._side_dead_lock:
+            first = not self._side_dead_logged
+            self._side_dead_logged = True
+        if first:
+            self.get_logger().error(
+                f"{SIDE_EXECUTOR_DEAD}: the /tf + odometry side executor thread has "
+                "ended. No transform or odometry arrives any more: the robot pose "
+                "ages out and every goal is refused on TF age. Restart the node."
+            )
+        return True
+
+    def _side_executor_diagnostic(self):
+        values = {"executor": str(self.get_parameter("tf_odom_executor").value)}
+        if self._side_executor_dead():
+            return diag.status(
+                "external/tf_odom", diag.ERROR, SIDE_EXECUTOR_DEAD, values
+            )
+        return diag.status("external/tf_odom", diag.OK, "running", values)
 
 
 def _install_shutdown_handlers(node: GoalGatewayNode) -> None:

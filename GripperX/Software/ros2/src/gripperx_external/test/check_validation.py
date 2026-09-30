@@ -878,7 +878,12 @@ def part4_correlation() -> None:
 
     check(
         corr.correlate((1.02, 0.0), [], 0.25).status == corr.NO_TARGETS,
-        "no target list yet is its own state, distinct from NO_MATCH",
+        "no usable target is its own state, distinct from NO_MATCH",
+    )
+    empty_detail = corr.correlate((1.02, 0.0), [], 0.25).detail
+    check(
+        "received but" in empty_detail and "received yet" not in empty_detail,
+        "a list that ARRIVED empty is not reported as 'no list received yet' (#355)",
     )
 
     mismatch = corr.correlate((1.02, 0.0), [a, far], 0.25, reported_goal_id="3")
@@ -2541,7 +2546,9 @@ def part9_f36() -> None:
                 for node in ast.walk(fn))
     })
     check(
-        readers == ["__init__", "_note_clock_jumped_forward",
+        # `_construct` is the constructor body (`__init__` only wraps it so a
+        # failed construction stops the tf/odom side executor).
+        readers == ["_construct", "_note_clock_jumped_forward",
                     "_publish_diagnostics", "_unmeasured_clock_thresholds"],
         "rule 14 / F-40: whether the thresholds were MEASURED is read by "
         "reporting paths only - no validation, no dispatch gate and no arming "

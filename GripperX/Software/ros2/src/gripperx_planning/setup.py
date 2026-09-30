@@ -17,6 +17,9 @@ setup(
                 "config/nav2.yaml",
                 "config/navigate_to_pose_w_replanning_and_recovery.xml",
                 "config/navigate_through_poses_w_replanning_and_recovery.xml",
+                # Not a default tree: sent per goal by the external-goal
+                # gateway for the in-place re-aim at arrival.
+                "config/reaim_in_place.xml",
             ],
         ),
         (f"share/{package_name}/launch", ["launch/navigation.launch.py"]),

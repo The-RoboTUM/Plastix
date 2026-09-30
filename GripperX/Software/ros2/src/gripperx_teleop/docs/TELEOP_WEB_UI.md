@@ -107,6 +107,19 @@ session; here it would shut the teleop node down from across the room. The
 click path asks for confirmation as well. Either way the robot is stopped and
 the wheels straightened first, exactly as on the terminal node's exit.
 
+**Started from `gripperx_desk.sh` (the GripperX Desktop launcher,
+`Software/ros2/scripts/gripperx_desk.sh`), quitting here tears the WHOLE desk
+session down** — RViz, the local mapping stack, everything that script
+started — not just this page, exactly as pressing Enter/Ctrl-C in the
+launcher's own terminal already does. The node signals it through a flag file
+the launcher hands it in `GRIPPERX_DESK_QUIT_FLAG`, written only AFTER the
+stop/straighten above has published, and only on this deliberate quit — never
+on a SIGTERM or a crash. Run standalone (a bare `ros2 launch ...
+web_teleop.launch.py`, no launcher in the loop), that variable is unset and
+quitting only stops this node, as before — you then need a terminal to start
+teleop again. The confirmation dialog names both cases, since the page itself
+has no way to tell which one it is in.
+
 ---
 
 ## Transport

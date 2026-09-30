@@ -30,6 +30,8 @@ CHECKS = [
     "check_geodesy.py",
     "check_line_calibration.py",
     "check_grasp.py",
+    "check_reaim.py",
+    "check_reaim_node.py",
     "check_rosbridge_client.py",
     "check_transform_status.py",
     "check_validation.py",

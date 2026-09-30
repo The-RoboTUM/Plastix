@@ -38,6 +38,7 @@ import tty
 import termios
 import select
 import math
+import os
 import time
 import threading
 
@@ -932,6 +933,36 @@ class KeyboardTeleopNode(Node):
         self._call_arming(False, 0.0)
 
 
+# gripperx_desk.sh quit-flag path (GripperX Desktop launcher, scripts/gripperx_desk.sh).
+# Set only when this node was started FROM that launcher -- a standalone run
+# (`ros2 launch ...` by hand, or a bare `ros2 run`) has no such variable and
+# _signal_desk_quit() below is then a no-op, unchanged from before this file
+# gained the concept.
+_DESK_QUIT_FLAG_ENV = 'GRIPPERX_DESK_QUIT_FLAG'
+
+
+def _signal_desk_quit():
+    """Tell gripperx_desk.sh that an operator deliberately quit teleop here.
+
+    The launcher's own wait loop polls for this file to decide whether to tear
+    the WHOLE desk session down (RViz, the local mapping stack, ...) the same
+    way Enter/Ctrl-C in ITS OWN terminal already does -- see the launcher's
+    "Setup done." wait loop. Call this ONLY after the ordinary shutdown
+    (center(): stop, straighten, back to keyboard mode) has already published,
+    and ONLY on a deliberate operator quit -- never from a SIGTERM/external
+    shutdown handler and never from a crash path, both of which must leave the
+    rest of the desk session running for the operator to inspect.
+    """
+    path = os.environ.get(_DESK_QUIT_FLAG_ENV, '')
+    if not path:
+        return
+    try:
+        with open(path, 'w', encoding='utf-8') as f:
+            f.write(str(time.time()))
+    except OSError:
+        pass   # best-effort -- a write failure just means no auto-teardown
+
+
 # The rest of an escape sequence follows within microseconds of the ESC when a
 # key generates it; a human pressing ESC produces nothing after it. 50 ms
 # separates the two reliably without making a bare ESC feel sluggish.
@@ -1078,6 +1109,16 @@ def main():
     _key_reader(node, stop_event)
     node.center()
     time.sleep(0.15)
+    # Reaching this line at all means _key_reader() RETURNED rather than
+    # raised, which only happens via stop_event.is_set() -- and the only two
+    # things that ever set it are Q and Ctrl+C inside _dispatch(), both
+    # deliberate operator quits in THIS window. A SIGTERM/SIGINT delivered
+    # from outside (gripperx_desk.sh teardown, `kill`) does not go through
+    # here: it either interrupts the tty read with an exception that skips
+    # straight past node.center(), or it never reaches this process at all.
+    # So, unlike web_teleop_node.py, no separate "was this deliberate" flag is
+    # needed -- every arrival here already is one.
+    _signal_desk_quit()
     node.destroy_node()
     rclpy.shutdown()
 
