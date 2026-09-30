@@ -1306,7 +1306,7 @@ async def set_line_calibration(payload: dict):
             # scale, and it comes from GripperX's LiDAR, which may not have been
             # read out yet. 0 means "not known".
             "length_m": float(payload.get("length_m") or 0.0),
-            "mirrored": bool(payload.get("mirrored", False)),
+            "mirrored": bool(payload.get("mirrored", True)),
             "source": str(payload.get("source", "dashboard")),
             "set_at": datetime.now().isoformat(),
         }

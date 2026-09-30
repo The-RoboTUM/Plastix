@@ -61,7 +61,9 @@ class LineCalibrationNode(Node):
         self.declare_parameter("pixel_a", [-1.0, -1.0])
         self.declare_parameter("pixel_b", [-1.0, -1.0])
         self.declare_parameter("length_m", 0.0)
-        self.declare_parameter("mirrored", False)
+        # Mirrored by default, like the dashboard's "mirror y" box. Still an
+        # operator setting - the zero-motion check decides it, not this default.
+        self.declare_parameter("mirrored", True)
 
         # Section 5/6: GripperX reports the live calibration's id and its L in
         # its telemetry so the value our operator typed in can be checked

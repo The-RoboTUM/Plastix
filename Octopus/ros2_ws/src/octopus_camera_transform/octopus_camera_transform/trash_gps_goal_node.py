@@ -64,6 +64,24 @@ class TrashGpsGoalNode(Node):
         # detector's tracker already settles positions, this only keeps ids
         # stable across messages so "collected" can refer to something.
         self.declare_parameter("merge_radius_m", 0.25)
+        # A detection only becomes a target once it has sat still: seen in
+        # `stable_frames` consecutive detection frames, each within
+        # `stable_radius_m` of where it was in the frame before. Trash that is
+        # thrown in gets confirmed by the detector while it is still flying or
+        # rolling, and every intermediate position used to become a goal of its
+        # own - GripperX set off towards the first one and turned round once the
+        # trash had come to rest. Those positions vanish within a frame or two,
+        # so they never reach three.
+        #
+        # "Consecutive" needs a gap bound as well: the detection topic carries
+        # no message at all while nothing is confirmed, so two frames can be
+        # consecutive messages and still be seconds apart. The detector
+        # republishes its confirmed set at 1 Hz; 1.5 s allows one late message.
+        # stable_frames 1 turns the check off (every detection is a target
+        # immediately, the old behaviour).
+        self.declare_parameter("stable_frames", 3)
+        self.declare_parameter("stable_radius_m", 0.15)
+        self.declare_parameter("stable_max_gap_sec", 1.5)
         self.declare_parameter("min_confidence", 0.0)
         # Play-area bound for the collecting robot, in metres around the datum.
         # A target the robot cannot reach still deadlocks the run: our goal only
@@ -104,6 +122,9 @@ class TrashGpsGoalNode(Node):
         self.datum_lon = float(self.get_parameter("datum_lon").value)
         self.altitude_m = float(self.get_parameter("altitude_m").value)
         self.merge_radius_m = float(self.get_parameter("merge_radius_m").value)
+        self.stable_frames = max(1, int(self.get_parameter("stable_frames").value))
+        self.stable_radius_m = float(self.get_parameter("stable_radius_m").value)
+        self.stable_max_gap_sec = float(self.get_parameter("stable_max_gap_sec").value)
         self.min_confidence = float(self.get_parameter("min_confidence").value)
         self.max_radius_m = float(self.get_parameter("max_radius_m").value)
         self.target_ttl_sec = float(self.get_parameter("target_ttl_sec").value)
@@ -117,6 +138,8 @@ class TrashGpsGoalNode(Node):
         self.line_frame = None
 
         self.targets = []  # ordered by first detection
+        # Positions seen but not yet stable, see stable_frames. Never published.
+        self.candidates = []
         self.out_of_range_count = 0
         self.last_out_of_range_log = 0.0
         self.outside_fence_count = 0
@@ -174,6 +197,10 @@ class TrashGpsGoalNode(Node):
             f"(bootstrap {self.datum_lat:.7f}, {self.datum_lon:.7f})"
         )
         self.get_logger().info(f"Goal selection: {self.goal_selection}")
+        self.get_logger().info(
+            f"Stability: {self.stable_frames} consecutive frames within "
+            f"{self.stable_radius_m:.2f} m, at most {self.stable_max_gap_sec:.1f} s apart"
+        )
 
     # --- coordinate conversion -------------------------------------------------
 
@@ -303,6 +330,9 @@ class TrashGpsGoalNode(Node):
             return
 
         now = time.time()
+        # This message is one frame. Candidates not seen again in it lose their
+        # streak; they are matched below and the rest dropped at the end.
+        seen_candidates = set()
         for detection in payload.get("detections", []):
             x = self.finite(detection.get("x"))
             y = self.finite(detection.get("y"))
@@ -326,7 +356,61 @@ class TrashGpsGoalNode(Node):
                 self.note_outside_fence(x, y, along, across, now)
                 continue
 
-            self.register(x, y, confidence, detection.get("class_name"), now)
+            # Already a target: trash does not move, so a detection at a known
+            # target is that target again and needs no new stability check.
+            if self.nearest_target(x, y, self.merge_radius_m) is not None:
+                self.register(x, y, confidence, detection.get("class_name"), now)
+                continue
+
+            self.observe_candidate(
+                x, y, confidence, detection.get("class_name"), now, seen_candidates
+            )
+
+        self.candidates = [c for c in self.candidates if id(c) in seen_candidates]
+
+    def observe_candidate(self, x, y, confidence, class_name, now, seen_candidates):
+        """Count one more frame for the candidate at (x, y); promote it when stable.
+
+        Matched against where each candidate was in the PREVIOUS frame, not
+        against an average, so something that keeps moving by a little each frame
+        never qualifies. Each candidate is matched at most once per frame.
+        """
+        best = None
+        best_dist = self.stable_radius_m
+        for candidate in self.candidates:
+            if id(candidate) in seen_candidates:
+                continue
+            if now - candidate["last_seen"] > self.stable_max_gap_sec:
+                continue
+            dist = math.hypot(candidate["x"] - x, candidate["y"] - y)
+            if dist <= best_dist:
+                best = candidate
+                best_dist = dist
+
+        if best is None:
+            best = {"x": x, "y": y, "frames": 0, "sum_x": 0.0, "sum_y": 0.0,
+                    "confidence": None, "last_seen": now}
+            self.candidates.append(best)
+
+        best["frames"] += 1
+        best["x"], best["y"] = x, y
+        best["sum_x"] += x
+        best["sum_y"] += y
+        best["last_seen"] = now
+        if confidence is not None:
+            best["confidence"] = max(best["confidence"] or 0.0, confidence)
+        seen_candidates.add(id(best))
+
+        if best["frames"] < self.stable_frames:
+            return
+
+        # Stable: the target starts at the mean of the frames that qualified it,
+        # and register() keeps averaging from there. Removed from the candidates
+        # by the end-of-frame filter, since it is no longer in seen_candidates.
+        seen_candidates.discard(id(best))
+        frames = best["frames"]
+        self.register(best["sum_x"] / frames, best["sum_y"] / frames,
+                      best["confidence"], class_name, now, frames=frames)
 
     def note_out_of_range(self, x, y, radius, now):
         """Log dropped detections at most once every 10 s, with a running total."""
@@ -348,7 +432,7 @@ class TrashGpsGoalNode(Node):
         if now - self.last_outside_fence_log < 10.0:
             return
         self.last_outside_fence_log = now
-        half = float(self.line_geofence["half_side_m"])
+        half = float(self.line_frame["half_side_m"])
         self.get_logger().warn(
             f"Detection at map ({x:.2f}, {y:.2f}) is {along:+.2f} m along and "
             f"{across:+.2f} m across the reference line, outside the "
@@ -356,7 +440,7 @@ class TrashGpsGoalNode(Node):
             f"{self.outside_fence_count} dropped so far."
         )
 
-    def register(self, x, y, confidence, class_name, now):
+    def register(self, x, y, confidence, class_name, now, frames=1):
         existing = self.nearest_target(x, y, self.merge_radius_m)
         if existing is not None:
             # Trash does not move: average the position instead of jumping to the
@@ -376,14 +460,15 @@ class TrashGpsGoalNode(Node):
             "x": x,
             "y": y,
             "confidence": confidence,
-            "hits": 1,
+            "hits": frames,
             "first_seen": now,
             "last_seen": now,
             "collected": False,
         })
         self.next_target_id += 1
         self.get_logger().info(
-            f"New trash target #{self.targets[-1]['id']} at map ({x:.2f}, {y:.2f})"
+            f"New trash target #{self.targets[-1]['id']} at map ({x:.2f}, {y:.2f}), "
+            f"stable for {frames} frame(s)"
         )
 
     def nearest_target(self, x, y, radius):
@@ -556,6 +641,10 @@ class TrashGpsGoalNode(Node):
             },
             "goal_id": goal["id"] if goal else None,
             "open_count": len(self.open_targets()),
+            # Seen but not yet still for stable_frames frames. Not in `targets`
+            # and never a goal; counted so an empty list right after throwing
+            # trash in reads as "settling", not as a missed detection.
+            "pending_count": len(self.candidates),
             "targets": entries,
         }, separators=(",", ":"))))
 

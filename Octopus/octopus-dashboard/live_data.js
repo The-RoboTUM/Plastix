@@ -3442,8 +3442,12 @@ function renderCameraDebug() {
   `;
 
   // The panel is rebuilt wholesale every second, so the marks have to be drawn
-  // again from state rather than kept in the DOM.
+  // again from state rather than kept in the DOM. The new <img> has no size
+  // until its data URL is decoded, so drawing right away placed nothing and the
+  // marks were missing for most of every second; draw again once it has loaded.
   positionLineCalibrationMarks();
+  const img = $("camera-debug-image");
+  if (img && !img.complete) img.addEventListener("load", positionLineCalibrationMarks, { once: true });
 }
 
 function mergeDetectionCluster(items) {
@@ -4799,6 +4803,7 @@ function onCameraDebugClick(event) {
 
   LINE_CAL_STATE[LINE_CAL_STATE.armed] = pixel;
   LINE_CAL_STATE.message = null;
+  saveLineCalDraft();
   setLineCalArmed(null);
   positionLineCalibrationMarks();
 }
@@ -4833,7 +4838,11 @@ async function applyLineCalibration() {
     });
     const result = await response.json();
     LINE_CAL_STATE.message = result.status === "ok" ? null : result.message || "Backend refused the marks.";
-    if (result.status === "ok") addTimeline(`Line calibration sent: L = ${length.toFixed(3)} m`, "success");
+    if (result.status === "ok") {
+      // Stored in the backend now, which is where a reload takes them from.
+      clearLineCalDraft();
+      addTimeline(`Line calibration sent: L = ${length.toFixed(3)} m`, "success");
+    }
   } catch (error) {
     LINE_CAL_STATE.message = `Could not reach the backend: ${error.message}`;
   }
@@ -4844,9 +4853,13 @@ async function clearLineCalibration() {
   LINE_CAL_STATE.a = null;
   LINE_CAL_STATE.b = null;
   LINE_CAL_STATE.message = null;
+  clearLineCalDraft();
   // Forget the stored value too, so the next calibration's flag is adopted
-  // instead of being compared against one that no longer exists.
+  // instead of being compared against one that no longer exists, and put the
+  // box back to its default (ticked, see the checkbox in dashboard.html).
   LINE_CAL_STATE.seenMirrored = undefined;
+  const mirroredBox = $("line-cal-mirrored");
+  if (mirroredBox) mirroredBox.checked = true;
   setLineCalArmed(null);
   try {
     await fetch("/api/line_calibration", {
@@ -4857,6 +4870,71 @@ async function clearLineCalibration() {
   } catch (error) {
     LINE_CAL_STATE.message = `Could not reach the backend: ${error.message}`;
   }
+  positionLineCalibrationMarks();
+  renderLineCalibration();
+}
+
+// Marks survive a reload. Applied marks live in the backend and are read back
+// from there; marks set but not yet applied only exist in this page, so they
+// are kept as a draft in localStorage until Apply or Clear. The draft wins on
+// reload: it is the newer of the two, and the operator was mid-way through it.
+const LINE_CAL_DRAFT_KEY = "octopusLineCalDraft";
+
+function saveLineCalDraft() {
+  try {
+    localStorage.setItem(LINE_CAL_DRAFT_KEY, JSON.stringify({ a: LINE_CAL_STATE.a, b: LINE_CAL_STATE.b }));
+  } catch (error) {
+    // Storage blocked: marks just do not survive a reload, as before.
+  }
+}
+
+function clearLineCalDraft() {
+  try {
+    localStorage.removeItem(LINE_CAL_DRAFT_KEY);
+  } catch (error) {
+    // Nothing stored if storage is blocked.
+  }
+}
+
+function validLineCalPixel(pixel) {
+  return Array.isArray(pixel) && pixel.length === 2
+    && pixel.every((v) => Number.isFinite(Number(v)) && Number(v) >= 0)
+    ? [Number(pixel[0]), Number(pixel[1])]
+    : null;
+}
+
+async function restoreLineCalibrationMarks() {
+  let draft = null;
+  try {
+    draft = JSON.parse(localStorage.getItem(LINE_CAL_DRAFT_KEY) || "null");
+  } catch (error) {
+    draft = null;
+  }
+  const draftA = validLineCalPixel(draft?.a);
+  const draftB = validLineCalPixel(draft?.b);
+
+  let stored = null;
+  try {
+    stored = (await apiGet("/api/line_calibration"))?.line_calibration || null;
+  } catch (error) {
+    // Backend not up yet: only the draft, if any, can be restored.
+  }
+
+  if (draftA || draftB) {
+    LINE_CAL_STATE.a = draftA;
+    LINE_CAL_STATE.b = draftB;
+    LINE_CAL_STATE.message = "Restored marks that were not applied yet.";
+  } else if (stored && !LINE_CAL_STATE.a && !LINE_CAL_STATE.b) {
+    // A click made while the request was in flight is newer; keep it.
+    LINE_CAL_STATE.a = validLineCalPixel(stored.pixel_a);
+    LINE_CAL_STATE.b = validLineCalPixel(stored.pixel_b);
+  }
+
+  // L comes from the applied calibration in both cases; it is a measured
+  // distance, not part of where the posts were clicked.
+  const input = $("line-cal-length");
+  const length = safeNumber(stored?.length_m, 0);
+  if (input && !input.value && length > 0) input.value = length.toFixed(3);
   positionLineCalibrationMarks();
   renderLineCalibration();
 }
@@ -4943,6 +5021,36 @@ function bindLineCalibration() {
 
   // The marks are positioned in pixels, so a resize moves them.
   window.addEventListener("resize", positionLineCalibrationMarks);
+
+  bindCameraDebugFullscreen();
+  restoreLineCalibrationMarks();
+}
+
+// Fullscreen takes the whole Camera Debug panel, not just the image, so the
+// Mark A/B and Apply controls come along. Esc is the browser's own way out.
+function bindCameraDebugFullscreen() {
+  const button = $("camera-debug-fullscreen");
+  const panel = document.querySelector(".camera-debug-panel");
+  if (!button || !panel || !panel.requestFullscreen) {
+    if (button) button.hidden = true;
+    return;
+  }
+
+  button.addEventListener("click", () => {
+    if (document.fullscreenElement === panel) {
+      document.exitFullscreen().catch(() => {});
+    } else {
+      panel.requestFullscreen().catch((error) => console.warn("Camera fullscreen refused", error));
+    }
+  });
+
+  document.addEventListener("fullscreenchange", () => {
+    const active = document.fullscreenElement === panel;
+    button.textContent = active ? "Exit fullscreen" : "Fullscreen";
+    // The picture's pixel rect changed; wait for the new layout before
+    // placing the marks on it.
+    requestAnimationFrame(positionLineCalibrationMarks);
+  });
 }
 
 async function refreshCameraDebug() {
