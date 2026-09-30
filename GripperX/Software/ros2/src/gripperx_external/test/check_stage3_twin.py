@@ -39,6 +39,11 @@ WHAT IT VERIFIES, AND WHY EACH ONE EXISTS
                flowing, so the LINK stays healthy and the correlation input
                freezes. The three F-13 gates must refuse on the stale list
                instead of re-asking it and getting the same confident answer.
+``reaim``      Re-aim at arrival: the in-place rotation is sent with its own
+               behavior tree and precedes the pick; a timed-out re-aim
+               picks only if the arrival gate passes on the pose reached; a
+               disarm or link loss cancels it, a lost correlation does not;
+               the runtime kill switch works OFF-only.
 ``line_cal``   The Octopus line calibration, process level: no dispatch before
                the posts are clicked; the dispatched object sits where the
                ROTATED calibration puts their coordinates; a recalibration and
@@ -1281,9 +1286,9 @@ def scenario_sr9() -> None:
     gateway = start_gateway()
     gateway.wait_for(r"navigate_to_pose is available", 60)
 
-    def node_info_block(heading: str) -> str:
+    def node_info_block(heading: str, node: str = "goal_gateway_node") -> str:
         out = subprocess.run(
-            ["ros2", "node", "info", f"{NS}/goal_gateway_node"],
+            ["ros2", "node", "info", f"{NS}/{node}"],
             env=env_for(), capture_output=True, text=True, timeout=60,
         ).stdout
         block, collecting = [], False
@@ -1354,6 +1359,45 @@ def scenario_sr9() -> None:
         action_clients.replace("\n", " | ") or "none",
     )
     print("  armed inventory:\n    " + "\n    ".join(armed.splitlines()), flush=True)
+
+    # The /tf + odometry side node the gateway runs in the same process (its
+    # own executor thread, CPU fix 2026-09-29). It must be a pure listener:
+    # subscriptions only, rclpy's own /parameter_events as the one publisher,
+    # and nothing it could call or be called on.
+    side = "goal_gateway_node_tf_odom"
+    side_subs = ""
+    deadline = time.time() + 60
+    while time.time() < deadline and not side_subs:
+        side_subs = node_info_block("Subscribers:", side)
+        if not side_subs:
+            time.sleep(2)
+    expected_subs = "\n".join(sorted([
+        "/odometry/filtered: nav_msgs/msg/Odometry",
+        "/tf: tf2_msgs/msg/TFMessage",
+        "/tf_static: tf2_msgs/msg/TFMessage",
+    ]))
+    check(
+        side_subs == expected_subs,
+        f"the side node {side} subscribes exactly /tf, /tf_static and odometry",
+        side_subs.replace("\n", " | ") or "none",
+    )
+    side_pubs = node_info_block("Publishers:", side)
+    check(
+        side_pubs == "/parameter_events: rcl_interfaces/msg/ParameterEvent",
+        "  ... publishes nothing but rclpy's own /parameter_events",
+        side_pubs.replace("\n", " | ") or "none",
+    )
+    side_rest = {
+        heading: node_info_block(heading, side)
+        for heading in (
+            "Service Servers:", "Service Clients:", "Action Servers:", "Action Clients:"
+        )
+    }
+    check(
+        not any(side_rest.values()),
+        "  ... and has no service or action server or client of any kind",
+        "; ".join(f"{k} {v}" for k, v in side_rest.items() if v) or "none",
+    )
     teardown()
 
 
@@ -2828,6 +2872,288 @@ def scenario_line_cal() -> None:
     teardown()
 
 
+#: The re-aim tree, taken from the SOURCE tree so the scenario does not depend
+#: on which gripperx_planning happens to be installed next to the gateway.
+REAIM_BT = os.path.abspath(
+    os.path.join(_PKG, "..", "gripperx_planning", "config", "reaim_in_place.xml")
+)
+#: FIXTURE, not a measurement: how far to the left of the goal the mock stops.
+REAIM_LATERAL_M = 0.06
+
+
+def _reaim_gateway(name: str, **overrides) -> "Proc":
+    params = {
+        "grasp.reaim_enabled": "true",
+        "grasp.reaim_min_deg": "5.0",
+        "grasp.reaim_max_deg": "20.0",
+        "grasp.reaim_timeout_sec": "15.0",
+        "grasp.reaim_behavior_tree": REAIM_BT,
+    }
+    params.update(overrides)
+    return start_gateway(name=name, **params)
+
+
+def _index(proc: "Proc", pattern: str) -> int:
+    rx = re.compile(pattern)
+    for number, line in enumerate(proc.text().splitlines()):
+        if rx.search(line):
+            return number
+    return -1
+
+
+def scenario_reaim() -> None:
+    """Re-aim at arrival: decision logic and gating. Mocks only, nothing moves.
+
+    The mock stops approach goals REAIM_LATERAL_M to the left of the goal, so
+    the object is seen off-axis at arrival. What the four parts prove:
+      1. success: the re-aim goal carries the re-aim behavior tree and the yaw
+         that puts the object dead ahead, and the pick follows it - never
+         precedes it;
+      2. a re-aim that never finishes is cancelled on its timeout; once the
+         cancel is confirmed the arrival gate judges the pose reached - pick if
+         it passes (2a), no pick and eventually the blacklist if not (2b);
+      3. a disarm (3) or a lost link (3b) during the re-aim cancels it and
+         nothing picks; a lost CORRELATION does neither (3c, user decision
+         2026-09-29, #358) - but an AMBIGUOUS list still cancels (3d); a REJECTED re-aim falls back to the arrival gate, an ABORTED one
+         never picks (3e);
+      4. the runtime kill switch: OFF is accepted and takes effect at the next
+         arrival (pick without rotation), ON is refused.
+    What it cannot prove: anything about how a real plant rotates.
+    """
+    print("=" * 78)
+    print("reaim - rotate in place at arrival, gated like the approach")
+    print("=" * 78)
+
+    # 1. success
+    fake = start_fake()
+    mock = start_mock(nav_duration_sec=2.0, pick_duration_sec=0.5,
+                      arrival_lateral_m=REAIM_LATERAL_M, reaim_duration_sec=1.0)
+    link = start_link()
+    gateway = _reaim_gateway("goal_gateway_node_reaim")
+    check(gateway.wait_for(r"re-aim at arrival: enabled=True", 30) is not None,
+          "the gateway states the re-aim configuration at startup")
+    gateway.wait_for(r"pick_plastic is available", 60)
+    set_arming(True, 300.0)
+    arrival = gateway.wait_for(r"ARRIVAL target .*re-aim REAIM_NEEDED", 60)
+    check(arrival is not None, "an off-axis arrival asks for a re-aim, with the evidence line",
+          (arrival or "")[-160:])
+    sent = gateway.wait_for(r"RE-AIM target \S+: rotating IN PLACE", 15)
+    check(sent is not None, "  ... and sends it", (sent or "")[-120:])
+    received = mock.wait_for(r"RE-AIM goal received: bt=(\S+)", 15)
+    check(received is not None and REAIM_BT in received,
+          "  ... as a NavigateToPose carrying the re-aim behavior tree", (received or "")[-160:])
+    after = gateway.wait_for(r"AFTER RE-AIM \(succeeded\) target .*bearing ([+-]\d+\.\d) deg", 20)
+    bearing = re.search(r"bearing ([+-]\d+\.\d) deg", after or "")
+    check(bearing is not None and abs(float(bearing.group(1))) < 0.5,
+          "after the re-aim the object is dead ahead (the rotation went TOWARDS it)",
+          (after or "")[-160:])
+    check(gateway.wait_for(r"ACKNOWLEDGED target (\S+) as COLLECTED", 30) is not None,
+          "the pick follows the re-aim and is acknowledged")
+    check(0 <= _index(gateway, r"RE-AIM target") < _index(gateway, r"SR-16: sending PickPlastic"),
+          "  ... and the pick was sent strictly AFTER the re-aim, never before")
+    target = re.search(r"ARRIVAL target (\S+):", arrival or "")
+    check(target is not None
+          and gateway.count(rf"target {re.escape(target.group(1))} REACHED \(") == 1,
+          "  ... with ONE arrival published for the target, not one per pass")
+    teardown()
+    shm_clean()
+
+    # 2a. timeout, arrival gate PASSES on the pose reached -> pick (user
+    # decision 2026-09-29, option b). Tolerance 0.10 is a harness fixture.
+    print("-" * 78)
+    fake = start_fake()
+    mock = start_mock(nav_duration_sec=2.0, pick_duration_sec=0.5,
+                      arrival_lateral_m=REAIM_LATERAL_M, reaim_outcome="hang")
+    link = start_link()
+    gateway = _reaim_gateway("goal_gateway_node_reaim_timeout_pick",
+                             **{"grasp.reaim_timeout_sec": "3.0", "grasp.tolerance_m": "0.10"})
+    gateway.wait_for(r"pick_plastic is available", 60)
+    set_arming(True, 300.0)
+    check(gateway.wait_for(r"CANCELLING target .*REAIM_TIMEOUT", 60) is not None,
+          "a re-aim that does not finish is cancelled on grasp.reaim_timeout_sec")
+    check(mock.wait_for(r"RE-AIM CANCELED on request", 15) is not None,
+          "  ... and the server sees the cancel")
+    ended = gateway.wait_for(r"RE-AIM ENDED .*bearing", 15)
+    check(ended is not None, "  ... the RE-AIM ENDED line carries the residual bearing",
+          (ended or "")[-120:])
+    check(gateway.wait_for(r"re-aim timed out .*arrival gate decides", 10) is not None,
+          "  ... and once the cancel is CONFIRMED the arrival gate judges the pose reached")
+    check(gateway.wait_for(r"SR-16: sending PickPlastic", 15) is not None
+          and _index(gateway, r"RE-AIM ENDED") < _index(gateway, r"SR-16: sending PickPlastic"),
+          "the gate passes on the reached pose, so it picks - after the confirmed cancel")
+    check(gateway.wait_for(r"ACKNOWLEDGED target", 30) is not None, "  ... and acknowledges")
+    teardown()
+    shm_clean()
+
+    # 2b. timeout, arrival gate FAILS on the pose reached -> no pick. 0.03 m
+    # is a fixture chosen so the re-aimed pose would pass and the unrotated
+    # one (0.06 m lateral) does not.
+    print("-" * 78)
+    fake = start_fake()
+    mock = start_mock(nav_duration_sec=2.0, pick_duration_sec=0.5,
+                      arrival_lateral_m=REAIM_LATERAL_M, reaim_outcome="hang")
+    link = start_link()
+    gateway = _reaim_gateway("goal_gateway_node_reaim_timeout_nopick",
+                             **{"grasp.reaim_timeout_sec": "3.0", "grasp.tolerance_m": "0.03"})
+    gateway.wait_for(r"pick_plastic is available", 60)
+    set_arming(True, 300.0)
+    check(gateway.wait_for(r"re-aim timed out .*arrival gate decides", 60) is not None,
+          "a timed-out re-aim falls back to the arrival gate")
+    check(gateway.wait_for(r"failed \(GRASP_POINT_OUT_OF_TOLERANCE\)", 15) is not None,
+          "  ... which FAILS on the unrotated pose, so the attempt fails")
+    check(gateway.wait_for(r"BLACKLISTING target", 90) is not None,
+          "repeated failures end in the blacklist, not in a loop")
+    check(gateway.count(r"SR-16: sending PickPlastic") == 0 and mock.count(r"pick finished") == 0,
+          "NO pick was sent while the gate failed")
+    teardown()
+    shm_clean()
+
+    # 3. disarm during the re-aim
+    print("-" * 78)
+    fake = start_fake()
+    mock = start_mock(nav_duration_sec=2.0, pick_duration_sec=0.5,
+                      arrival_lateral_m=REAIM_LATERAL_M, reaim_outcome="hang")
+    link = start_link()
+    gateway = _reaim_gateway("goal_gateway_node_reaim_disarm", **{"grasp.reaim_timeout_sec": "60.0"})
+    gateway.wait_for(r"pick_plastic is available", 60)
+    set_arming(True, 300.0)
+    check(mock.wait_for(r"RE-AIM goal received", 60) is not None, "a re-aim is in flight")
+    set_arming(False)
+    check(gateway.wait_for(r"CANCELLING target .*disarm:OPERATOR", 15) is not None,
+          "the operator's disarm cancels the re-aim (SR-15 rule 8)")
+    check(mock.wait_for(r"RE-AIM CANCELED on request", 15) is not None,
+          "  ... through the re-aim goal's own handle")
+    check(gateway.wait_for(r"re-aim for target \S+ was CANCELLED", 15) is not None,
+          "  ... and the gateway books it as a withdrawal")
+    time.sleep(3)
+    check(gateway.count(r"SR-16: sending PickPlastic") == 0, "  ... and nothing picks")
+    check(gateway.count(r"zero|Twist|set_mode") == 0, "  ... and the disarm wrote nothing anywhere")
+    teardown()
+    shm_clean()
+
+    # 3b. link loss during the re-aim -> LINK_LOST disarm cancels it, no pick
+    print("-" * 78)
+    fake = start_fake()
+    mock = start_mock(nav_duration_sec=2.0, pick_duration_sec=0.5,
+                      arrival_lateral_m=REAIM_LATERAL_M, reaim_outcome="hang")
+    link = start_link()
+    gateway = _reaim_gateway("goal_gateway_node_reaim_link", **{"grasp.reaim_timeout_sec": "60.0"})
+    gateway.wait_for(r"pick_plastic is available", 60)
+    set_arming(True, 300.0)
+    check(mock.wait_for(r"RE-AIM goal received", 60) is not None, "a re-aim is in flight")
+    fake.send("outage 12")
+    check(gateway.wait_for(r"CANCELLING target .*disarm:LINK_LOST", 30) is not None,
+          "a lost link disarms and cancels the re-aim (SR-15 rule 10)")
+    check(mock.wait_for(r"RE-AIM CANCELED on request", 15) is not None,
+          "  ... through the re-aim goal's own handle")
+    time.sleep(3)
+    check(gateway.count(r"SR-16: sending PickPlastic") == 0, "  ... and nothing picks")
+    teardown()
+    shm_clean()
+
+    # 3c. correlation LOST during the re-aim -> NOT cancelled, pick not blocked
+    # (user decision 2026-09-29, issue #358)
+    print("-" * 78)
+    fake = start_fake()
+    mock = start_mock(nav_duration_sec=2.0, pick_duration_sec=0.5,
+                      arrival_lateral_m=REAIM_LATERAL_M, reaim_duration_sec=6.0)
+    link = start_link()
+    gateway = _reaim_gateway("goal_gateway_node_reaim_corr")
+    gateway.wait_for(r"pick_plastic is available", 60)
+    set_arming(True, 300.0)
+    arrival = gateway.wait_for(r"ARRIVAL target (\S+):", 60)
+    target = re.search(r"ARRIVAL target (\S+):", arrival or "")
+    check(mock.wait_for(r"RE-AIM goal received", 15) is not None and target is not None,
+          "a re-aim is in flight")
+    fake.send(f"remove {target.group(1) if target else 0}")
+    check(fake.wait_for(r"^removed", 10) is not None,
+          "  ... and the target leaves Octopus's list mid-re-aim (as if occluded)")
+    check(mock.wait_for(r"RE-AIM SUCCEEDED", 20) is not None,
+          "the re-aim runs to completion")
+    check(gateway.count(r"CORRELATION_LOST") == 0,
+          "  ... it was NOT cancelled for the lost correlation")
+    check(gateway.wait_for(r"SR-16: sending PickPlastic", 15) is not None,
+          "the pick is NOT blocked by the lost correlation after the re-aim")
+    teardown()
+    shm_clean()
+
+    # 3d. POSITIVE evidence against the target during the re-aim (a second
+    # object inside goal_match_tolerance_m) -> AMBIGUOUS -> cancelled, no pick.
+    # The re-aim phase tolerates ABSENCE only (user decision 2026-09-29).
+    print("-" * 78)
+    fake = start_fake()
+    mock = start_mock(nav_duration_sec=2.0, pick_duration_sec=0.5,
+                      arrival_lateral_m=REAIM_LATERAL_M, reaim_duration_sec=8.0)
+    link = start_link()
+    gateway = _reaim_gateway("goal_gateway_node_reaim_ambiguous")
+    gateway.wait_for(r"pick_plastic is available", 60)
+    set_arming(True, 300.0)
+    arrival = gateway.wait_for(r"ARRIVAL target \S+: .*object at \(([-\d.]+), ([-\d.]+)\)", 60)
+    obj = re.search(r"object at \(([-\d.]+), ([-\d.]+)\)", arrival or "")
+    check(mock.wait_for(r"RE-AIM goal received", 15) is not None and obj is not None,
+          "a re-aim is in flight")
+    if obj is not None:
+        # FIXTURE: 0.10 m from the target, inside goal_match_tolerance_m (0.25).
+        fake.send(f"add {float(obj.group(1)) + 0.10:.3f} {float(obj.group(2)):.3f}")
+    check(gateway.wait_for(r"CANCELLING target .*CORRELATION_LOST", 20) is not None,
+          "an AMBIGUOUS list during the re-aim still cancels it (F-13 kept for "
+          "positive evidence)")
+    time.sleep(3)
+    check(gateway.count(r"SR-16: sending PickPlastic") == 0, "  ... and nothing picks")
+    teardown()
+    shm_clean()
+
+    # 3e. re-aim REJECTED -> arrival gate on the unmoved pose -> pick;
+    #     re-aim ABORTED -> no pick, a failed attempt
+    for outcome in ("reject", "abort"):
+        print("-" * 78)
+        fake = start_fake()
+        mock = start_mock(nav_duration_sec=2.0, pick_duration_sec=0.5,
+                          arrival_lateral_m=REAIM_LATERAL_M, reaim_outcome=outcome)
+        link = start_link()
+        gateway = _reaim_gateway(f"goal_gateway_node_reaim_{outcome}")
+        gateway.wait_for(r"pick_plastic is available", 60)
+        set_arming(True, 300.0)
+        if outcome == "reject":
+            check(gateway.wait_for(r"re-aim rejected .*arrival gate decides", 60) is not None,
+                  "a REJECTED re-aim falls back to the arrival gate on the unmoved pose")
+            check(gateway.wait_for(r"SR-16: sending PickPlastic", 15) is not None,
+                  "  ... which passes, so it picks")
+        else:
+            check(gateway.wait_for(r"attempt 1/2 failed \(REAIM_ABORTED\)", 60) is not None,
+                  "an ABORTED re-aim is a failed attempt")
+            time.sleep(2)
+            check(gateway.count(r"SR-16: sending PickPlastic") == 0,
+                  "  ... and never picks: an abort is a fault report")
+        teardown()
+        shm_clean()
+
+    # 4. the runtime kill switch
+    print("-" * 78)
+    fake = start_fake()
+    mock = start_mock(nav_duration_sec=4.0, pick_duration_sec=0.5,
+                      arrival_lateral_m=REAIM_LATERAL_M)
+    link = start_link()
+    gateway = _reaim_gateway("goal_gateway_node_reaim_off")
+    gateway.wait_for(r"pick_plastic is available", 60)
+    out = set_param("goal_gateway_node", "grasp.reaim_enabled", "false")
+    check("successful" in out.lower() and "refused" not in out.lower(),
+          "grasp.reaim_enabled can be switched OFF on a running node", out.strip()[-120:])
+    out = set_param("goal_gateway_node", "grasp.reaim_enabled", "true")
+    check("never" in out.lower() or "failed" in out.lower(),
+          "  ... but switching it back ON at runtime is refused", out.strip()[-120:])
+    out = set_param("goal_gateway_node", "grasp.reaim_max_deg", "40.0")
+    check("fixed at startup" in out, "grasp.reaim_max_deg cannot be widened at runtime",
+          out.strip()[-120:])
+    set_arming(True, 300.0)
+    check(gateway.wait_for(r"ARRIVAL target .*re-aim REAIM_DISABLED", 60) is not None,
+          "the next off-axis arrival is not re-aimed")
+    check(gateway.wait_for(r"SR-16: sending PickPlastic", 20) is not None,
+          "  ... and picks as it did before the re-aim existed")
+    check(mock.count(r"RE-AIM goal received") == 0, "  ... with no re-aim goal sent at all")
+    teardown()
+
+
 SCENARIOS = {
     "permissive": scenario_permissive,
     "clock": scenario_clock,
@@ -2841,6 +3167,7 @@ SCENARIOS = {
     "triggers": scenario_triggers,
     "sr9": scenario_sr9,
     "line_cal": scenario_line_cal,
+    "reaim": scenario_reaim,
 }
 
 

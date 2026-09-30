@@ -172,6 +172,63 @@
     # NOT IMPLEMENTED - see the twin config for why. Setting it true logs an
     # ERROR and changes nothing.
     grasp.verify_path: false
+    # RE-AIM AT ARRIVAL (goal_gateway_node `_start_reaim`). After the arrival
+    # gate has passed and IMMEDIATELY BEFORE the pick, the gateway measures the
+    # object's bearing from the pose the robot actually holds; above
+    # grasp.reaim_min_deg it rotates the robot IN PLACE (a second
+    # NavigateToPose at its own position, behavior tree reaim_in_place.xml,
+    # nav2.yaml reaim_goal_checker) so the lateral miss becomes a range error
+    # along the arm's reach, then re-runs every gate and only then picks.
+    # IT IS DRIVE MOTION, gated like the approach (armed, link alive, mode
+    # autonomous, validate_dispatch on the re-aim pose, cancelled by every
+    # disarm). The CORRELATION is relaxed for the re-aim and the pick gate
+    # after it (user decision 2026-09-29, #358: the robot at the standoff can
+    # occlude the litter itself): its ABSENCE from a live Octopus list is
+    # tolerated; an ambiguous match, another id or a stale list still refuses
+    # (recorded in REQUIREMENTS.md SR-16 as a DECIDED block). A re-aim that times out, is rejected or is
+    # refused on its pose falls back to the normal arrival gate on the pose
+    # actually held and picks if that passes (user decision 2026-09-29). An
+    # ABORTED re-aim, or one ended by a safety cancel, does NOT pick.
+    #
+    # Runtime switch-OFF, no restart or rebuild (OFF only - ON is refused at
+    # runtime and needs this file plus a restart of the link nodes):
+    #   ros2 param set /gripperx/external/goal_gateway_node grasp.reaim_enabled false
+    # It stops FUTURE re-aims and cancels one in flight, which then ends at the
+    # arrival gate on the pose reached. It is NOT a stop: to stop the robot,
+    # disarm or use the E-stop.
+    # OFF - USER DECISION 2026-09-30 (demo day): on the real robot the base
+    # keeps turning 4-23 deg after Nav2 reports success, about as much as the
+    # re-aim corrects (SETTLED log lines 2026-09-29/30; target 125: +8.1 deg
+    # asked, +14.0 deg coast, pick refused out of tolerance). Re-enable only
+    # once the post-rotation coast is understood and fixed - tracked in
+    # REQUIREMENTS.md OP-41. (Node default stays false.) The settle step
+    # after the approach stays active regardless.
+    grasp.reaim_enabled: false
+    # USER DECISION 2026-09-29, not a measurement. Aim errors at or below this are picked
+    # without rotating. 5.0 deg because the RotationShim's peak command for a
+    # rotation of e rad is sqrt(2 * 2.0 * e) (max_angular_accel 2.0), which is
+    # 0.59 rad/s at 5.0 deg - about the 0.60 rad/s knee below which this plant
+    # does not deliver commanded rate (nav2.yaml min_speed_theta), so a
+    # smaller re-aim may never start. Must stay strictly above nav2.yaml
+    # reaim_goal_checker.yaw_goal_tolerance (0.035 rad = 2.0 deg), or a
+    # re-aim can "succeed" without having moved. Startup-only.
+    grasp.reaim_min_deg: 5.0
+    # USER DECISION 2026-09-29, not a measurement. Larger aim errors are NOT rotated (the
+    # arrival is then judged as it stands). Covers the 5-13 deg observed over
+    # the 15 arrivals of 2026-09-29 with margin, and stays clear of ~33 deg -
+    # the bearing at which a corner of the 0.600 x 0.460 m footprint would
+    # sweep over an object 0.36 m ahead during the turn (derived from the
+    # costmap footprint in nav2.yaml, not measured). Startup-only.
+    grasp.reaim_max_deg: 20.0
+    # USER DECISION 2026-09-29, not a measurement. Time from sending the re-aim to
+    # cancelling it (ROS clock). Must stay below nav2.yaml
+    # progress_checker.movement_time_allowance (20 s), so the gateway ends a
+    # stalled rotation before Nav2's progress checker aborts it. Covers the
+    # behavior-tree load, one plan and a steering slew into the rotation pose
+    # (~4.5 s for 0-90 deg per the crab note in the behavior tree) with margin.
+    # Startup-only.
+    grasp.reaim_timeout_sec: 15.0
+    grasp.reaim_behavior_tree: "gripperx_planning/config/reaim_in_place.xml"
 
     max_goal_cost: 200
     max_stamp_age_sec: 5.0
@@ -257,7 +314,12 @@
     clock_forward_jump_sec: "TO-VERIFY"
 
     datum_jump_warn_m: "TO-VERIFY"
-    max_attempts_per_target: 2
+    # 2 -> 3: USER DECISION 2026-09-30 (demo day), "raise the blacklist hurdle
+    # slightly". Still a decision, not derived from evidence - the value stays
+    # PROVISIONAL (REQUIREMENTS.md FR-12 / SR-16 condition 4). Every extra
+    # attempt is a new approach (drive motion under the same arming gate).
+    # Runtime-changeable (re-read at the point of use).
+    max_attempts_per_target: 3
 
     telemetry_rate_hz: 1.0
     preview_rate_hz: 5.0
@@ -278,6 +340,9 @@
     line_calibration_topic: "line_calibration"
     costmap_topic: "/global_costmap/costmap"
     odom_topic: "/odometry/filtered"
+    # Executor of the /tf + odometry side node: "single_threaded" | "events".
+    # CPU only; see `tf_odom_executor` in goal_gateway_node.py before changing.
+    tf_odom_executor: "single_threaded"
     teleop_mode_topic: "/teleop/active_mode"
 
 # The shared reference line: the operator clicks frame post A, then post B, in

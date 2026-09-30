@@ -49,7 +49,9 @@ from rclpy.executors import ExternalShutdownException
 from sensor_msgs.msg import JointState
 from std_msgs.msg import String
 
-from gripperx_teleop.keyboard_teleop_node import ALL_KEYS, KeyboardTeleopNode
+from gripperx_teleop.keyboard_teleop_node import (
+    ALL_KEYS, KeyboardTeleopNode, _signal_desk_quit,
+)
 from gripperx_teleop.manoeuvre import HUMAN_LABEL
 from gripperx_teleop.web_server import TeleopWebServer
 
@@ -145,6 +147,11 @@ class WebTeleopNode(KeyboardTeleopNode):
         self._joint_steer_t = 0.0
         self._measured_source = None
         self.stop_event = threading.Event()
+        # Set only by _quit() (the UI's Shift+Q / quit button), never by an
+        # external shutdown. main() reads it AFTER center() has published to
+        # decide whether to tell gripperx_desk.sh to tear the whole desk
+        # session down -- see _signal_desk_quit() in keyboard_teleop_node.py.
+        self._deliberate_quit = False
 
         self.create_subscription(
             String,
@@ -527,6 +534,7 @@ class WebTeleopNode(KeyboardTeleopNode):
         action()
 
     def _quit(self):
+        self._deliberate_quit = True
         self.stop_event.set()
 
     # ── Dead-man refresh ─────────────────────────────────────────────────────
@@ -675,6 +683,17 @@ def main():
             # mode, and give the last publish a moment to leave.
             node.center()
             time.sleep(0.15)
+            if node._deliberate_quit:
+                # Only _quit() (the UI's quit button/Shift+Q) ever sets this --
+                # no signal path writes it, so it does not matter which branch
+                # a given SIGINT/SIGTERM happens to take. Measured: signalling
+                # the node PID directly lands in the rclpy.ok()==False branch
+                # below ("external shutdown"); a process-group SIGINT raises
+                # KeyboardInterrupt inside stop_server() (web_server.py,
+                # httpd.shutdown()) before either branch runs. Either way,
+                # _deliberate_quit stays False and only the deliberate UI quit
+                # signals the launcher.
+                _signal_desk_quit()
         else:
             # Killed from outside: the context is already down, so nothing can
             # be published. The stop is not lost -- whatever took the context

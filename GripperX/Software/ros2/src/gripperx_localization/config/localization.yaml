@@ -278,8 +278,15 @@ slam_toolbox:
     # NOT A CURE — the scan smear itself isn't addressed here; that needs a
     # lower max_vel_theta or de-skewing the scan against odometry before
     # matching, neither of which this stack currently does.
+    #
+    # TEST VALUE 2026-09-30 (user decision): angle_variance_penalty lowered
+    # 2.0 -> 1.5 to give the laser more say over yaw during in-place rotation,
+    # after the real robot showed 4-23 deg of heading change after Nav2's
+    # success (re-aim SETTLED log lines, 2026-09-29). Not yet evaluated; the
+    # value above this note's rationale was 2.0 — revert to 2.0 if the map
+    # lurches during turns or the drift does not improve.
     distance_variance_penalty: 0.8
-    angle_variance_penalty: 2.0
+    angle_variance_penalty: 1.5
     fine_search_angle_offset: 0.00349
     coarse_search_angle_offset: 0.349
     coarse_angle_resolution: 0.0349

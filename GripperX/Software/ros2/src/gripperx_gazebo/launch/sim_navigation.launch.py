@@ -95,6 +95,7 @@ def generate_launch_description():
     fuse_laser_odometry = LaunchConfiguration("fuse_laser_odometry")
     localization = LaunchConfiguration("localization")
     map_yaml_file = LaunchConfiguration("map_yaml_file")
+    initial_mode = LaunchConfiguration("initial_mode")
 
     localization_params = str(gripperx_localization_share / "config" / "localization.yaml")
     rviz_config = str(gripperx_localization_share / "rviz" / "localization.rviz")
@@ -108,7 +109,7 @@ def generate_launch_description():
     use_amcl = IfCondition(PythonExpression(["'", localization, "' == 'amcl'"]))
     use_slam = IfCondition(PythonExpression(["'", localization, "' == 'slam'"]))
 
-    # --- Gazebo sim + control/teleop chain (mux started in autonomous mode) ---
+    # --- Gazebo sim + control/teleop chain (mux start mode: initial_mode) ---
     simulation = IncludeLaunchDescription(
         PythonLaunchDescriptionSource(
             os.path.join(gripperx_gazebo, "launch", "simulation.launch.py")
@@ -119,7 +120,7 @@ def generate_launch_description():
             "use_lidar": use_lidar,
             "use_camera": use_camera,
             "use_rviz": "false",
-            "initial_mode": "autonomous",
+            "initial_mode": initial_mode,
             "spawn_x": spawn_x,
             "spawn_y": spawn_y,
             "spawn_z": spawn_z,
@@ -348,6 +349,17 @@ def generate_launch_description():
                 default_value="false",
                 choices=["true", "false"],
                 description="Prefer standalone RViz (DIGITAL_TWIN_PLAN.md §9.4).",
+            ),
+            DeclareLaunchArgument(
+                "initial_mode",
+                # autonomous stays the default so the acceptance/Octopus runs that
+                # launch this file directly keep Nav2 driving from the start.
+                # gripperx_desk.sh twin passes keyboard, matching the real robot,
+                # where teleop_mux.yaml starts in keyboard and the operator switches
+                # with the teleop's G/K keys.
+                default_value="autonomous",
+                choices=["keyboard", "controller", "autonomous"],
+                description="teleop_mux start mode: keyboard | controller | autonomous.",
             ),
             simulation,
             ground_truth_odom_bridge,

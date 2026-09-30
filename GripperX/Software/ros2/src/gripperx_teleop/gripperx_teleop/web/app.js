@@ -211,9 +211,21 @@ function estop() {
 
 function requestQuit() {
   releaseAll();
-  if (window.confirm('Shut the teleop node down?\n\nThe robot is stopped and '
-                     + 'the wheels straightened first, but you will need a '
-                     + 'terminal to start teleop again.')) {
+  /* Launched from gripperx_desk.sh (GripperX Desktop launcher), quitting here
+   * now tears the WHOLE desk session down -- RViz, the local mapping stack,
+   * everything that script started -- not just this page; the node signals it
+   * through a flag file the launcher's own wait loop watches for, AFTER this
+   * same stop/straighten has published (scripts/gripperx_desk.sh, keyword
+   * "Teardown from the teleop's own Q"). Run standalone (a bare
+   * `ros2 launch ... web_teleop.launch.py`), there is no such launcher to
+   * signal and only this node stops -- the page cannot tell which case it is
+   * in, so the confirmation names both rather than assuming one. */
+  if (window.confirm('Shut teleop down?\n\nThe robot is stopped and the '
+                     + 'wheels straightened first. Started from '
+                     + 'gripperx_desk.sh, this also stops the whole desk '
+                     + 'session (RViz, the local map, ...), not just this '
+                     + 'page. Run standalone, only this teleop node stops and '
+                     + 'you will need a terminal to start it again.')) {
     fire('quit');
   }
 }

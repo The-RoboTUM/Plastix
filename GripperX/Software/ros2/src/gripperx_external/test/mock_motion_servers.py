@@ -44,6 +44,13 @@ Everything is a ROS parameter, so a scenario is driven with ``ros2 param set``:
     pick_available     false destroys the pick server
     teleop_mode        the string published; empty STOPS publishing (dead mux)
     teleport_on_arrival place the published TF at the goal pose on success
+    arrival_lateral_m  approach goals arrive this far to the LEFT of the goal
+                       (+y of the goal frame), like Nav2 stopping inside its
+                       xy tolerance - so the gateway sees an aim error
+    reaim_outcome      succeed | abort | reject | hang, for goals that carry a
+                       behavior_tree (the gateway's in-place re-aim); on
+                       succeed only the YAW is teleported, as a spin in place
+    reaim_duration_sec how long such a goal stays in flight
 """
 
 from __future__ import annotations
@@ -94,6 +101,9 @@ class MockMotionServers(Node):
         self.declare_parameter("pick_duration_sec", 1.0)
         self.declare_parameter("teleop_mode", "autonomous")
         self.declare_parameter("teleport_on_arrival", True)
+        self.declare_parameter("arrival_lateral_m", 0.0)
+        self.declare_parameter("reaim_outcome", "succeed")
+        self.declare_parameter("reaim_duration_sec", 1.0)
         self.declare_parameter("robot_x", 0.0)
         self.declare_parameter("robot_y", 0.0)
         self.declare_parameter("robot_yaw", 0.0)
@@ -111,6 +121,7 @@ class MockMotionServers(Node):
         self._nav_goals = 0
         self._nav_cancels = 0
         self._pick_goals = 0
+        self._reaim_goals = 0
         self._lock = threading.Lock()
 
         self._sync_servers()
@@ -203,13 +214,20 @@ class MockMotionServers(Node):
         self._costmap_pub.publish(grid)
 
     # -- NavigateToPose ---------------------------------------------------
-    def _accept_nav(self, _goal) -> GoalResponse:
+    def _accept_nav(self, goal) -> GoalResponse:
+        if goal.behavior_tree:
+            if str(self.get_parameter("reaim_outcome").value) == "reject":
+                self.get_logger().warn("rejecting the RE-AIM goal (reaim_outcome=reject)")
+                return GoalResponse.REJECT
+            return GoalResponse.ACCEPT
         if str(self.get_parameter("nav_outcome").value) == "reject":
             self.get_logger().warn("rejecting the goal (nav_outcome=reject)")
             return GoalResponse.REJECT
         return GoalResponse.ACCEPT
 
     def _execute_nav(self, goal_handle):
+        if goal_handle.request.behavior_tree:
+            return self._execute_reaim(goal_handle)
         with self._lock:
             self._nav_goals += 1
         target = goal_handle.request.pose.pose.position
@@ -246,15 +264,58 @@ class MockMotionServers(Node):
             yaw = math.atan2(
                 2.0 * (quat.w * quat.z), 1.0 - 2.0 * (quat.z * quat.z)
             )
+            lateral = float(self.get_parameter("arrival_lateral_m").value)
             self.set_parameters(
                 [
-                    rclpy.parameter.Parameter("robot_x", value=float(target.x)),
-                    rclpy.parameter.Parameter("robot_y", value=float(target.y)),
+                    rclpy.parameter.Parameter(
+                        "robot_x", value=float(target.x) - lateral * math.sin(yaw)
+                    ),
+                    rclpy.parameter.Parameter(
+                        "robot_y", value=float(target.y) + lateral * math.cos(yaw)
+                    ),
                     rclpy.parameter.Parameter("robot_yaw", value=float(yaw)),
                 ]
             )
+            self._let_tf_catch_up()
         goal_handle.succeed()
         self.get_logger().info("navigation SUCCEEDED")
+        return NavigateToPose.Result()
+
+    @staticmethod
+    def _let_tf_catch_up() -> None:
+        # The TF is broadcast from the 20 Hz tick, not from set_parameters, so
+        # a success reported at once would let the gateway read the PREVIOUS
+        # pose at arrival. A real Nav2 reports success on the pose it measured.
+        time.sleep(0.25)
+
+    def _execute_reaim(self, goal_handle):
+        """A goal with its own behavior tree: the gateway's in-place re-aim."""
+        request = goal_handle.request
+        quat = request.pose.pose.orientation
+        yaw = math.atan2(2.0 * (quat.w * quat.z), 1.0 - 2.0 * (quat.z * quat.z))
+        outcome = str(self.get_parameter("reaim_outcome").value)
+        with self._lock:
+            self._reaim_goals += 1
+        self.get_logger().info(
+            f"RE-AIM goal received: bt={request.behavior_tree} "
+            f"at ({request.pose.pose.position.x:.3f}, {request.pose.pose.position.y:.3f}) "
+            f"yaw {math.degrees(yaw):.2f} deg [{outcome}]"
+        )
+        deadline = time.time() + float(self.get_parameter("reaim_duration_sec").value)
+        while outcome == "hang" or time.time() < deadline:
+            if goal_handle.is_cancel_requested:
+                goal_handle.canceled()
+                self.get_logger().warn("RE-AIM CANCELED on request")
+                return NavigateToPose.Result()
+            time.sleep(0.05)
+        if outcome == "abort":
+            goal_handle.abort()
+            self.get_logger().warn("RE-AIM ABORTED")
+            return NavigateToPose.Result()
+        self.set_parameters([rclpy.parameter.Parameter("robot_yaw", value=float(yaw))])
+        self._let_tf_catch_up()
+        goal_handle.succeed()
+        self.get_logger().info("RE-AIM SUCCEEDED")
         return NavigateToPose.Result()
 
     # -- PickPlastic ------------------------------------------------------

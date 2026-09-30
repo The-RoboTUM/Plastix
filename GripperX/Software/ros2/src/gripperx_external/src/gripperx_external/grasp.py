@@ -360,3 +360,125 @@ def check_reached(
             f"(tolerance {offset.tolerance_m:.3f} m)"
         ),
     )
+
+
+# ---------------------------------------------------------------------------
+# re-aim at arrival - rotate in place so the object sits on the grasp ray
+# ---------------------------------------------------------------------------
+#: Why a re-aim was or was not asked for. Reported verbatim in the log line
+#: that carries the arrival evidence, so every value is a named state.
+REAIM_DISABLED = "REAIM_DISABLED"
+REAIM_WITHIN_MIN = "REAIM_WITHIN_MIN"
+REAIM_BEYOND_MAX = "REAIM_BEYOND_MAX"
+REAIM_CANNOT_HELP = "REAIM_CANNOT_HELP"
+REAIM_NEEDED = "REAIM_NEEDED"
+REAIM_NO_GEOMETRY = "REAIM_NO_GEOMETRY"
+
+
+def object_in_base(
+    object_xy: Sequence[float], robot_pose: Sequence[float]
+) -> Tuple[float, float]:
+    """Range and bearing of the object seen from ``base_footprint``.
+
+    Bearing follows REP-103: positive = the object lies to the robot's LEFT
+    (counter-clockwise from +x), wrapped to (-pi, pi]. ``robot_pose`` is the
+    map-frame ``(x, y, yaw)`` of the pose the robot ACTUALLY holds.
+    """
+    dx = float(object_xy[0]) - float(robot_pose[0])
+    dy = float(object_xy[1]) - float(robot_pose[1])
+    return math.hypot(dx, dy), normalize_angle(math.atan2(dy, dx) - float(robot_pose[2]))
+
+
+@dataclass(frozen=True)
+class ReaimDecision:
+    """Whether to rotate in place before the pick, and the geometry behind it.
+
+    ``aim_error_rad`` is what the rotation removes: the object's bearing minus
+    the bearing of the grasp point (zero for a purely longitudinal offset), so
+    a positive value means "turn counter-clockwise". ``target_yaw`` is the
+    map-frame yaw that puts the object on the grasp ray; it equals the current
+    yaw whenever ``rotate`` is false. ``predicted_distance_m`` is the reached
+    check's quantity (grasp point to object) evaluated at ``target_yaw`` - a
+    rotation in place cannot change the range, only the direction.
+    """
+
+    rotate: bool
+    reason: str
+    range_m: float
+    bearing_rad: float
+    aim_error_rad: float
+    target_yaw: float
+    predicted_distance_m: float
+    detail: str = ""
+
+
+def decide_reaim(
+    object_xy: Sequence[float],
+    robot_pose: Sequence[float],
+    offset: GraspOffset,
+    enabled: bool,
+    min_rad: float,
+    max_rad: float,
+) -> ReaimDecision:
+    """Decide the re-aim from the pose the robot actually holds.
+
+    Rotates only when all hold: ``enabled``; ``min_rad < |aim_error| <=
+    max_rad``; and, when the tolerance is measured, the rotated pose would pass
+    the reached check - a rotation that cannot bring the grasp point within
+    ``tolerance_m`` is motion without a purpose, and the unchanged reached check
+    refuses that arrival anyway. ``|aim_error| > max_rad`` is refused rather
+    than clamped: an error that large says the arrival itself is wrong, and a
+    wide sweep brings a chassis corner round towards the object.
+
+    Raises :class:`GraspOffsetNotConfigured` while the offset is TO-VERIFY.
+    """
+    gx, gy = offset.require()
+    range_m, bearing_rad = object_in_base(object_xy, robot_pose)
+    aim_error = normalize_angle(bearing_rad - math.atan2(gy, gx))
+    yaw = float(robot_pose[2])
+    target_yaw = normalize_angle(yaw + aim_error)
+    grasp_x, grasp_y = grasp_point_for((robot_pose[0], robot_pose[1]), target_yaw, offset)
+    predicted = math.hypot(float(object_xy[0]) - grasp_x, float(object_xy[1]) - grasp_y)
+
+    def keep(reason: str, detail: str) -> ReaimDecision:
+        return ReaimDecision(
+            False, reason, range_m, bearing_rad, aim_error, yaw, predicted, detail
+        )
+
+    if not enabled:
+        return keep(REAIM_DISABLED, "grasp.reaim_enabled is false")
+    if not all(math.isfinite(v) for v in (aim_error, target_yaw, predicted)):
+        # NaN compares false against every bound below and would fall through
+        # to a rotation towards nowhere.
+        return keep(REAIM_NO_GEOMETRY, "object or pose is not finite")
+    if abs(aim_error) <= min_rad:
+        return keep(
+            REAIM_WITHIN_MIN,
+            f"aim error {math.degrees(aim_error):+.1f} deg is within "
+            f"grasp.reaim_min_deg {math.degrees(min_rad):.1f}",
+        )
+    if abs(aim_error) > max_rad:
+        return keep(
+            REAIM_BEYOND_MAX,
+            f"aim error {math.degrees(aim_error):+.1f} deg exceeds "
+            f"grasp.reaim_max_deg {math.degrees(max_rad):.1f}; not rotating",
+        )
+    if offset.tolerance_configured:
+        assert offset.tolerance_m is not None
+        if predicted > offset.tolerance_m:
+            return keep(
+                REAIM_CANNOT_HELP,
+                f"even aimed, the grasp point would be {predicted:.3f} m from the "
+                f"object (tolerance {offset.tolerance_m:.3f} m): a range error, "
+                "which a rotation in place cannot remove",
+            )
+    return ReaimDecision(
+        True,
+        REAIM_NEEDED,
+        range_m,
+        bearing_rad,
+        aim_error,
+        target_yaw,
+        predicted,
+        f"rotate {math.degrees(aim_error):+.1f} deg in place",
+    )

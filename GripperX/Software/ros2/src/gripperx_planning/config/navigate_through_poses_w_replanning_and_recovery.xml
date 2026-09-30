@@ -7,6 +7,10 @@
   truth: gripperx_control/config/steer_servo.yaml). Spin is absent only
   because it has not been released by the user; adding it means a plugin in
   nav2.yaml behavior_plugins plus a <Spin> call in BOTH of these XMLs.
+  FollowPath names goal_checker_id="goal_checker" LITERALLY (2026-09-29): since
+  nav2.yaml loads a second checker (reaim_goal_checker), an empty id is refused by
+  controller_server. Literal rather than {selected_goal_checker}, so the
+  goal_checker_selector topic cannot switch the approach onto the re-aim checker.
 -->
 <root BTCPP_format="4" main_tree_to_execute="MainTree">
   <BehaviorTree ID="MainTree">
@@ -27,7 +31,7 @@
           </RecoveryNode>
         </RateController>
         <RecoveryNode number_of_retries="1" name="FollowPath">
-          <FollowPath path="{path}" controller_id="{selected_controller}" error_code_id="{follow_path_error_code}"/>
+          <FollowPath path="{path}" controller_id="{selected_controller}" goal_checker_id="goal_checker" error_code_id="{follow_path_error_code}"/>
           <Sequence>
             <WouldAControllerRecoveryHelp error_code="{follow_path_error_code}"/>
             <ClearEntireCostmap name="ClearLocalCostmap-Context" service_name="local_costmap/clear_entirely_local_costmap"/>

@@ -62,7 +62,17 @@ controller_server:
     min_theta_velocity_threshold: 0.01
     failure_tolerance: 0.3
     progress_checker_plugins: ["progress_checker"]
-    goal_checker_plugins: ["goal_checker"]
+    # TWO checkers since 2026-09-29 (re-aim at arrival). With more than one,
+    # nav2 1.3.12's controller_server REFUSES a FollowPath goal whose
+    # goal_checker_id is empty ("FollowPath called with goal_checker name ''
+    # ... which does not exist") - so EVERY <FollowPath> in every behavior
+    # tree this robot loads must name its checker, LITERALLY. The two default
+    # trees pass "goal_checker" (unchanged behaviour; not the blackboard's
+    # {selected_goal_checker}, so the goal_checker_selector topic cannot move
+    # the approach onto the re-aim checker); reaim_in_place.xml passes
+    # "reaim_goal_checker".
+    # test_goal_checker_invariants.py holds all of this against the files.
+    goal_checker_plugins: ["goal_checker", "reaim_goal_checker"]
     controller_plugins: ["FollowPath"]
 
     progress_checker:
@@ -96,6 +106,36 @@ controller_server:
       # SimpleGoalChecker's test is non-strict (<=), which makes equality
       # safe.
       yaw_goal_tolerance: 0.10
+      stateful: true
+
+    # RE-AIM AT ARRIVAL ONLY. Selected by nothing but reaim_in_place.xml, which
+    # the external-goal gateway sends as NavigateToPose.behavior_tree for an
+    # in-place rotation at the robot's own position (gripperx_external,
+    # `_start_reaim`). The approach never uses it.
+    # WHY IT EXISTS: goal_checker above declares any residual below 0.10 rad
+    # "succeeded" at once, so an in-place goal of less than 5.7 deg through it
+    # ends without moving, and a larger one stops at up to 5.7 deg short
+    # (observed 2026-09-29, target 51 attempt 2: "Goal succeeded" within 1 s,
+    # no motion).
+    reaim_goal_checker:
+      plugin: "nav2_controller::SimpleGoalChecker"
+      # Same as goal_checker. The re-aim goal IS the robot's own position, so
+      # it is latched at once (stateful); what matters is that it is not
+      # smaller than the drift of the base_footprint origin during an
+      # in-place spin, or the shim would try to translate.
+      xy_goal_tolerance: 0.10
+      # 0.035 rad / 2.0 deg: USER DECISION 2026-09-29, not a measurement - 13 mm of lateral
+      # grasp error at the 0.36 m standoff, against 36 mm for goal_checker's
+      # 0.10. WHAT ONLY THE ROBOT CAN SETTLE: the shim's stop profile commands
+      # sqrt(2 * max_angular_accel * |error|), i.e. 0.37 rad/s on entering
+      # this window - BELOW the 0.60 rad/s knee (FollowPath.min_speed_theta).
+      # If the plant stalls under the knee, it stops outside this window and
+      # the gateway's grasp.reaim_timeout_sec cancels the re-aim and judges
+      # the pose reached with the normal arrival gate.
+      # INVARIANTS: FollowPath.Oscillation.oscillation_reset_angle strictly
+      # below this; grasp.reaim_min_deg in both octopus_link_*.yaml strictly
+      # above it (else a re-aim can "succeed" without having moved).
+      yaw_goal_tolerance: 0.035
       stateful: true
 
     FollowPath:
@@ -407,19 +447,21 @@ controller_server:
       # left in place so it notices if a future change ever lets DWB command
       # vx below x_only_threshold again.
       #
-      # INVARIANT if it ever becomes live again: reset_angle <=
-      # goal_checker.yaw_goal_tolerance, strictly, not equal — the critic
-      # measures accumulated yaw in the LOCAL costmap frame against its own
-      # remembered pose, the goal checker in the GLOBAL frame, so map->odom
-      # correction during a rotation breaks exact equality. 0.05 leaves
-      # 0.05 rad of margin against the 0.10 tolerance.
+      # INVARIANT if it ever becomes live again: reset_angle <= the yaw
+      # tolerance of EVERY goal checker FollowPath can be given, strictly, not
+      # equal — the critic measures accumulated yaw in the LOCAL costmap frame
+      # against its own remembered pose, the goal checker in the GLOBAL frame,
+      # so map->odom correction during a rotation breaks exact equality.
+      # 0.015 (was 0.05 until 2026-09-29, when reaim_goal_checker brought the
+      # tightest tolerance down to 0.035) keeps 0.02 rad of margin. Lowering it
+      # only makes the lock clear sooner; the critic is inert today anyway.
       #
       # KNOWN UPSTREAM DEFECT (nav2 1.3.12), recorded because it makes the
       # obvious repair ("just re-size the critic") provably unavailable: the
       # reset test is a RAW subtraction of two absolute yaws, not a
       # shortest-angular-distance — a rotation that straddles +-pi clears the
       # lock unconditionally regardless of reset_angle.
-      Oscillation.oscillation_reset_angle: 0.05
+      Oscillation.oscillation_reset_angle: 0.015
       # ---- RotateToGoal (dwb_critics::RotateToGoalCritic) -------------------
       # ⚠ Unreachable in normal operation since P2a: it demands a pure
       # rotation once inside FollowPath.xy_goal_tolerance (0.06) with

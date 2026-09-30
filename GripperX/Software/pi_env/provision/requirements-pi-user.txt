@@ -1,0 +1,5 @@
+# GripperX — the only pip package the robot needs, installed with
+#   pip install --user --break-system-packages --no-deps --no-build-isolation --require-hashes -r <this file>
+# by provision.sh step 8. Everything else comes from apt (pyserial = python3-serial).
+# Version = what the reference card ran (2026-09-30); hash = the PyPI sdist of that version.
+feetech-servo-sdk==1.0.0 --hash=sha256:d4d3832e4b1b22a8222133a414db9f868224c2fb639426a1b11d96ddfe84e69c

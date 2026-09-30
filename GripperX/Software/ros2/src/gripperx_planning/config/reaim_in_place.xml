@@ -1,0 +1,23 @@
+<!--
+  Re-aim at arrival: rotate IN PLACE to the goal heading, nothing else.
+
+  Sent by the external-goal gateway (gripperx_external goal_gateway_node,
+  `_start_reaim`) as NavigateToPose.behavior_tree, with the goal at the robot's
+  own position and the heading that puts the detected object on the grasp ray.
+  Never a default tree: the approach uses navigate_to_pose_w_replanning_and_recovery.xml.
+
+  - reaim_goal_checker (nav2.yaml): a tighter yaw tolerance than goal_checker,
+    whose 0.10 rad would report a smaller residual as success without moving.
+    The rotation itself is the RotationShim's closing rotation.
+  - Plans ONCE and follows once: the goal is where the robot already stands.
+  - NO recovery branch, on purpose. A failed re-aim must END (the gateway then
+    does not pick) - not back up, crab or drive on heading next to the object.
+-->
+<root BTCPP_format="4" main_tree_to_execute="ReaimInPlace">
+  <BehaviorTree ID="ReaimInPlace">
+    <Sequence name="ReaimInPlace">
+      <ComputePathToPose goal="{goal}" path="{path}" planner_id="GridBased" error_code_id="{compute_path_error_code}"/>
+      <FollowPath path="{path}" controller_id="FollowPath" goal_checker_id="reaim_goal_checker" error_code_id="{follow_path_error_code}"/>
+    </Sequence>
+  </BehaviorTree>
+</root>

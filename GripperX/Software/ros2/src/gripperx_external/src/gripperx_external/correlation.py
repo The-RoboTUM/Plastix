@@ -127,6 +127,14 @@ class CorrelationResult:
     distance_m: float = float("nan")
     candidates: Tuple[CorrelationCandidate, ...] = ()
     detail: str = ""
+    #: True ONLY for the two results that mean "the object is simply not in a
+    #: live list": NO_TARGETS for an empty list, and NO_MATCH for "no target
+    #: within the tolerance". Every other NO_MATCH (the only match flagged
+    #: collected, an unusable tolerance, a non-finite fix, and the gateway's
+    #: no-datum / geodesy-error / malformed-fix cases) leaves it False. Read
+    #: only by the gateway's re-aim window (user decision 2026-09-29, #358);
+    #: it changes no status code and nothing else consults it.
+    absence: bool = False
 
     @property
     def unique(self) -> bool:
@@ -172,7 +180,13 @@ def correlate(
     if not targets:
         return CorrelationResult(
             NO_TARGETS,
-            detail="no target list received yet; the goal fix carries no id of its own",
+            absence=True,
+            detail=(
+                "target list received but it holds no usable target (the object "
+                "may have dropped out of Octopus's list); NO_TARGETS gets no "
+                "occlusion tolerance - the latch covers NO_MATCH only; the goal "
+                "fix carries no id of its own"
+            ),
         )
     if not (tolerance_m > 0.0) or not math.isfinite(tolerance_m):
         # A non-positive tolerance cannot match anything, and silently
@@ -200,6 +214,7 @@ def correlate(
         return CorrelationResult(
             NO_MATCH,
             candidates=(),
+            absence=True,
             detail=(
                 f"no target within goal_match_tolerance_m={tolerance_m:.3f} of the "
                 f"dispatched fix at ({gx:.3f}, {gy:.3f}); "

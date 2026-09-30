@@ -28,7 +28,7 @@ ros2 launch gripperx_planning navigation.launch.py use_sim_time:=false
 
 (with localization and sensors running).
 
-Config: `config/nav2.yaml`. Behavior tree (replan + recovery, [Nav2 walkthrough](https://docs.nav2.org/behavior_trees/overview/detailed_behavior_tree_walkthrough.html#navigate-to-pose-with-replanning-and-recovery)): `config/navigate_to_pose_w_replanning_and_recovery.xml` — used by default in `navigation.launch.py`. Contract: `INTERFACE.md`.
+Config: `config/nav2.yaml`. Behavior tree (replan + recovery, [Nav2 walkthrough](https://docs.nav2.org/behavior_trees/overview/detailed_behavior_tree_walkthrough.html#navigate-to-pose-with-replanning-and-recovery)): `config/navigate_to_pose_w_replanning_and_recovery.xml` — used by default in `navigation.launch.py`. `config/reaim_in_place.xml` is never a default: the external-goal gateway sends it per goal (`NavigateToPose.behavior_tree`) for the in-place re-aim at arrival, judged by `reaim_goal_checker`. Contract: `INTERFACE.md`.
 
 ## Recovery behaviours
 

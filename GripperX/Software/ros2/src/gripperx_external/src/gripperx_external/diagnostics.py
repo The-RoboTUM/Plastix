@@ -395,7 +395,7 @@ def dispatch_status(
             "a goal we cannot name",
             values,
         )
-    if not nav2_available and nav_state in ("navigating", "picking"):
+    if not nav2_available and nav_state in ("navigating", "reaiming", "picking"):
         return status(
             "external/dispatch",
             ERROR,
