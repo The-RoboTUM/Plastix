@@ -1,0 +1,5 @@
+model: "data/models/indoor_11s.pt"
+source: "data/footage/phone_vid_03.mp4"
+thresh: 0.6
+tags: "data/tags/tags_chill_out_space.csv"
+yolo_frameskip: 4 # frames to skip between yolo detections, 0 means every frame is processed

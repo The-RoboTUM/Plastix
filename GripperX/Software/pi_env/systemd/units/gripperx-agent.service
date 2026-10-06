@@ -1,0 +1,28 @@
+# /etc/systemd/system/gripperx-agent.service
+[Unit]
+Description=GripperX micro-ROS Agent (ESP32 via Docker)
+After=local-fs.target docker.service network-online.target
+Requires=docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+ExecStart=/usr/local/bin/gripperx-agent.sh
+# Fix 8 (#12): "docker run --rm" without "-d" is the foreground client process
+# of ExecStart. A plain SIGTERM to this client does not reliably stop the
+# container (the container used to keep running as a zombie, see
+# pi_env/README.md "DDS zombies"). ExecStop therefore explicitly calls
+# "docker stop" on the container itself; TimeoutStopSec is above the
+# docker-stop timeout (-t 10 s) plus buffer, so systemd doesn't prematurely
+# send SIGKILL to the client process.
+ExecStop=-/usr/bin/docker stop -t 10 mros_agent
+TimeoutStopSec=15
+Restart=always
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

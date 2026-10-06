@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Robot model. Optional ros2_control block for real hardware (see enable_ros2_control). -->
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="gripperx_v1">
+  <xacro:arg name="mesh_dir" default="package://gripperx_description/meshes" />
+  <xacro:arg name="use_lidar" default="false" />
+  <xacro:arg name="use_camera" default="false" />
+  <xacro:arg name="enable_ros2_control" default="false" />
+  <xacro:arg name="ros2_control_name" default="gripperx_real_system" />
+  <xacro:arg name="ros2_control_plugin" default="gripperx_hardware_interface/GripperXInterface" />
+  <xacro:arg name="use_hw_topics" default="true" />
+
+  <xacro:include filename="gripperx_v1.core.xacro" />
+  <xacro:include filename="gripperx_v1.lidar.xacro" />
+  <xacro:include filename="gripperx_v1.camera.xacro" />
+  <xacro:gripperx_robot mesh_dir="$(arg mesh_dir)" />
+
+  <xacro:if value="$(arg use_lidar)">
+    <xacro:gripperx_lidar add_gazebo="false" />
+  </xacro:if>
+
+  <xacro:if value="$(arg use_camera)">
+    <xacro:gripperx_camera mesh_dir="$(arg mesh_dir)" add_gazebo="false" />
+  </xacro:if>
+
+  <xacro:if value="$(arg enable_ros2_control)">
+    <xacro:include filename="gripperx_v1.ros2_control.xacro" />
+    <xacro:gripperx_ros2_control_hardware
+      name="$(arg ros2_control_name)"
+      plugin="$(arg ros2_control_plugin)"
+      use_hw_topics="$(arg use_hw_topics)" />
+  </xacro:if>
+</robot>

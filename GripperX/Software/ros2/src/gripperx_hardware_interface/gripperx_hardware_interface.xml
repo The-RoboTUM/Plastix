@@ -1,0 +1,10 @@
+<library path="gripperx_hardware_interface">
+  <class
+    name="gripperx_hardware_interface/GripperXInterface"
+    type="gripperx_hardware_interface::GripperXInterface"
+    base_class_type="hardware_interface::SystemInterface">
+    <description>
+      Topic bridge between ros2_control and the robot firmware (micro-ROS / ESP32).
+    </description>
+  </class>
+</library>

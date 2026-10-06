@@ -1,0 +1,689 @@
+#!/usr/bin/env python3
+"""Publish confirmed trash as WGS84 goals a collector robot can drive to.
+
+The rest of the Octopus stack works in the local ``map`` frame in meters. A robot
+navigating with Nav2 over GPS wants latitude/longitude instead, so this node is
+the single place where map meters become geographic coordinates.
+
+Indoor fake-GPS demo: the collector robot is started at the same physical spot as
+Eve, so both share one fake datum. That datum is Eve's position on the mission
+map, published by eve_fake_gps_bridge_node — drag Eve in the dashboard and every
+trash coordinate here follows, because they are all expressed relative to her.
+None of it is a real satellite fix; the shared reference is what makes it usable.
+
+Topics published:
+  * ``/octopus/trash_goal``   NavSatFix, latched. The next target to drive to.
+  * ``/octopus/trash_gps``    String (JSON). Every known target with id/lat/lon,
+    so the robot (or the dashboard) can plan over the full set instead of one goal.
+
+Topics subscribed besides the detections:
+  * ``/octopus/fake_eve_gps_start``  NavSatFix. Eve's start coordinate = the datum.
+  * ``/octopus/trash_goal_done``     String. The robot reports the id it finished;
+    that target is marked collected and the goal advances to the next one.
+
+The lat/lon math deliberately mirrors ``localToLatLng()`` in the dashboard's
+live_data.js (same flat-earth constant), so a target shown on the Mission Map and
+the goal sent to the robot are the same coordinate.
+"""
+
+import json
+import math
+import time
+
+import rclpy
+from rclpy.node import Node
+from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSHistoryPolicy
+from sensor_msgs.msg import NavSatFix, NavSatStatus
+from std_msgs.msg import String
+
+
+# Flat-earth approximation, identical to METERS_PER_DEGREE_LAT in live_data.js.
+# Over a few dozen meters of indoor demo area the error is far below the
+# detector's own accuracy, and matching the dashboard matters more than rigor.
+METERS_PER_DEGREE_LAT = 111320.0
+
+
+class TrashGpsGoalNode(Node):
+    def __init__(self):
+        super().__init__("trash_gps_goal_node")
+
+        self.declare_parameter("input_topic", "/octopus/detections_world")
+        self.declare_parameter("datum_topic", "/octopus/fake_eve_gps_start")
+        self.declare_parameter("goal_topic", "/octopus/trash_goal")
+        self.declare_parameter("targets_topic", "/octopus/trash_gps")
+        self.declare_parameter("goal_done_topic", "/octopus/trash_goal_done")
+
+        # Shared fake start coordinate, normally taken from `datum_topic`. These
+        # values are only the bootstrap until the first message arrives; they
+        # match DEMO_MAP_ORIGIN in the dashboard.
+        self.declare_parameter("datum_lat", 48.2513611)
+        self.declare_parameter("datum_lon", 11.6359722)
+        self.declare_parameter("altitude_m", 0.0)
+
+        # Two detections closer than this are the same piece of trash. The
+        # detector's tracker already settles positions, this only keeps ids
+        # stable across messages so "collected" can refer to something.
+        self.declare_parameter("merge_radius_m", 0.25)
+        # A detection only becomes a target once it has sat still: seen in
+        # `stable_frames` consecutive detection frames, each within
+        # `stable_radius_m` of where it was in the frame before. Trash that is
+        # thrown in gets confirmed by the detector while it is still flying or
+        # rolling, and every intermediate position used to become a goal of its
+        # own - GripperX set off towards the first one and turned round once the
+        # trash had come to rest. Those positions vanish within a frame or two,
+        # so they never reach three.
+        #
+        # "Consecutive" needs a gap bound as well: the detection topic carries
+        # no message at all while nothing is confirmed, so two frames can be
+        # consecutive messages and still be seconds apart. The detector
+        # republishes its confirmed set at 1 Hz; 1.5 s allows one late message.
+        # stable_frames 1 turns the check off (every detection is a target
+        # immediately, the old behaviour).
+        self.declare_parameter("stable_frames", 3)
+        self.declare_parameter("stable_radius_m", 0.15)
+        self.declare_parameter("stable_max_gap_sec", 1.5)
+        self.declare_parameter("min_confidence", 0.0)
+        # Play-area bound for the collecting robot, in metres around the datum.
+        # A target the robot cannot reach still deadlocks the run: our goal only
+        # advances on trash_goal_done and nothing here times out, so an
+        # unreachable target blocks every reachable one behind it. The camera
+        # footprint (4.46 x 3.34 m) is far larger than a small robot's reach, so
+        # the bound has to be stated rather than assumed. 0.0 disables it, which
+        # is the default so nothing changes for a consumer that never set it.
+        self.declare_parameter("max_radius_m", 0.0)
+        # Seconds a target survives without being confirmed again. Trash is
+        # static, so a target that stops being seen has almost always been moved
+        # or picked up by hand -- and without this it stays on the list forever,
+        # because a target otherwise only leaves via trash_goal_done. That is
+        # also the deadlock: a target the robot refuses at validation is never
+        # reported done, and blocks every reachable target behind it. 0.0 keeps
+        # the old "targets are never forgotten" behaviour and is the default, so
+        # a consumer that never sets it sees no change.
+        # GripperX fences its demo area to a square that is symmetric about the
+        # reference line; this is the same fence on our side, so a piece of trash
+        # outside it never becomes a target the robot would be sent to and then
+        # refuse. flight_camera_transform_node builds the square by projecting
+        # the two marked posts, so it is expressed in the same map metres the
+        # detections are - see Octopus/docs/line_calibration.md.
+        #
+        # Independent of max_radius_m above: that one is a circle around the
+        # datum for reach, this one is the agreed area. Both may be on.
+        self.declare_parameter("use_line_geofence", True)
+        self.declare_parameter("line_frame_topic", "/octopus/line_frame")
+        self.declare_parameter("target_ttl_sec", 0.0)
+        self.declare_parameter("publish_period_sec", 1.0)
+        self.declare_parameter("frame_id", "map")
+        # "nearest" = closest to the datum, i.e. closest to where the robot
+        # started. "first" = oldest detection first.
+        self.declare_parameter("goal_selection", "nearest")
+
+        self.input_topic = str(self.get_parameter("input_topic").value)
+        self.datum_lat = float(self.get_parameter("datum_lat").value)
+        self.datum_lon = float(self.get_parameter("datum_lon").value)
+        self.altitude_m = float(self.get_parameter("altitude_m").value)
+        self.merge_radius_m = float(self.get_parameter("merge_radius_m").value)
+        self.stable_frames = max(1, int(self.get_parameter("stable_frames").value))
+        self.stable_radius_m = float(self.get_parameter("stable_radius_m").value)
+        self.stable_max_gap_sec = float(self.get_parameter("stable_max_gap_sec").value)
+        self.min_confidence = float(self.get_parameter("min_confidence").value)
+        self.max_radius_m = float(self.get_parameter("max_radius_m").value)
+        self.target_ttl_sec = float(self.get_parameter("target_ttl_sec").value)
+        self.frame_id = str(self.get_parameter("frame_id").value)
+        self.goal_selection = str(self.get_parameter("goal_selection").value)
+
+        self.datum_from_topic = False
+        self.update_datum(self.datum_lat, self.datum_lon)
+
+        self.use_line_geofence = bool(self.get_parameter("use_line_geofence").value)
+        self.line_frame = None
+
+        self.targets = []  # ordered by first detection
+        # Positions seen but not yet stable, see stable_frames. Never published.
+        self.candidates = []
+        self.out_of_range_count = 0
+        self.last_out_of_range_log = 0.0
+        self.outside_fence_count = 0
+        self.last_outside_fence_log = 0.0
+        self.next_target_id = 1
+        self.last_goal_id = None
+
+        latched_qos = QoSProfile(
+            depth=1,
+            history=QoSHistoryPolicy.KEEP_LAST,
+            durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+        )
+
+        self.goal_pub = self.create_publisher(
+            NavSatFix, str(self.get_parameter("goal_topic").value), latched_qos
+        )
+        self.targets_pub = self.create_publisher(
+            String, str(self.get_parameter("targets_topic").value), 10
+        )
+
+        self.create_subscription(String, self.input_topic, self.detections_callback, 10)
+        self.create_subscription(
+            String,
+            str(self.get_parameter("line_frame_topic").value),
+            self.line_frame_callback,
+            10,
+        )
+        self.create_subscription(
+            String,
+            str(self.get_parameter("goal_done_topic").value),
+            self.goal_done_callback,
+            10,
+        )
+        # The datum is latched by the publisher, so this arrives right after the
+        # subscription is up even if Eve was placed long ago.
+        self.create_subscription(
+            NavSatFix,
+            str(self.get_parameter("datum_topic").value),
+            self.datum_callback,
+            QoSProfile(
+                depth=1,
+                history=QoSHistoryPolicy.KEEP_LAST,
+                durability=QoSDurabilityPolicy.TRANSIENT_LOCAL,
+            ),
+        )
+
+        self.timer = self.create_timer(
+            float(self.get_parameter("publish_period_sec").value), self.publish_all
+        )
+
+        self.get_logger().info("Trash GPS goal node started")
+        self.get_logger().info(f"Input topic: {self.input_topic}")
+        self.get_logger().info(
+            f"Datum topic: {self.get_parameter('datum_topic').value} "
+            f"(bootstrap {self.datum_lat:.7f}, {self.datum_lon:.7f})"
+        )
+        self.get_logger().info(f"Goal selection: {self.goal_selection}")
+        self.get_logger().info(
+            f"Stability: {self.stable_frames} consecutive frames within "
+            f"{self.stable_radius_m:.2f} m, at most {self.stable_max_gap_sec:.1f} s apart"
+        )
+
+    # --- coordinate conversion -------------------------------------------------
+
+    def update_datum(self, lat, lon):
+        self.datum_lat = float(lat)
+        self.datum_lon = float(lon)
+        self.meters_per_degree_lon = METERS_PER_DEGREE_LAT * math.cos(
+            math.radians(self.datum_lat)
+        )
+
+    def datum_callback(self, msg: NavSatFix):
+        lat = self.finite(msg.latitude)
+        lon = self.finite(msg.longitude)
+        if lat is None or lon is None:
+            return
+
+        moved = abs(lat - self.datum_lat) > 1e-9 or abs(lon - self.datum_lon) > 1e-9
+        if not moved and self.datum_from_topic:
+            return
+
+        self.update_datum(lat, lon)
+        self.datum_from_topic = True
+        self.get_logger().info(f"Datum is now {lat:.7f}, {lon:.7f}")
+        # Targets are stored in map meters, so moving the datum moves every goal
+        # with it. Republish immediately instead of waiting for the next tick.
+        self.publish_all()
+
+    def line_frame_callback(self, msg: String):
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError:
+            return
+        self.line_frame = payload if payload.get("available") else None
+
+    def inside_line_geofence(self, x, y):
+        """Is this map point inside the agreed square? (distance along, distance across).
+
+        Returns None for both distances when there is no fence to test against -
+        no fence means no filtering, never "reject everything".
+        """
+        fence = self.line_frame
+        if not self.use_line_geofence or fence is None:
+            return True, None, None
+
+        half = float(fence["half_side_m"])
+        along, across = self.map_to_line_units(x, y)
+        return abs(along) <= half and abs(across) <= half, along, across
+
+    def map_to_line_units(self, x, y):
+        """Map point -> (along, across) in MAP units, relative to the line midpoint.
+
+        `across` is positive to the LEFT of A->B seen from above, matching the
+        spec's +y: with the map frame right-handed (+x right, +y forward, z up),
+        left is the axis turned +90 deg counter-clockwise, i.e. (-ey, ex).
+
+        Whether that ends up on the same side as GripperX's +y is NOT settled
+        here. Section 9 lists the image handedness as unverified, so the
+        operator's `mirrored` flag flips it and the zero-motion check of section
+        7 step 7 is what decides. Getting this wrong mirrors the frame, which is
+        the failure the spec warns about twice.
+        """
+        frame = self.line_frame
+        cx, cy = frame["center"]
+        ex, ey = frame["axis"]
+        dx, dy = float(x) - float(cx), float(y) - float(cy)
+        along = dx * float(ex) + dy * float(ey)
+        across = -dx * float(ey) + dy * float(ex)
+        if frame.get("mirrored"):
+            across = -across
+        return along, across
+
+    def distance_from_datum_m(self, x, y):
+        """Distance from the datum in metres.
+
+        The datum is the line midpoint once the calibration is complete and map
+        (0, 0) - the drone - before that, so this cannot be a plain hypot on the
+        map coordinates any more. Both the reach bound and "nearest goal" are
+        defined against where the ROBOT started, which is the datum, not the
+        drone; measuring from the wrong point silently reorders the queue and
+        moves the reach circle by the distance between the two.
+        """
+        line = self.map_to_line_metres(x, y)
+        if line is not None:
+            return math.hypot(line[0], line[1])
+        return math.hypot(float(x), float(y))
+
+    def map_to_line_metres(self, x, y):
+        """Line-frame metres, or None while the metric scale is unknown.
+
+        The scale is GripperX's L over the projected post distance, so this is
+        also where our projection's own scale error is divided out - the reason
+        section 4 wants goals expressed in this frame in the first place.
+        """
+        frame = self.line_frame
+        if frame is None:
+            return None
+        scale = frame.get("metres_per_map_unit")
+        if not scale:
+            return None
+        along, across = self.map_to_line_units(x, y)
+        return along * float(scale), across * float(scale)
+
+    def local_to_latlon(self, x_m, y_m):
+        """Position to WGS84 around the datum, with the flat-earth arithmetic
+        both sides share (spec section 4).
+
+        The arithmetic never changes; what the datum MEANS does. With a complete
+        line calibration the datum is the line midpoint and x/y are line-frame
+        metres, which is what GripperX inverts. Without one we fall back to the
+        old behaviour - datum at map (0, 0), i.e. the drone - so an uncalibrated
+        demo keeps working exactly as before instead of silently shifting.
+        """
+        line = self.map_to_line_metres(x_m, y_m)
+        if line is not None:
+            x_m, y_m = line
+        lat = self.datum_lat + y_m / METERS_PER_DEGREE_LAT
+        lon = self.datum_lon + x_m / self.meters_per_degree_lon
+        return lat, lon
+
+    # --- target registry -------------------------------------------------------
+
+    def detections_callback(self, msg: String):
+        try:
+            payload = json.loads(msg.data)
+        except json.JSONDecodeError as exc:
+            self.get_logger().warn(f"Invalid JSON on {self.input_topic}: {exc}")
+            return
+
+        now = time.time()
+        # This message is one frame. Candidates not seen again in it lose their
+        # streak; they are matched below and the rest dropped at the end.
+        seen_candidates = set()
+        for detection in payload.get("detections", []):
+            x = self.finite(detection.get("x"))
+            y = self.finite(detection.get("y"))
+            if x is None or y is None:
+                continue
+
+            confidence = self.finite(detection.get("confidence"))
+            if confidence is not None and confidence < self.min_confidence:
+                continue
+
+            # "Within max_radius_m of where the robot started", and the robot
+            # starts at the datum - see distance_from_datum_m.
+            if self.max_radius_m > 0.0:
+                radius = self.distance_from_datum_m(x, y)
+                if radius > self.max_radius_m:
+                    self.note_out_of_range(x, y, radius, now)
+                    continue
+
+            inside, along, across = self.inside_line_geofence(x, y)
+            if not inside:
+                self.note_outside_fence(x, y, along, across, now)
+                continue
+
+            # Already a target: trash does not move, so a detection at a known
+            # target is that target again and needs no new stability check.
+            if self.nearest_target(x, y, self.merge_radius_m) is not None:
+                self.register(x, y, confidence, detection.get("class_name"), now)
+                continue
+
+            self.observe_candidate(
+                x, y, confidence, detection.get("class_name"), now, seen_candidates
+            )
+
+        self.candidates = [c for c in self.candidates if id(c) in seen_candidates]
+
+    def observe_candidate(self, x, y, confidence, class_name, now, seen_candidates):
+        """Count one more frame for the candidate at (x, y); promote it when stable.
+
+        Matched against where each candidate was in the PREVIOUS frame, not
+        against an average, so something that keeps moving by a little each frame
+        never qualifies. Each candidate is matched at most once per frame.
+        """
+        best = None
+        best_dist = self.stable_radius_m
+        for candidate in self.candidates:
+            if id(candidate) in seen_candidates:
+                continue
+            if now - candidate["last_seen"] > self.stable_max_gap_sec:
+                continue
+            dist = math.hypot(candidate["x"] - x, candidate["y"] - y)
+            if dist <= best_dist:
+                best = candidate
+                best_dist = dist
+
+        if best is None:
+            best = {"x": x, "y": y, "frames": 0, "sum_x": 0.0, "sum_y": 0.0,
+                    "confidence": None, "last_seen": now}
+            self.candidates.append(best)
+
+        best["frames"] += 1
+        best["x"], best["y"] = x, y
+        best["sum_x"] += x
+        best["sum_y"] += y
+        best["last_seen"] = now
+        if confidence is not None:
+            best["confidence"] = max(best["confidence"] or 0.0, confidence)
+        seen_candidates.add(id(best))
+
+        if best["frames"] < self.stable_frames:
+            return
+
+        # Stable: the target starts at the mean of the frames that qualified it,
+        # and register() keeps averaging from there. Removed from the candidates
+        # by the end-of-frame filter, since it is no longer in seen_candidates.
+        seen_candidates.discard(id(best))
+        frames = best["frames"]
+        self.register(best["sum_x"] / frames, best["sum_y"] / frames,
+                      best["confidence"], class_name, now, frames=frames)
+
+    def note_out_of_range(self, x, y, radius, now):
+        """Log dropped detections at most once every 10 s, with a running total."""
+        self.out_of_range_count += 1
+        if now - self.last_out_of_range_log < 10.0:
+            return
+        self.last_out_of_range_log = now
+        self.get_logger().warn(
+            f"Detection at map ({x:.2f}, {y:.2f}) is {radius:.2f} m from the datum, "
+            f"outside max_radius_m={self.max_radius_m:.2f}. Not offered as a target. "
+            f"{self.out_of_range_count} dropped so far."
+        )
+
+    def note_outside_fence(self, x, y, along, across, now):
+        """Same throttled-and-counted treatment as the radius bound: a dropped
+        detection has to be visible somewhere, or an empty target list during a
+        demo looks like a broken detector."""
+        self.outside_fence_count += 1
+        if now - self.last_outside_fence_log < 10.0:
+            return
+        self.last_outside_fence_log = now
+        half = float(self.line_frame["half_side_m"])
+        self.get_logger().warn(
+            f"Detection at map ({x:.2f}, {y:.2f}) is {along:+.2f} m along and "
+            f"{across:+.2f} m across the reference line, outside the "
+            f"{2 * half:.2f} m demo square. Not offered as a target. "
+            f"{self.outside_fence_count} dropped so far."
+        )
+
+    def register(self, x, y, confidence, class_name, now, frames=1):
+        existing = self.nearest_target(x, y, self.merge_radius_m)
+        if existing is not None:
+            # Trash does not move: average the position instead of jumping to the
+            # newest reading, so the goal stops jittering after a few frames.
+            hits = existing["hits"] + 1
+            existing["x"] += (x - existing["x"]) / hits
+            existing["y"] += (y - existing["y"]) / hits
+            existing["hits"] = hits
+            existing["last_seen"] = now
+            if confidence is not None:
+                existing["confidence"] = max(existing["confidence"] or 0.0, confidence)
+            return
+
+        self.targets.append({
+            "id": self.next_target_id,
+            "class_name": str(class_name or "trash"),
+            "x": x,
+            "y": y,
+            "confidence": confidence,
+            "hits": frames,
+            "first_seen": now,
+            "last_seen": now,
+            "collected": False,
+        })
+        self.next_target_id += 1
+        self.get_logger().info(
+            f"New trash target #{self.targets[-1]['id']} at map ({x:.2f}, {y:.2f}), "
+            f"stable for {frames} frame(s)"
+        )
+
+    def nearest_target(self, x, y, radius):
+        best = None
+        best_dist = radius
+        for target in self.targets:
+            dist = math.hypot(target["x"] - x, target["y"] - y)
+            if dist <= best_dist:
+                best = target
+                best_dist = dist
+        return best
+
+    def goal_done_callback(self, msg: String):
+        """The robot reports a finished target, by id or as {"id": N} JSON."""
+        raw = msg.data.strip()
+        target_id = None
+        try:
+            payload = json.loads(raw)
+            target_id = payload.get("id") if isinstance(payload, dict) else payload
+        except json.JSONDecodeError:
+            target_id = raw
+
+        try:
+            target_id = int(target_id)
+        except (TypeError, ValueError):
+            self.get_logger().warn(f"Cannot read a target id from '{raw}'")
+            return
+
+        for target in self.targets:
+            if target["id"] == target_id:
+                target["collected"] = True
+                self.get_logger().info(f"Target #{target_id} marked collected")
+                self.publish_all()
+                return
+
+        self.get_logger().warn(f"Unknown target id {target_id} reported as done")
+
+    # --- publishing ------------------------------------------------------------
+
+    def open_targets(self):
+        return [t for t in self.targets if not t["collected"]]
+
+    def select_goal(self):
+        candidates = self.open_targets()
+        if not candidates:
+            return None
+        if self.goal_selection == "first":
+            return candidates[0]
+        # Nearest to the datum, i.e. to where the robot started - which is the
+        # line midpoint once calibrated, not the map origin.
+        return min(candidates, key=lambda t: self.distance_from_datum_m(t["x"], t["y"]))
+
+    def navsatfix(self, lat, lon):
+        msg = NavSatFix()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = self.frame_id
+        msg.status.status = NavSatStatus.STATUS_FIX
+        msg.status.service = NavSatStatus.SERVICE_GPS
+        msg.latitude = float(lat)
+        msg.longitude = float(lon)
+        msg.altitude = self.altitude_m
+        # These are demo coordinates derived from a camera, not a receiver. The
+        # covariance says "roughly half a meter" so consumers have something
+        # sane to weigh instead of an unknown.
+        msg.position_covariance = [
+            0.25, 0.0, 0.0,
+            0.0, 0.25, 0.0,
+            0.0, 0.0, 1.0,
+        ]
+        msg.position_covariance_type = NavSatFix.COVARIANCE_TYPE_APPROXIMATED
+        return msg
+
+    def expire_targets(self):
+        """Drop targets the detector has stopped confirming."""
+        if self.target_ttl_sec <= 0.0:
+            return
+
+        now = time.time()
+        cutoff = now - self.target_ttl_sec
+        kept = []
+        dropped = []
+        for target in self.targets:
+            (dropped if target["last_seen"] < cutoff else kept).append(target)
+
+        if not dropped:
+            return
+
+        self.targets = kept
+        # One line per expiry, not per tick: the target is gone afterwards, so
+        # this cannot repeat. An id is never reused, so a late trash_goal_done
+        # for an expired target is rejected as unknown rather than hitting
+        # something else.
+        for target in dropped:
+            self.get_logger().info(
+                f"Target #{target['id']} at map ({target['x']:.2f}, {target['y']:.2f}) "
+                f"expired after {now - target['last_seen']:.0f} s without a confirmation "
+                f"(target_ttl_sec={self.target_ttl_sec:.0f}, collected={target['collected']})"
+            )
+
+    def publish_all(self):
+        self.expire_targets()
+        goal = self.select_goal()
+
+        entries = []
+        for target in self.targets:
+            lat, lon = self.local_to_latlon(target["x"], target["y"])
+            # Section 4: what we hand over are line-frame metres. Until the
+            # calibration is complete there is no such thing, and the map
+            # coordinates go out as before rather than a wrong-scale guess.
+            line = self.map_to_line_metres(target["x"], target["y"])
+            out_x, out_y = line if line is not None else (target["x"], target["y"])
+            entries.append({
+                "id": target["id"],
+                "class_name": target["class_name"],
+                "lat": lat,
+                "lon": lon,
+                "x": out_x,
+                "y": out_y,
+                "map_x": target["x"],
+                "map_y": target["y"],
+                "confidence": target["confidence"],
+                "collected": target["collected"],
+                "is_goal": bool(goal and goal["id"] == target["id"]),
+                "last_seen": target["last_seen"],
+            })
+
+        # Say what was filtered out and by what. A consumer that sees an empty
+        # list needs to be able to tell "nothing detected" from "everything was
+        # outside the fence", and so does anyone watching the dashboard.
+        fence = self.line_frame if self.use_line_geofence else None
+        geofence_payload = {
+            "enabled": bool(self.use_line_geofence),
+            "active": fence is not None,
+            "dropped_outside": self.outside_fence_count,
+        }
+        if fence is not None:
+            geofence_payload.update({
+                "center": fence.get("center"),
+                "axis": fence.get("axis"),
+                "side_m": fence.get("side_m"),
+            })
+
+        # Which frame the x/y above are in. A consumer must not have to guess,
+        # and the difference is a whole coordinate system, not a detail.
+        scaled = self.line_frame is not None and self.line_frame.get("metres_per_map_unit")
+        frame_payload = {
+            "name": "octopus_line" if scaled else "map_legacy",
+            "datum_is": "line midpoint" if scaled else "drone / map (0, 0)",
+            "length_m": (self.line_frame or {}).get("length_m"),
+            "metres_per_map_unit": (self.line_frame or {}).get("metres_per_map_unit"),
+            "mirrored": bool((self.line_frame or {}).get("mirrored", False)),
+        }
+
+        self.targets_pub.publish(String(data=json.dumps({
+            "source_id": "trash_gps_goal_node",
+            "frame_id": self.frame_id,
+            "timestamp": time.time(),
+            "geofence": geofence_payload,
+            "line_frame": frame_payload,
+            "datum": {
+                "lat": self.datum_lat,
+                "lon": self.datum_lon,
+                # Our own position in the local map frame. Always (0, 0): the
+                # frame is anchored on this point, so it cannot be anything else.
+                # Stated instead of implied, so a consumer never has to guess
+                # where "we" are in the same meters the targets are given in.
+                "x": 0.0,
+                "y": 0.0,
+                "from_topic": self.datum_from_topic,
+            },
+            "goal_id": goal["id"] if goal else None,
+            "open_count": len(self.open_targets()),
+            # Seen but not yet still for stable_frames frames. Not in `targets`
+            # and never a goal; counted so an empty list right after throwing
+            # trash in reads as "settling", not as a missed detection.
+            "pending_count": len(self.candidates),
+            "targets": entries,
+        }, separators=(",", ":"))))
+
+        if goal is None:
+            if self.last_goal_id is not None:
+                self.get_logger().info("No open trash targets left, goal cleared")
+                self.last_goal_id = None
+            return
+
+        lat, lon = self.local_to_latlon(goal["x"], goal["y"])
+        self.goal_pub.publish(self.navsatfix(lat, lon))
+
+        if goal["id"] != self.last_goal_id:
+            self.get_logger().info(
+                f"Goal is target #{goal['id']}: {lat:.7f}, {lon:.7f} "
+                f"(map {goal['x']:.2f}, {goal['y']:.2f})"
+            )
+            self.last_goal_id = goal["id"]
+
+    @staticmethod
+    def finite(value):
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            return None
+        return number if math.isfinite(number) else None
+
+
+def main(args=None):
+    rclpy.init(args=args)
+    node = TrashGpsGoalNode()
+    try:
+        rclpy.spin(node)
+    except KeyboardInterrupt:
+        pass
+    finally:
+        node.destroy_node()
+        rclpy.shutdown()
+
+
+if __name__ == "__main__":
+    main()

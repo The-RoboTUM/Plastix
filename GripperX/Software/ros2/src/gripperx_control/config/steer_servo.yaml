@@ -1,0 +1,194 @@
+steer_servo_node:
+  ros__parameters:
+    use_single_bus: true
+    serial_port: /dev/steering_servo
+    serial_ports:
+      - /dev/steering_servo
+    baud_rate: 1000000
+    protocol_end: 0
+    # Order: FL, FR, BL, BR — joint order, NOT the physical daisy-chain order along the
+    # bus. steer_servo_node maps servo_ids[i] positionally onto STEER_JOINT_NAMES[i]; only
+    # the id-to-wheel assignment matters. The same index order applies to center_counts,
+    # counts_outward_limit, counts_inward_limit, steering_outward_sign and
+    # steering_outward_tick_direction — a partially updated block mis-pairs a servo with
+    # another wheel's centre/limits.
+    #
+    # Outward tick direction is DIAGONAL, not per side: FL decreasing, FR increasing, BL
+    # increasing, BR decreasing (FL/BR share one sense, FR/BL the other), consistent with
+    # the corner servos being mounted mirrored both left/right and front/rear. Not
+    # derivable from the code; feeds steering_outward_sign below. Measured 2026-08-13,
+    # re-measured 2026-09-18 after the ASA (a 3D-printing filament) coupling rework —
+    # unchanged.
+    #
+    # Angular scale: 4096 ticks = 360 deg at the wheel (11.3778 ticks/deg), from HWR-12
+    # (hardware rework requirement 12 — rigid direct servo<->wheel linkage, no reduction)
+    # and the ST3215 servo's native 4096 counts/360 deg. Per-servo scale re-measured
+    # 2026-09-18 (hand-held, torque off): 11.4556 / 11.2444 / 11.3222 / 11.4222
+    # counts/deg for FL/FR/BL/BR. The ~1.5% spread was judged to be measurement error in
+    # holding the wheel square, not a real ratio change, so the model keeps the nominal
+    # 11.3778 everywhere below; every angle in this file divides by that number.
+    #
+    # Calibrated 2026-09-18 after the ASA coupling rework: servo_ids, center_counts and
+    # the limit arrays below come from one run and are index-aligned (see the note
+    # above) — do not edit one array in isolation.
+    # protocol_end=0 selects SCS (no byte swap in SCS_LOBYTE/HIBYTE); protocol_end=1 would
+    # swap bytes and drive to wrong positions.
+    servo_ids:     [13, 14, 11, 12]
+    center_counts: [2511, 1617, 1606, 2625]
+    # The 2026-07-01 spring-linkage ids/centres and their computed counts_plus_90 /
+    # counts_minus_90 pair are deleted rather than kept as a fallback: those ids were
+    # wrong, so the arrays would silently mis-pair with the wheels if the legacy path
+    # ever activated. The four per-direction keys below must be set TOGETHER or not at
+    # all — the node raises on a half-configured schema instead of falling back to them.
+    #
+    # --- WHY THE RANGE IS PER DIRECTION AND NOT ONE SHARED LIMIT ----------------
+    # The mechanical range is strongly asymmetric: outward the wheel swings away from the
+    # chassis with most of a turn available, inward it runs into the chassis within
+    # ~50deg. One shared limit cannot express that — the inward figure would throw away
+    # outward travel, the outward figure would command into the inward stop.
+    #
+    # center_counts is 0deg (straight ahead) and, after the 2026-09-18 rework, is
+    # CONSTRUCTED rather than directly measured: with the wheels off, each servo was
+    # driven to a count chosen for wrap margin (see counts_outward_limit below), the
+    # wheels refitted straight ahead against a straightedge, and each hand-corrected by a
+    # few degrees with torque off — the count read back after that correction is the
+    # value below.
+    #
+    # Feetech servos seek their GOAL register when torque is enabled, they do not hold
+    # where they stand — always write goal = current measured position before enabling
+    # torque, or a stale goal in the register drives an unwanted jump.
+    #
+    # The servo-to-steering connector is keyed and cannot be fitted rotated 180 deg (user
+    # statement about their own design) — that is what lets outward/inward signs and
+    # steering_outward_tick_direction below carry over across a coupling rebuild without
+    # re-deriving them. If the connector is ever redesigned without that keying, redo the
+    # 15deg direction check before trusting the signs.
+    #
+    # A coupling that slips does not hold a calibration: BR slipped out of its fixture
+    # during the 2026-09-18 run (chassis jacked up; the user's position is that tyre load
+    # prevents this with the robot on its wheels). If a coupling slips, the servo encoder
+    # keeps reading normally against its own frame — a wound-up servo can even read a
+    # steady false position hard against the true stop — while the wheel sits elsewhere.
+    # Servo-side counts are not evidence about wheel-side angle once a coupling has
+    # slipped, and the symptom is a steering angle that reads confidently and wrong.
+    #
+    # steering_outward_sign[i]: sign of the JOINT angle that is physically OUTWARD for
+    # that wheel. Measured on the machine (2026-08-13, re-verified 2026-09-18) — not
+    # derivable from the URDF axis convention. A URDF-only reading (all four joints about
+    # +Z, REP-103 (ROS convention 103 for coordinate frames) hence +angle = left = outward
+    # right/-1 left) is WRONG on the front pair: the wheel hangs on a lateral lever arm
+    # off the king pin, so the joint swings the wheel body fore/aft around the pin rather
+    # than toeing it in/out. Consistency check if these are ever touched: the in-place
+    # spin pose needs each wheel to move OUTWARD by 58.6deg (kinematics of pure rotation);
+    # under the URDF-only signs, three wheels would need 58.6deg INWARD instead, exceeding
+    # the inward limit, i.e. spin-in-place would be impossible.
+    #
+    # steering_outward_tick_direction[i] is a plausibility check only: if a pasted
+    # counts_outward_limit sits on the other side of the centre than measured, the node
+    # warns that the row probably belongs to a different servo.
+    #
+    # Real mechanical travel per wheel, measured 2026-09-18 (stops held at the actual
+    # hard limit, computed from counts via 11.3778 ticks/deg):
+    #     FL outward 196.4deg  inward 51.2deg
+    #     FR outward 193.7deg  inward 52.1deg
+    #     BL outward 193.6deg  inward 50.3deg
+    #     BR outward 196.4deg  inward 56.7deg
+    # This closes the earlier TO-VERIFY on inward travel: the 2026-08-13 figures were
+    # taken at first resistance rather than at the hard stop and understated it by
+    # 10-15deg on every wheel; the scale check above excludes a skewed angle model as the
+    # cause.
+    # Outward exceeding 180deg is the construction, not an error: the wheel axis hangs
+    # 116.9mm BELOW the steering joint (*_wheel_offset_xyz z = -0.1169), so the wheel
+    # swings UNDER the chassis rather than into it, and by construction the tyre's
+    # mechanical stop lies behind the king pin. The chosen limits below are far short of
+    # this real travel.
+    #
+    # --- PER-DIRECTION STEERING RANGE (2026-09-18) -----------------------------
+    # counts_outward_limit[i] / counts_inward_limit[i] are the counts for the CHOSEN
+    # limits steering_outward_limit_deg / steering_inward_limit_deg — NOT the recorded
+    # mechanical stops above. To change a limit, recompute: count = centre + limit_deg *
+    # 11.3778 * tick_direction (outward), centre - ... (inward). Do not hand-edit one
+    # array alone.
+    #
+    # 125deg outward (user decision 2026-09-18) is a CHOSEN WORKING MARGIN, for two
+    # reasons, neither of them a hard ceiling: a comfortable distance from the mechanical
+    # stop (against the measured travel above, roughly 70deg), and keeping the left and
+    # right wheel clear of each other — not reachable at 125deg, but possible at a
+    # markedly larger angle under an unfavourable combination of per-wheel angles.
+    # In-place spin needs only 58.6deg outward and crab needs 90deg, so 125deg clears both.
+    #
+    # CORRECTED 2026-09-23: this said the limit was chosen against the raw 0/4095 count
+    # wrap. REFUTED — the wrap sits ~95deg beyond the limit while the mechanical stop
+    # arrives at ~196deg, so the wrap cannot bind at all; the figure it rested on came
+    # from the pre-rework FL centre, and FL is not even the tightest wheel (FR is). The
+    # wrap paragraph below is a separate and still-correct statement about what happens
+    # IF a count crosses it — that is a reading hazard, not the reason for this limit.
+    # If a servo's count crosses the 0/4095 wrap, normalize_position_ticks() masks with &
+    # 0x0FFF and calibrated_counts_to_rad_asym() flips the sign of `delta`, so the
+    # reported angle jumps to the OPPOSITE limit — reads confidently, wrong (the failure
+    # class HWR-41, hardware rework requirement 41, was written about). The command path
+    # itself is safe: calibrated_angle_to_counts_asym() hard-clamps to the recorded
+    # endpoint window and cannot command past the limit.
+    #
+    # 35deg inward (user decision 2026-09-18) keeps 15.3deg of margin against the
+    # tightest wheel's real ~50.3deg travel. Inward is the self-collision-critical side
+    # and is never extended without its own measurement.
+    #
+    # WHAT "OUTWARD" MEANS: not a toe direction. The wheel hangs on a lateral lever arm
+    # off the king pin (*_wheel_offset_xyz y = +-0.055572), so steering swings the wheel
+    # BODY fore/aft around the pin. Outward means the body swings AWAY from the chassis —
+    # FORWARDS on the front wheels, BACKWARDS on the rear ones — which is toe-IN at the
+    # front and toe-OUT at the rear in toe language, i.e. the two axles read opposite. A
+    # toe-based description of "outward" reliably produces the wrong sign on one axle
+    # pair; steer_servo_calibrate.py's step list still uses that wrong wording (its
+    # per-wheel line is correct) — fix it there, do not re-derive it here.
+    counts_outward_limit: [1089, 3039, 3028, 1203]
+    counts_inward_limit:  [2909, 1219, 1208, 3023]
+    steering_outward_limit_deg: 125.0
+    steering_inward_limit_deg: 35.0
+    steering_outward_sign: [-1, 1, 1, -1]
+    steering_outward_tick_direction: [-1, 1, 1, -1]
+    #
+    # INACTIVE while the per-direction block above is complete — which it is. Kept
+    # (rather than removed) only because the node still declares and reads this key as
+    # its fallback default; removing it would make the parameter undiscoverable. It does
+    # NOT limit anything in the current configuration — the real limits are the per-wheel
+    # 125deg outward / 35deg inward above. Only reachable if someone removes an entire
+    # per-direction key: a PARTIAL per-direction block raises rather than falling back
+    # here.
+    steering_angle_limit_deg: 60.0
+    # Task #22c: front servos steering further than the rear. Kept OFF — the measured
+    # outward range came out effectively identical on all four wheels (196.4 / 193.7 /
+    # 193.6 / 196.4 deg), so there is nothing at the front left to unlock. Enabling it
+    # would still require its own FL/FR end-stop calibration.
+    enable_front_extended_steering: false
+    # Equal to the base limit above, so the extension guard does not read it as a
+    # reduction and disable itself with a warning if the feature is ever switched on.
+    front_extended_steering_limit_deg: 60.0
+    move_time_ms: 400
+    move_acc: 20
+    # NFR-1 (non-functional requirement 1, #11): every cycle performs BLOCKING serial I/O
+    # (sync_write_positions_timed + up to 4x read_position) — the suspected largest real
+    # CPU/timing cost on the Pi (Task #14 overrun suspicion). Coupled to two consumers:
+    # GripperXInterface reads /hw/steer_states with steer_states_timeout_sec=0.5s, and
+    # /hw/joint_commands only reaches this node via GripperXInterface at
+    # controller_manager update_rate=30 anyway — raising this rate buys no more command
+    # freshness and erodes the ~15x timeout margin. Details: internal deploy note FIX7
+    # (tracked internally, not in this repository).
+    control_rate_hz: 30.0
+    command_timeout_sec: 0.5
+    ping_retries: 3
+    require_all_servos: true
+    # OP-20 (open point 20) Option B, SR-12 (safety requirement 12), OP-24/S1: steering
+    # must never move except by a command, including every restart — real_robot.launch.py
+    # sets respawn=True/5s on this node. false = read the four raw counts, convert, and
+    # adopt them as the current target; nothing is written to the bus (torque is enabled
+    # independently in _init_channel(), so the servos still hold). true restores
+    # drive-to-center_counts on every start and IS an SR-1 (safety requirement 1 —
+    # motor-enable process rule) motion event: only set it for a start that is meant to
+    # move and has been approved. With require_all_servos: true, a servo whose position
+    # cannot be read at startup makes the node refuse to start rather than centre that
+    # wheel.
+    center_on_startup: false
+    joint_commands_topic: /hw/joint_commands
+    steer_states_topic: /hw/steer_states

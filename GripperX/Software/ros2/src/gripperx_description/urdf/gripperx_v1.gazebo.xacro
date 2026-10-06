@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<robot xmlns:xacro="http://www.ros.org/wiki/xacro" name="gripperx_v1">
+  <xacro:arg name="mesh_dir" default="package://gripperx_description/meshes" />
+  <xacro:arg name="controllers_file" default="" />
+  <xacro:arg name="imu_update_rate" default="100.0" />
+  <xacro:arg name="use_lidar" default="false" />
+  <xacro:arg name="use_camera" default="false" />
+
+  <xacro:include filename="gripperx_v1.core.xacro" />
+  <xacro:include filename="gripperx_v1.lidar.xacro" />
+  <xacro:include filename="gripperx_v1.camera.xacro" />
+  <xacro:include filename="gripperx_v1.ros2_control.xacro" />
+
+  <xacro:gripperx_robot mesh_dir="$(arg mesh_dir)" />
+
+  <xacro:if value="$(arg use_lidar)">
+    <xacro:gripperx_lidar add_gazebo="true" />
+  </xacro:if>
+
+  <xacro:if value="$(arg use_camera)">
+    <xacro:gripperx_camera mesh_dir="$(arg mesh_dir)" add_gazebo="true" />
+  </xacro:if>
+
+  <gazebo reference="imu_link">
+    <sensor name="imu_sensor" type="imu">
+      <always_on>1</always_on>
+      <update_rate>$(arg imu_update_rate)</update_rate>
+      <topic>/imu/data</topic>
+    </sensor>
+  </gazebo>
+
+  <xacro:gripperx_ros2_control_hardware
+    name="gripperx_gazebo_system"
+    plugin="gz_ros2_control/GazeboSimSystem" />
+
+  <gazebo>
+    <plugin
+      filename="gz-sim-odometry-publisher-system"
+      name="gz::sim::systems::OdometryPublisher">
+      <dimensions>2</dimensions>
+      <odom_frame>ground_truth</odom_frame>
+      <robot_base_frame>base_footprint</robot_base_frame>
+      <odom_topic>/ground_truth/odom</odom_topic>
+      <gaussian_noise>0.0</gaussian_noise>
+    </plugin>
+
+    <plugin
+      filename="libgz_ros2_control-system.so"
+      name="gz_ros2_control::GazeboSimROS2ControlPlugin">
+      <ros>
+        <namespace>/</namespace>
+        <parameter name="use_sim_time">true</parameter>
+      </ros>
+      <robot_param>robot_description</robot_param>
+      <robot_param_node>robot_state_publisher</robot_param_node>
+      <controller_manager_name>controller_manager</controller_manager_name>
+      <parameters>$(arg controllers_file)</parameters>
+    </plugin>
+  </gazebo>
+</robot>

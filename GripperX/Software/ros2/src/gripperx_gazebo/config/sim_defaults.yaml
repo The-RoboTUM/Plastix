@@ -1,0 +1,3 @@
+# Optional: used only by scripts/sim_with_logging (not by launch files).
+enable_runtime_logging: false
+runtime_log_subdir: debug_logs/launch_output

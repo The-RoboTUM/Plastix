@@ -1,0 +1,34 @@
+# rosbridge for the GripperX link - survives a reboot.
+#
+# Install:
+#   sudo cp config/systemd/octopus-rosbridge.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now octopus-rosbridge
+#   systemctl status octopus-rosbridge
+#
+# The launch arguments deliberately live in scripts/run_rosbridge.sh, not here:
+# the debug stack, this unit and a manual run then cannot drift apart, and the
+# reasoning behind each glob stays in one place.
+#
+# ROS_DOMAIN_ID is set explicitly on purpose. A unit inherits nothing from an
+# interactive shell, so a domain that works when you start the stack by hand is
+# ABSENT here - and a rosbridge on the wrong domain connects happily and
+# forwards nothing, which from the robot's side looks exactly like a network
+# fault. Set it even when the value is 0.
+
+[Unit]
+Description=rosbridge for the GripperX link
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=administrator
+Environment=ROS_DOMAIN_ID=0
+Environment=ROS_LOCALHOST_ONLY=0
+ExecStart=/home/administrator/projects/PlastiX/Octopus/scripts/run_rosbridge.sh
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

@@ -42,8 +42,11 @@ class MultiTeamBridgeNode(Node):
             10
         )
         
-        # Store laptop position
-        self.laptop_position = None
+        # Position the local frame is anchored on. Eve (the drone) is that point:
+        # the collector robot is started on her spot, so the whole Octopus stack
+        # calls it map (0, 0) - see docs/octopus_to_robot_interface.md. The laptop
+        # is only the fallback for a database that has no drone row yet.
+        self.datum_position = None
         
         # Timer to publish YOUR team's data
         self.create_timer(0.5, self.publish_own_team_data)
@@ -81,15 +84,14 @@ class MultiTeamBridgeNode(Node):
         )
         battery_dict = {b['device_id']: b for b in battery_data}
         
-        # Find laptop position
-        laptop = next((loc for loc in locations if loc['type'] == 'laptop'), None)
-        if laptop:
-            self.laptop_position = laptop
+        # Find the datum first: Eve if she is in the table, else the laptop.
+        datum = self.find_datum(locations)
+        if datum:
+            self.datum_position = datum
         
         # Publish each device
         for loc in locations:
             device_id = loc['origin_id']
-            device_type = loc['type']
             
             # Create publishers with TEAM namespace
             if device_id not in self.device_publishers:
@@ -104,14 +106,10 @@ class MultiTeamBridgeNode(Node):
                     10
                 )
             
-            # Calculate local coordinates
-            if self.laptop_position and device_type != 'laptop':
-                x, y = self.gps_to_local(
-                    loc['latitude'], loc['longitude'],
-                    self.laptop_position['latitude'], self.laptop_position['longitude']
-                )
-            else:
-                x, y = 0.0, 0.0
+            # Local coordinates relative to the datum. The datum device itself is
+            # 0, 0 - it is what the frame is anchored on, so it cannot report a
+            # position within its own frame.
+            x, y = self.local_position(loc)
             
             # Publish pose
             pose_msg = PoseStamped()
@@ -199,6 +197,27 @@ class MultiTeamBridgeNode(Node):
             f'{sum(t["device_count"] for t in all_teams.values())} total devices'
         )
     
+    @staticmethod
+    def is_datum_device(loc):
+        """Eve, whose position defines local (0, 0)."""
+        return (str(loc.get('type') or '').lower() == 'drone'
+                or 'eve' in str(loc.get('origin_id') or '').lower())
+
+    def find_datum(self, locations):
+        """Eve if the table knows her, otherwise the laptop as a stand-in."""
+        return (next((loc for loc in locations if self.is_datum_device(loc)), None)
+                or next((loc for loc in locations if loc.get('type') == 'laptop'), None))
+
+    def local_position(self, loc):
+        """Metres east/north of the datum. The datum itself is always (0, 0)."""
+        datum = self.datum_position
+        if not datum or loc.get('origin_id') == datum.get('origin_id'):
+            return 0.0, 0.0
+        return self.gps_to_local(
+            loc['latitude'], loc['longitude'],
+            datum['latitude'], datum['longitude'],
+        )
+
     def gps_to_local(self, lat, lon, origin_lat, origin_lon):
         """Convert GPS to local coordinates"""
         R = 6371000

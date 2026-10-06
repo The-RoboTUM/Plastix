@@ -1,0 +1,52 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+PACKAGE_PREFIX="$(ros2 pkg prefix gripperx_gazebo)"
+PACKAGE_SHARE="${PACKAGE_PREFIX}/share/gripperx_gazebo"
+CONFIG_PATH="${PACKAGE_SHARE}/config/sim_defaults.yaml"
+
+readarray -t LOG_CONFIG < <(
+  python3 - <<'PY' "${PACKAGE_PREFIX}" "${CONFIG_PATH}"
+from pathlib import Path
+import sys
+import yaml
+
+package_prefix = Path(sys.argv[1])
+config_path = Path(sys.argv[2])
+
+with config_path.open("r", encoding="ascii") as handle:
+    data = yaml.safe_load(handle) or {}
+
+enabled = bool(data.get("enable_runtime_logging", False))
+subdir = str(data.get("runtime_log_subdir", "debug_logs/launch_output"))
+
+if len(package_prefix.parents) >= 2 and package_prefix.parents[0].name == "install":
+    workspace_root = package_prefix.parents[1]
+else:
+    workspace_root = Path.cwd()
+
+print("true" if enabled else "false")
+print(str(workspace_root / subdir))
+PY
+)
+
+LOGGING_ENABLED="${LOG_CONFIG[0]}"
+LOG_DIR="${LOG_CONFIG[1]}"
+
+if [[ "${LOGGING_ENABLED}" != "true" ]]; then
+  exec ros2 launch gripperx_gazebo simulation.launch.py "$@"
+fi
+
+mkdir -p "${LOG_DIR}"
+mkdir -p "${LOG_DIR}/ros"
+
+TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
+LOG_FILE="${LOG_DIR}/sim_swerve_${TIMESTAMP}.log"
+
+export ROS_LOG_DIR="${LOG_DIR}/ros"
+
+echo "Logging sim launch output to ${LOG_FILE}"
+echo "ROS node logs will be written under ${ROS_LOG_DIR}"
+
+ros2 launch gripperx_gazebo simulation.launch.py "$@" 2>&1 | tee "${LOG_FILE}"
