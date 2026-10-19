@@ -234,11 +234,12 @@ Important: the `px4_msgs` version should match the PX4 firmware used on the Pixh
 
 ### 3.2 Detector model
 
-The current best model is `best_model_10_08_26.pt`. The detector takes the path as a
+The current best model is `best_camera_2026_10_19.pt` (until 2026-10-19: `best_model_10_08_26.pt`,
+same four classes). The detector takes the path as a
 parameter, so a newer model only changes the file name:
 
 ```text
-Octopus/detect-and-localize/data/models/best_model_10_08_26.pt
+Octopus/detect-and-localize/data/models/best_camera_2026_10_19.pt
 ```
 
 Create the model folder:
@@ -255,20 +256,20 @@ configs) is too large for git:
 Put it here:
 
 ```bash
-Octopus/detect-and-localize/data/models/best_model_10_08_26.pt
+Octopus/detect-and-localize/data/models/best_camera_2026_10_19.pt
 ```
 
 Example if the model file is in your Downloads folder:
 
 ```bash
-cp ~/Downloads/best_model_10_08_26.pt \
-  Octopus/detect-and-localize/data/models/best_model_10_08_26.pt
+cp ~/Downloads/best_camera_2026_10_19.pt \
+  Octopus/detect-and-localize/data/models/best_camera_2026_10_19.pt
 ```
 
 Check:
 
 ```bash
-ls -lh Octopus/detect-and-localize/data/models/best_model_10_08_26.pt
+ls -lh Octopus/detect-and-localize/data/models/best_camera_2026_10_19.pt
 ```
 
 ---

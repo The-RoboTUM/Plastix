@@ -14,7 +14,7 @@ ROS_WS="$BASE/ros2_ws"
 # verhindert, dass das Muster sich selbst trifft.
 MATCH='[d]etector_node.py'
 
-DETECTOR_MODEL="${DETECTOR_MODEL:-data/models/best_model_10_08_26.pt}"
+DETECTOR_MODEL="${DETECTOR_MODEL:-data/models/best_camera_2026_10_19.pt}"
 DETECTOR_INPUT_TOPIC="${DETECTOR_INPUT_TOPIC:-/camera/image_raw/compressed}"
 DETECTOR_THRESH="${DETECTOR_THRESH:-0.60}"
 DETECTOR_CONFIRM_FRAMES="${DETECTOR_CONFIRM_FRAMES:-3}"

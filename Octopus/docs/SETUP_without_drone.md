@@ -48,7 +48,7 @@ git checkout eve-octopus      # WICHTIG: das Dashboard liegt auf diesem Branch, 
   normalen Dateien.
 - Die **YOLO-Modelle sind nicht im Repo** (bewusst per `.gitignore` ausgeschlossen, weil groß).
   Für den `--demo`-Modus braucht man sie nicht. Für **echte** YOLO-Detektion ein Modell aus
-  `Octopus/detect-and-localize/data/models/` (z. B. `best_model_10_08_26.pt`) separat auf das
+  `Octopus/detect-and-localize/data/models/` (z. B. `best_camera_2026_10_19.pt`) separat auf das
   Zielgerät kopieren.
 - `octopusfinal.db` (Demo-Daten für Tasks/Fleet) ist im Repo und wird mitgeholt.
 
@@ -96,11 +96,11 @@ python test_camera_feed.py --source DEIN_BILD.jpg --demo
 python test_camera_feed.py --source DEIN_VIDEO.mp4 --demo --fps 5
 
 # c) Feed + ECHTE YOLO-Detektion — Video:
-python test_camera_feed.py --source DEIN_VIDEO.mp4 --model ../detect-and-localize/data/models/best_model_10_08_26.pt 
+python test_camera_feed.py --source DEIN_VIDEO.mp4 --model ../detect-and-localize/data/models/best_camera_2026_10_19.pt 
 
 
 # d) Feed + ECHTE YOLO-Detektion — Webcam:
-python test_camera_feed.py --source 0 --model ../detect-and-localize/data/models/best_model_10_08_26.pt 
+python test_camera_feed.py --source 0 --model ../detect-and-localize/data/models/best_camera_2026_10_19.pt 
 ```
 
 `--source` und die Box-Quelle sind unabhängig: jede Quelle (Standbild, Video, Webcam-Index)

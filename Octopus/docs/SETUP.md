@@ -301,7 +301,7 @@ Zwei Fälle, in denen das venv **erneut** fällig ist:
 
 Und noch eine Voraussetzung für Terminal 3, aus demselben Grund: **das YOLO-Modell ist nicht im
 Repo** (siehe oben, `.gitignore`). Der Befehl in Terminal 3 zeigt auf
-`data/models/best_model_10_08_26.pt` — die Datei muss separat nach
+`data/models/best_camera_2026_10_19.pt` — die Datei muss separat nach
 `Octopus/detect-and-localize/data/models/` kopiert werden, sonst startet der Node auch mit
 fertigem venv nicht. Was lokal liegt, zeigt `ls Octopus/detect-and-localize/data/models/`.
 
@@ -444,7 +444,7 @@ Setzt „Einmalig (Laptop): venv für den Detektor" oben voraus, sonst scheitert
 `.venv/bin/activate` — und danach am fehlenden Modell.
 
 ```bash
-cd Octopus/detect-and-localize && source .venv/bin/activate && source /opt/ros/humble/setup.bash && source ../ros2_ws/install/setup.bash && export ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 && python ../ros2_ws/src/detection_pkg/detection_pkg/detector_node.py --ros-args -p detect_localize_path:="$PWD" -p model:=data/models/best_model_10_08_26.pt -p input_topic:=/camera/image_raw/compressed -p output_frame:=camera -p show_ui:=false -p thresh:=0.60 -p confirm_frames:=3 -p max_lost:=5 -p yolo_frameskip:=0 -p dist_thresh:=0.10 -p move_thresh:=0.10 -p confirmed_republish_period_sec:=1.0
+cd Octopus/detect-and-localize && source .venv/bin/activate && source /opt/ros/humble/setup.bash && source ../ros2_ws/install/setup.bash && export ROS_DOMAIN_ID=0 ROS_LOCALHOST_ONLY=0 && python ../ros2_ws/src/detection_pkg/detection_pkg/detector_node.py --ros-args -p detect_localize_path:="$PWD" -p model:=data/models/best_camera_2026_10_19.pt -p input_topic:=/camera/image_raw/compressed -p output_frame:=camera -p show_ui:=false -p thresh:=0.60 -p confirm_frames:=3 -p max_lost:=5 -p yolo_frameskip:=0 -p dist_thresh:=0.10 -p move_thresh:=0.10 -p confirmed_republish_period_sec:=1.0
 ```
 
 **Terminal offen lassen.** Danach publiziert `/detector_node/confirmed` mit ca. 1 Hz.
@@ -608,7 +608,7 @@ Zwei Dinge, die dabei wichtig sind:
 
 Auf die Karte kommt außerdem nur die Klasse `rubbish`; `_to_world` verwirft alle anderen. Im
 Kamerabild des Dashboards erscheinen dagegen alle Klassen des Modells — bei
-`best_model_10_08_26.pt` also auch `apriltag`, `human` und `robot`.
+`best_camera_2026_10_19.pt` also auch `apriltag`, `human` und `robot`.
 
 ---
 

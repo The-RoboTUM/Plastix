@@ -84,7 +84,9 @@ function initialCameraCrop() {
 
 const OCTOPUS = {
   missionPhase: localStorage.getItem("octopusMissionPhase") || "preflight",
-  dashboardView: localStorage.getItem("octopusDashboardView") || "overview",
+  // Per window: ?view= in the URL first, so each monitor keeps its own view across
+  // reloads; the last view chosen anywhere is only the default for a bare URL.
+  dashboardView: new URLSearchParams(location.search).get("view") || localStorage.getItem("octopusDashboardView") || "overview",
   lastRefresh: null,
   backendOk: false,
   lastError: null,
@@ -2726,6 +2728,11 @@ function applyDashboardView(view = OCTOPUS.dashboardView, announce = false) {
   const safeView = DASHBOARD_VIEWS[view] ? view : "overview";
   OCTOPUS.dashboardView = safeView;
   localStorage.setItem("octopusDashboardView", safeView);
+  const url = new URL(location.href);
+  if (url.searchParams.get("view") !== safeView) {
+    url.searchParams.set("view", safeView);
+    history.replaceState(history.state, "", url);
+  }
   document.body.dataset.view = safeView;
   const select = $("dashboard-view-select");
   if (select) select.value = safeView;
@@ -5767,7 +5774,10 @@ setInterval(refreshAll, 5000);
 // costs a full Leaflet layer rebuild per tick.
 const CAMERA_POLL_MS = 400;
 refreshCameraDebug();
-setInterval(refreshCameraDebug, CAMERA_POLL_MS);
+// A minimised window or a background tab skips the camera poll: with one window
+// per monitor it is the poll that multiplies, and nobody sees the result there.
+setInterval(() => { if (!document.hidden) refreshCameraDebug(); }, CAMERA_POLL_MS);
+document.addEventListener("visibilitychange", () => { if (!document.hidden) refreshCameraDebug(); });
 
 
 // --- OCTOPUS EVE CAMERA FRONTEND ---
@@ -6946,7 +6956,8 @@ if (document.readyState === "loading") {
 // --- View-specific layout mode ---
 function syncDashboardViewClass() {
   const viewSelect = document.getElementById("view-select");
-  const view = viewSelect?.value || OCTOPUS?.dashboardView || localStorage.getItem("octopusDashboardView") || "overview";
+  // Not localStorage: that holds the view another window chose last.
+  const view = viewSelect?.value || OCTOPUS?.dashboardView || "overview";
   document.body.classList.toggle("octopus-view-debug", view === "debug");
 }
 
@@ -7644,3 +7655,100 @@ function setupMappingSettingsControls() {
 setTimeout(setupMappingSettingsControls, 0);
 setInterval(updateMappingSettingsPanel, 2000);
 
+
+
+// --- Several windows, one browser (one window per monitor) ---
+// OCTOPUS reads localStorage once, at load. Without this a second window keeps the
+// Eve placement it started with and its fake-GPS heartbeat pushes that stale datum
+// back to ROS every 10 s, so the GripperX goals jump between the two. The storage
+// event reaches every OTHER window of this origin as soon as one of them writes.
+// Only mission state is shared; how a window draws (view, layer filters, legend,
+// camera grid) stays per window, so each monitor can show something else. The
+// camera crop is shared through the backend instead (adoptCameraCropFromBackend).
+
+function parseStoredJson(value, fallback = null) {
+  try {
+    return value == null ? fallback : JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+// The window that changed Eve has posted her already. Count that post as our own,
+// so this window neither repeats it nor sends its old value first.
+function adoptEveFakeGpsFromOtherWindow() {
+  const pose = eveGeoPose();
+  if (pose) OCTOPUS.lastEveFakeGps = { lat: pose.lat, lon: pose.lon, yawDeg: pose.yawDeg, postedAt: Date.now() };
+}
+
+const CROSS_WINDOW_STATE = {
+  octopusManualEve(value) {
+    OCTOPUS.manualEve = parseStoredJson(value);
+    renderAll();
+    adoptEveFakeGpsFromOtherWindow();
+  },
+  octopusEveYawDeg(value) {
+    const deg = parseFloat(value || "0") || 0;
+    OCTOPUS.eveYawManualDeg = deg;
+    if (OCTOPUS.eveYawSource !== "drone") OCTOPUS.eveYawDeg = deg;
+    applyEveYawFromDrone(true);
+    adoptEveFakeGpsFromOtherWindow();
+  },
+  octopusEveYawSource(value) {
+    OCTOPUS.eveYawSource = value === "drone" ? "drone" : "manual";
+    if (OCTOPUS.eveYawSource === "manual") OCTOPUS.eveYawDeg = OCTOPUS.eveYawManualDeg;
+    applyEveYawFromDrone(true);
+    adoptEveFakeGpsFromOtherWindow();
+  },
+  octopusMissionArea(value) {
+    OCTOPUS.missionArea = parseStoredJson(value);
+    OCTOPUS.missionMap.hasFit = false;
+    OCTOPUS.gridView = { scale: 1, offsetX: 0, offsetY: 0, isPanning: false, lastX: 0, lastY: 0, moved: false };
+    updateResolutionLabel();
+    renderAll();
+  },
+  octopusMissionPhase(value) {
+    OCTOPUS.missionPhase = value || "preflight";
+    renderMissionPhase();
+  },
+  octopusOsmPriors(value) {
+    OCTOPUS.osmPriors = parseStoredJson(value);
+    drawGridMap(OCTOPUS.latest.globalMap || {});
+  },
+  octopusCameraFootprint(value) {
+    const settings = parseStoredJson(value);
+    if (!settings) return;
+    // octopusCameraFootprintSettings() reads the inputs before the stored value.
+    const heightInput = $("camera-footprint-height-input");
+    const resolutionInput = $("grid-resolution-input");
+    if (heightInput) heightInput.value = safeNumber(settings.height_m, 2.5).toFixed(2);
+    if (resolutionInput) resolutionInput.value = safeNumber(settings.resolution, 0.10).toFixed(2);
+    // Writes the same value back, which raises no further storage event.
+    octopusRefreshGridModeView(false);
+  },
+};
+
+window.addEventListener("storage", (event) => {
+  const apply = event.storageArea === localStorage && CROSS_WINDOW_STATE[event.key];
+  if (!apply) return;
+  try {
+    apply(event.newValue);
+  } catch (error) {
+    console.warn(`Cross-window sync of ${event.key} failed`, error);
+  }
+});
+
+// Opens the dashboard again in its own window, to be dragged onto the next monitor.
+// It starts on a different view than this one; its own view menu changes it there.
+function openDashboardWindow() {
+  const views = Object.keys(DASHBOARD_VIEWS);
+  const next = views[(views.indexOf(OCTOPUS.dashboardView) + 1) % views.length];
+  const url = new URL(location.href);
+  url.searchParams.set("view", next);
+  window.open(url, "_blank", "popup");
+}
+
+{
+  const button = $("open-window-button");
+  if (button) button.addEventListener("click", openDashboardWindow);
+}

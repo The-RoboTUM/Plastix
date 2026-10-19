@@ -989,7 +989,7 @@ DETECTOR_LOG = "/tmp/octopus_detector.log"
 DETECTOR_MODELS_DIR = os.path.join(OCTOPUS_ROOT, "detect-and-localize", "data", "models")
 
 DETECTOR_CONFIG: Dict[str, Any] = {
-    "model": "data/models/best_model_10_08_26.pt",
+    "model": "data/models/best_camera_2026_10_19.pt",
     "thresh": 0.60,
     "confirm_frames": 3,
     "max_lost": 5,
