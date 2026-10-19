@@ -788,8 +788,9 @@ function getFleetSnapshot() {
       const pose = device.pose || {};
       const lat = safeNumber(pose.lat, NaN);
       const lon = safeNumber(pose.lon, NaN);
-      if (Number.isFinite(lat) && Number.isFinite(lon)) {
-        location = { id: profile.name, lat, lon, ts: null, state: pose.status || "ok", live: true };
+      const shown = lineGeoToDisplayLatLng(lat, lon);
+      if (shown) {
+        location = { id: profile.name, lat: shown[0], lon: shown[1], ts: null, state: pose.status || "ok", live: true };
       } else {
         // The robot is talking but cannot place itself (typically pose.status
         // "no_datum"). Falling back to the configured demo position here would
@@ -1875,9 +1876,9 @@ function renderMissionMap() {
   }
 
   tasks.forEach((task) => {
-    const lat = safeNumber(task.lat, NaN);
-    const lon = safeNumber(task.lon, NaN);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
+    const shown = lineGeoToDisplayLatLng(safeNumber(task.lat, NaN), safeNumber(task.lon, NaN));
+    if (!shown) return;
+    const [lat, lon] = shown;
     const marker = L.circleMarker([lat, lon], {
       radius: 6,
       color: "#ffffff",
@@ -1923,26 +1924,9 @@ function fitMissionMap() {
 // position, heading and the camera ground footprint. Assumes a downward-looking
 // camera; image-top = drone forward. Heading (yaw) defaults to 0 = facing north.
 function projectDetectionsToMap() {
-  const eve = getFleetSnapshot().find((r) => r.key === "eve");
-  if (!eve || eve.demo || !Number.isFinite(safeNumber(eve.local?.x, NaN))) {
-    return { eve: null, corners: null, points: [] };
-  }
-  const fp = octopusComputeCameraFootprintMeta().footprint;
-  const widthM = fp.left_m + fp.right_m;
-  const heightM = fp.top_m + fp.bottom_m;
-  const yawDeg = safeNumber(OCTOPUS.eveYawDeg, 0);
-  const th = (yawDeg * Math.PI) / 180;
-  const cos = Math.cos(th);
-  const sin = Math.sin(th);
-  const ex = eve.local.x;
-  const ey = eve.local.y;
-
-  // camera-frame offset (right, forward) -> world local (east=x, north=y), rotated by heading.
-  const toWorld = (offRight, offFwd) => {
-    const east = offRight * cos + offFwd * sin;
-    const north = -offRight * sin + offFwd * cos;
-    return localToLatLng(ex + east, ey + north);
-  };
+  const model = cameraGroundModel();
+  if (!model) return { eve: null, corners: null, points: [] };
+  const { eve, fp, widthM, heightM, yawDeg, toWorld } = model;
 
   const corners = [
     toWorld(-fp.left_m, -fp.bottom_m),
@@ -1966,6 +1950,96 @@ function projectDetectionsToMap() {
     .filter(Boolean);
 
   return { eve, corners, points, evePos, headingTip, yawDeg };
+}
+
+// Eve's camera footprint on the ground: camera-frame offsets (right, forward, in
+// metres) -> [lat, lon]. Null while Eve has no real position.
+function cameraGroundModel(eve = getFleetSnapshot().find((r) => r.key === "eve")) {
+  if (!eve || eve.demo || !Number.isFinite(safeNumber(eve.local?.x, NaN))) return null;
+  const fp = octopusComputeCameraFootprintMeta().footprint;
+  const widthM = fp.left_m + fp.right_m;
+  const heightM = fp.top_m + fp.bottom_m;
+  const yawDeg = safeNumber(OCTOPUS.eveYawDeg, 0);
+  const th = (yawDeg * Math.PI) / 180;
+  const cos = Math.cos(th);
+  const sin = Math.sin(th);
+  const ex = eve.local.x;
+  const ey = eve.local.y;
+
+  // camera-frame offset (right, forward) -> world local (east=x, north=y), rotated by heading.
+  const toWorld = (offRight, offFwd) => {
+    const east = offRight * cos + offFwd * sin;
+    const north = -offRight * sin + offFwd * cos;
+    return localToLatLng(ex + east, ey + north);
+  };
+  return { eve, fp, widthM, heightM, yawDeg, toWorld };
+}
+
+// -----------------------------------------------------------------------------
+// Line-frame coordinates -> the mission map
+//
+// Once the line calibration is complete, trash_gps_goal_node no longer expresses
+// goals around Eve in map east/north: its lat/lon are LINE-FRAME metres (x along
+// A->B, y across) added to Eve's datum, and GripperX reports its own pose the
+// same way. Drawn as plain lat/lon they land rotated by Eve's yaw and mirrored
+// across the line - GripperX showed up on the far side of the trash it was
+// standing next to. So these positions go back through the camera image, the
+// same path the detections take onto the map:
+//   line metres -> full-frame pixel (inverse of line_frame.py pixel_to_line)
+//               -> cropped u/v -> Eve's footprint -> lat/lon.
+// Only for the targets and the robots' own poses; Eve and the scanned cells are
+// in the map frame already.
+// -----------------------------------------------------------------------------
+
+// True when trash_gps_goal_node is working in the line frame right now: the same
+// test it applies itself (a line frame with a metric scale).
+function lineFrameGoalsActive() {
+  const frame = OCTOPUS.latest.cameraTransformStatus?.line_frame;
+  return Boolean(frame?.available && safeNumber(frame.metres_per_map_unit, 0) > 0);
+}
+
+// Line-frame lat/lon -> [lat, lon] to draw. Returned unchanged while goals are
+// not in the line frame; null when they are but cannot be placed (no pixel
+// calibration, no Eve), since a marker in the wrong place is worse than none.
+function lineGeoToDisplayLatLng(lat, lon) {
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (!lineFrameGoalsActive()) return [lat, lon];
+
+  const cal = OCTOPUS.latest.lineCalibration;
+  const mid = cal?.pixel_midpoint;
+  const dir = cal?.direction_unit_px;
+  const mpp = safeNumber(cal?.metres_per_pixel, 0);
+  if (!cal?.calibrated || !Array.isArray(mid) || !Array.isArray(dir) || !(mpp > 0)) return null;
+  // Eve is the local origin by definition. Passed in rather than looked up:
+  // getFleetSnapshot() places the robots through this very function.
+  const model = cameraGroundModel({ key: "eve", local: { x: 0, y: 0 } });
+  if (!model) return null;
+
+  // Same datum and flat-earth arithmetic as trash_gps_goal_node.local_to_latlon.
+  const datum = eveDatum();
+  const along = (lon - datum.lon) * metersPerDegreeLonForLat(datum.lat);
+  let across = (lat - datum.lat) * METERS_PER_DEGREE_LAT;
+  // trash_gps_goal_node measures "left" in the NED map frame, where the formula
+  // it uses lands on the right-hand side, while pixel_to_line's unmirrored y is
+  // the true left in an unflipped image. So the two agree when the flag is set
+  // and disagree by a sign when it is not.
+  if (!cal.mirrored) across = -across;
+
+  const ex = safeNumber(dir[0], 1);
+  const ey = safeNumber(dir[1], 0);
+  const px = safeNumber(mid[0], 0) + (along * ex + across * ey) / mpp;
+  const py = safeNumber(mid[1], 0) + (along * ey - across * ex) / mpp;
+
+  // Full-frame pixel (v down) -> the cropped frame's u/v (v up), as cropDetection.
+  let u = px / OCTOPUS_HBVCAM_640X480.image_width;
+  let v = 1 - py / OCTOPUS_HBVCAM_640X480.image_height;
+  const crop = effectiveCameraCrop();
+  if (crop.active) {
+    u = (u - crop.left) / crop.kx;
+    v = (v - crop.bottom) / crop.ky;
+  }
+  const { fp, widthM, heightM, toWorld } = model;
+  return toWorld(u * widthM - fp.left_m, v * heightM - fp.bottom_m);
 }
 
 // Returns true when the camera footprint outline was drawn, so the GPS grid does
@@ -2387,10 +2461,9 @@ function drawGridMarker(ctx, xPx, yPx, label, style) {
 function drawFleetAndTasksOnGrid(ctx, mapData, geom) {
   const display = OCTOPUS.gridDisplay || GRID_DISPLAY_DEFAULTS;
   if (display.trash) (OCTOPUS.latest.tasks || []).forEach((task) => {
-    const lat = safeNumber(task.lat, NaN);
-    const lon = safeNumber(task.lon, NaN);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return;
-    const local = latLngToLocal(lat, lon);
+    const shown = lineGeoToDisplayLatLng(safeNumber(task.lat, NaN), safeNumber(task.lon, NaN));
+    if (!shown) return;
+    const local = latLngToLocal(shown[0], shown[1]);
     if (local.x < 0 || local.x > geom.width_m || local.y < 0 || local.y > geom.height_m) return;
     const p = localMetersToCanvas(geom, local.x, local.y);
     if (p.x < -20 || p.x > geom.canvas.width + 20 || p.y < -20 || p.y > geom.canvas.height + 20) return;
@@ -3160,7 +3233,8 @@ function renderTasks() {
     card.addEventListener("click", () => {
       const task = tasks.find((t) => String(t.id) === String(card.dataset.taskId));
       if (!task) return;
-      const local = latLngToLocal(safeNumber(task.lat, 0), safeNumber(task.lon, 0));
+      const shown = lineGeoToDisplayLatLng(safeNumber(task.lat, NaN), safeNumber(task.lon, NaN));
+      const local = shown ? latLngToLocal(shown[0], shown[1]) : null;
       OCTOPUS.selected = { type: "task", task, local };
       renderInspector();
     });

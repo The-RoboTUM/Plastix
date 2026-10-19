@@ -642,6 +642,8 @@
       border-color: rgba(100, 160, 200, 0.72);
       box-shadow: 0 0 0 3px rgba(100, 160, 200, 0.12);
     }
+    /* Above the Leaflet panes and controls (400-1000) of the map below it. */
+    .map-panel .display-menu { z-index: 1100; }
     .display-menu-panel {
       position: absolute;
       right: 0;
@@ -2577,6 +2579,26 @@ body .camera-debug-panel:fullscreen #camera-debug-image {
             <button id="clear-area-button" class="ghost" title="Clear the custom search area">Clear</button>
             <button id="use-view-area-button" class="ghost" title="Use the current visible map bounds as search area">Use view</button>
             <button id="mission-fit-button" class="ghost">Fit</button>
+            <!-- Display filters for the grid cells. They used to sit in the local grid
+                 panel, which none of the three views shows, so they were unreachable.
+                 They act on this map overlay and the local grid alike. -->
+            <details class="display-menu" id="grid-display-menu">
+              <summary aria-label="Open display layer controls">Display ▾</summary>
+              <div class="display-menu-panel" role="group" aria-label="Grid display options">
+                <div class="display-menu-title">Show on map</div>
+                <label class="display-option"><input type="checkbox" data-grid-display="priors" checked /> OSM priors</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="detections" checked /> real detections</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="ground" checked /> ground</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="water" checked /> water</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="obstacles" checked /> obstacles/buildings</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="trash" checked /> trash/tasks</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="fleet" checked /> robots + drone</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="home" /> home station</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="coverage" checked /> coverage overlay</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="confidence" checked /> confidence shading</label>
+                <label class="display-option"><input type="checkbox" data-grid-display="unknown" checked /> unknown cells</label>
+              </div>
+            </details>
           </div>
         </div>
         <div class="panel-body" style="padding:0; overflow:hidden;">
@@ -2600,23 +2622,6 @@ body .camera-debug-panel:fullscreen #camera-debug-image {
               <option value="osm_priors">OSM priors</option>
               <option value="debug">Debug layers</option>
             </select>
-            <details class="display-menu" id="grid-display-menu">
-              <summary aria-label="Open display layer controls">Display ▾</summary>
-              <div class="display-menu-panel" role="group" aria-label="Grid display options">
-                <div class="display-menu-title">Show on local grid</div>
-                <label class="display-option"><input type="checkbox" data-grid-display="priors" checked /> OSM priors</label>
-                <label class="display-option"><input type="checkbox" data-grid-display="detections" checked /> real detections</label>
-                <label class="display-option"><input type="checkbox" data-grid-display="ground" checked /> ground</label>
-                <label class="display-option"><input type="checkbox" data-grid-display="water" checked /> water</label>
-                <label class="display-option"><input type="checkbox" data-grid-display="obstacles" checked /> obstacles/buildings</label>
-                <label class="display-option"><input type="checkbox" data-grid-display="trash" checked /> trash/tasks</label>
-                <label class="display-option"><input type="checkbox" data-grid-display="fleet" checked /> robots + drone</label>
-                <label class="display-option"><input type="checkbox" data-grid-display="home" /> home station</label>
-                <label class="display-option"><input type="checkbox" data-grid-display="coverage" checked /> coverage overlay</label>
-                <label class="display-option"><input type="checkbox" data-grid-display="confidence" checked /> confidence shading</label>
-                <label class="display-option"><input type="checkbox" data-grid-display="unknown" checked /> unknown cells</label>
-              </div>
-            </details>
             <button id="load-osm-priors-button" class="ghost" title="Load low-confidence semantic priors from OpenStreetMap/Overpass for the current search area">Load OSM priors</button>
             <button id="grid-zoom-out-button" class="ghost" title="Zoom out local grid">−</button>
             <button id="grid-zoom-in-button" class="ghost" title="Zoom in local grid">+</button>
