@@ -82,11 +82,21 @@ function initialCameraCrop() {
   return crop;
 }
 
+// Second-screen window: dashboard.html?screen=map|camera shows that one panel
+// alone, filling its window (see initScreenMode). The <head> sets the flag on
+// <html> before the first paint; null in the normal dashboard.
+const SCREEN_PANELS = { map: ".map-panel", camera: ".camera-feed-panel" };
+const SCREEN_MODE = SCREEN_PANELS[document.documentElement.dataset.screen]
+  ? document.documentElement.dataset.screen
+  : null;
+
 const OCTOPUS = {
   missionPhase: localStorage.getItem("octopusMissionPhase") || "preflight",
   // Per window: ?view= in the URL first, so each monitor keeps its own view across
   // reloads; the last view chosen anywhere is only the default for a bare URL.
-  dashboardView: new URLSearchParams(location.search).get("view") || localStorage.getItem("octopusDashboardView") || "overview",
+  // A second-screen window always runs the show view: it is the only one that
+  // never hides the map or the camera panel.
+  dashboardView: SCREEN_MODE ? "show" : new URLSearchParams(location.search).get("view") || localStorage.getItem("octopusDashboardView") || "overview",
   lastRefresh: null,
   backendOk: false,
   lastError: null,
@@ -2727,7 +2737,9 @@ function healthSummary(items) {
 function applyDashboardView(view = OCTOPUS.dashboardView, announce = false) {
   const safeView = DASHBOARD_VIEWS[view] ? view : "overview";
   OCTOPUS.dashboardView = safeView;
-  localStorage.setItem("octopusDashboardView", safeView);
+  // The second-screen window's forced view must not become the default view of
+  // the next bare dashboard URL.
+  if (!SCREEN_MODE) localStorage.setItem("octopusDashboardView", safeView);
   const url = new URL(location.href);
   if (url.searchParams.get("view") !== safeView) {
     url.searchParams.set("view", safeView);
@@ -5804,10 +5816,83 @@ function setupEventListeners() {
   });
 }
 
+// -----------------------------------------------------------------------------
+// Second screen: Mission Map or Camera Feed alone in its own window
+// -----------------------------------------------------------------------------
+//
+// The window is the whole dashboard — same polling, same localStorage settings,
+// so grid mode, crop, Eve placement etc. follow the main window on its next
+// read — with only the one panel shown. Drag it onto the other monitor and go
+// fullscreen there. Where the browser has the Window Management API
+// (Chrome/Edge, asks once for permission) it lands on the other monitor by
+// itself.
+function initScreenMode() {
+  if (!SCREEN_MODE) return;
+  const panel = document.querySelector(SCREEN_PANELS[SCREEN_MODE]);
+  if (!panel) return;
+  // Out from under the view-dependent grid rules, before Leaflet measures it.
+  panel.id = "octopus-screen-panel";
+  document.body.appendChild(panel);
+  document.title = SCREEN_MODE === "map" ? "Octopus · Mission Map" : "Octopus · Camera Feed";
+
+  const button = panel.querySelector("[data-screen-popout]");
+  if (button) {
+    button.textContent = "⛶ Fullscreen";
+    button.title = "Fill this whole monitor (key F). Esc leaves fullscreen.";
+  }
+  document.addEventListener("keydown", (event) => {
+    if (event.key !== "f" && event.key !== "F") return;
+    if (event.target.closest?.("input, select, textarea")) return;
+    toggleScreenFullscreen();
+  });
+  document.addEventListener("fullscreenchange", () => {
+    if (OCTOPUS.missionMap.map) OCTOPUS.missionMap.map.invalidateSize();
+  });
+}
+
+function toggleScreenFullscreen() {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen().catch(() => {});
+}
+
+async function openSecondScreen(which) {
+  const url = new URL(location.pathname, location.href);
+  url.searchParams.set("screen", which);
+  // Opened before anything is awaited: a permission prompt would use up the
+  // click, and the browser would then block the pop-up.
+  const win = window.open(url, `octopus-screen-${which}`, "popup,width=1280,height=800");
+  if (!win) {
+    addTimeline("The browser blocked the second-screen window — allow pop-ups for the dashboard.", "error");
+    return;
+  }
+  win.focus();
+  if (!window.getScreenDetails) return;
+  try {
+    const details = await window.getScreenDetails();
+    const other = details.screens.find((screen) => screen !== details.currentScreen);
+    if (!other) return;
+    win.moveTo(other.availLeft, other.availTop);
+    win.resizeTo(other.availWidth, other.availHeight);
+  } catch (_) {
+    // No permission: the window stays next to this one and is dragged over by hand.
+  }
+}
+
+function setupScreenButtons() {
+  document.querySelectorAll("[data-screen-popout]").forEach((button) => {
+    button.addEventListener("click", () => {
+      if (SCREEN_MODE) toggleScreenFullscreen();
+      else openSecondScreen(button.dataset.screenPopout);
+    });
+  });
+}
+
+initScreenMode();
 initMissionMap();
 updateResolutionLabel();
 applyDashboardView(OCTOPUS.dashboardView, false);
 setupEventListeners();
+setupScreenButtons();
 renderMissionPhase();
 renderTimeline();
 refreshAll();
@@ -7486,6 +7571,87 @@ if (document.readyState === "loading") {
   document.addEventListener("DOMContentLoaded", setupCameraCropControls);
 } else {
   setupCameraCropControls();
+}
+
+
+// -----------------------------------------------------------------------------
+// Eve camera brightness
+// -----------------------------------------------------------------------------
+//
+// The UVC brightness control of Eve's camera, via the backend (ssh + v4l2-ctl
+// on the Pi). The camera is the only store: read when the page loads, written
+// when the slider is let go — one ssh call per adjustment, not one per step of
+// the drag. Errors go to the label's tooltip and the timeline.
+const CAMERA_BRIGHTNESS_DEFAULT = 5;
+let cameraBrightnessBusy = false;
+
+function setCameraBrightnessUi(value, error = "") {
+  const known = Number.isFinite(value);
+  const slider = $("camera-brightness");
+  if (slider) {
+    if (known && document.activeElement !== slider) slider.value = String(value);
+    slider.disabled = cameraBrightnessBusy;
+  }
+  const reset = $("camera-brightness-reset-btn");
+  if (reset) reset.disabled = cameraBrightnessBusy;
+  const label = $("camera-brightness-label");
+  if (label) {
+    label.textContent = known ? String(value) : "--";
+    label.classList.toggle("is-changed", known && value !== CAMERA_BRIGHTNESS_DEFAULT);
+    label.classList.toggle("is-error", !!error);
+    label.title = error;
+  }
+}
+
+async function loadCameraBrightness() {
+  try {
+    const data = await eveFetchJson("/api/eve/camera_brightness");
+    if (data.status === "ok") setCameraBrightnessUi(data.brightness);
+    else setCameraBrightnessUi(NaN, "Eve camera not reachable");
+  } catch (error) {
+    setCameraBrightnessUi(NaN, `Could not read: ${error.message}`);
+  }
+}
+
+async function applyCameraBrightness(value) {
+  if (cameraBrightnessBusy) return;
+  const target = clamp(Math.round(safeNumber(value, CAMERA_BRIGHTNESS_DEFAULT)), -64, 64);
+  cameraBrightnessBusy = true;
+  setCameraBrightnessUi(target);
+  try {
+    const data = await eveFetchJson("/api/eve/camera_brightness", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ brightness: target }),
+    });
+    if (data.status !== "ok") throw new Error(data.ssh?.stderr || "Eve camera not reachable");
+    cameraBrightnessBusy = false;
+    setCameraBrightnessUi(data.brightness);
+    addTimeline(`Eve camera brightness set to ${data.brightness}.`, "info");
+  } catch (error) {
+    cameraBrightnessBusy = false;
+    addTimeline(`Eve camera brightness not set: ${error.message}`, "error");
+    // Show what the camera has now, not the value that failed.
+    await loadCameraBrightness();
+  }
+}
+
+function setupCameraBrightnessControls() {
+  const slider = $("camera-brightness");
+  // The second-screen windows hide the toolbar; no ssh calls from there.
+  if (!slider || SCREEN_MODE) return;
+  const label = $("camera-brightness-label");
+  slider.addEventListener("input", () => { if (label) label.textContent = slider.value; });
+  slider.addEventListener("change", () => applyCameraBrightness(slider.value));
+  const reset = $("camera-brightness-reset-btn");
+  if (reset) reset.addEventListener("click", () => applyCameraBrightness(CAMERA_BRIGHTNESS_DEFAULT));
+  loadCameraBrightness();
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", setupCameraBrightnessControls);
+} else {
+  setupCameraBrightnessControls();
 }
 
 

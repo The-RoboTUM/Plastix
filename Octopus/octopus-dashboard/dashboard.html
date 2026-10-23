@@ -6,6 +6,14 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <link rel="stylesheet" href="vendor/leaflet/leaflet.css" />
   <script src="vendor/leaflet/leaflet.js"></script>
+  <script>
+    // Second-screen window (?screen=map|camera): flag it before the first paint,
+    // so the full dashboard never flashes up. live_data.js does the rest.
+    (function () {
+      var screen = new URLSearchParams(location.search).get("screen");
+      if (screen === "map" || screen === "camera") document.documentElement.dataset.screen = screen;
+    })();
+  </script>
   <style>
     :root {
       --bg-main: #05080d;
@@ -2151,6 +2159,25 @@ body .camera-debug-panel:fullscreen #camera-debug-image {
 }
 
 #camera-debug-fullscreen { padding: 5px 12px; min-height: 0; flex: 0 0 auto; }
+
+/* Second screen (?screen=map|camera): live_data.js moves the one panel under
+   <body> and gives it this id; everything else goes. The id outranks every
+   view rule that would hide the panel. The toolbar knobs stay in the main
+   window — this one only displays. */
+html[data-screen] body { overflow: hidden; }
+html[data-screen] body > :not(#octopus-screen-panel) { display: none !important; }
+html[data-screen] #octopus-screen-panel {
+  position: fixed;
+  inset: 0;
+  display: flex !important;
+  border: 0;
+  border-radius: 0;
+}
+html[data-screen] #octopus-screen-panel .grid-toolbar,
+html[data-screen] #octopus-screen-panel .camera-crop-details { display: none !important; }
+.screen-popout-button { padding: 3px 8px; min-height: 0; flex: 0 0 auto; font-size: 13px; white-space: nowrap; }
+/* Without this the crowded map toolbar squeezes the title and covers the button. */
+.panel-title:has(.screen-popout-button) { flex-shrink: 0; }
 /* --- END CAMERA DEBUG COLUMN --- */
 
 
@@ -2264,6 +2291,25 @@ body .camera-debug-panel:fullscreen #camera-debug-image {
       color: var(--text-muted);
     }
     .camera-feed-toolbar .small-input { padding: 5px 7px; }
+    .camera-brightness-slider {
+      width: 92px;
+      accent-color: #fbbf24;
+      vertical-align: middle;
+      cursor: pointer;
+    }
+    .camera-brightness-slider:disabled { opacity: 0.45; cursor: progress; }
+    #camera-brightness-label {
+      min-width: 26px;
+      display: inline-block;
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      color: var(--text-soft);
+    }
+    #camera-brightness-label.is-changed { color: #fbbf24; }
+    #camera-brightness-label.is-error { color: #fca5a5; }
+    .camera-brightness-reset { padding: 3px 8px; min-height: 0; }
+    /* Slider and reset wrap as one, never the button alone. */
+    .camera-brightness-group { display: inline-flex; align-items: center; gap: 6px; }
 
     /* GPS grid readout: which coordinate / grid cell each detection sits on. */
     .camera-gps-readout {
@@ -2422,13 +2468,14 @@ body .camera-debug-panel:fullscreen #camera-debug-image {
     body[data-view="show"] .side-column { display: none !important; }
     body[data-view="show"] .timeline-panel { grid-template-columns: 1fr; }
 
-    /* The two toolbars keep exactly the controls a presenter drives live; the
+    /* The two toolbars keep exactly the controls a presenter drives live (camera
+       brightness among them: overexposure shows up mid-demo, with the light); the
        rest of each toolbar is hidden per child. Written as :not() exclusions so
        the kept elements never need an explicit display value — a button and a
        .resolution-control label do not share one. The JS mode gating still works
        on top of this: syncModeControls() sets [hidden] on Cells/Step/Cell names,
        and .grid-toolbar label[hidden] wins over nothing here. */
-    body[data-view="show"] .camera-feed-toolbar > *:not(#camera-grid-mode-control):not(#camera-gps-step-control):not(#camera-highlight-control):not(#camera-cell-names-control),
+    body[data-view="show"] .camera-feed-toolbar > *:not(#camera-grid-mode-control):not(#camera-gps-step-control):not(#camera-highlight-control):not(#camera-cell-names-control):not(#camera-brightness-control),
     body[data-view="show"] .map-control-group > *:not(#mission-map-mode):not(#camera-footprint-height-control):not(#set-eve-button):not(#clear-eve-button):not(#eve-yaw-control) {
       display: none !important;
     }
@@ -2559,7 +2606,7 @@ body .camera-debug-panel:fullscreen #camera-debug-image {
     <section class="main-grid">
       <section class="panel emphasis map-panel">
         <div class="panel-header">
-          <div class="panel-title"><strong>Mission Map</strong><span>world/operator view</span></div>
+          <div class="panel-title"><strong>Mission Map</strong><span>world/operator view</span><button type="button" class="ghost screen-popout-button" data-screen-popout="map" title="Open the Mission Map alone in its own window, for a second monitor">⧉</button></div>
           <div class="grid-toolbar map-control-group">
             <select id="mission-map-mode" aria-label="Mission map mode">
               <option value="grid_overlay">Map + grid overlay</option>
@@ -2667,7 +2714,7 @@ body .camera-debug-panel:fullscreen #camera-debug-image {
 
       <section class="panel emphasis camera-feed-panel">
         <div class="panel-header">
-          <div class="panel-title"><strong>Camera Feed</strong><span>Eve detector · trash detection grid</span></div>
+          <div class="panel-title"><strong>Camera Feed</strong><span>Eve detector · trash detection grid</span><button type="button" class="ghost screen-popout-button" data-screen-popout="camera" title="Open the Camera Feed alone in its own window, for a second monitor">⧉</button></div>
           <div class="grid-toolbar camera-feed-toolbar">
             <label id="camera-grid-mode-control" title="Which grid to draw. Local: image-aligned grid over the camera footprint. GPS: geographic lat/lon grid derived from Eve's position, yaw and drone height (demo values, not surveyed GPS). Only one grid is active at a time, and 'Trash cells' marks the cells of whichever is active.">
               Grid
@@ -2703,6 +2750,19 @@ body .camera-debug-panel:fullscreen #camera-debug-image {
             <label id="camera-cell-names-control" title="Draw the A1-style cell names on the camera image and on the mission map. The coordinate readout below the feed keeps them either way.">
               <input type="checkbox" id="camera-cell-names" checked /> Cell names
             </label>
+            <!-- Helligkeit sitzt in der Kamera selbst (UVC), nicht in diesem Bild:
+                 der Detektor sieht sie genauso. Gesetzt wird beim Loslassen. -->
+            <span id="camera-brightness-control" class="camera-brightness-group">
+            <label title="Brightness of Eve's camera itself (-64 to 64, default 5), so the detector sees it too. Lower it when the image is overexposed; auto exposure stays on. Applied when you let go of the slider; ↺ resets to 5. The camera keeps the value until it is replugged or Eve reboots.">
+              ☀
+              <input type="range" id="camera-brightness" class="camera-brightness-slider" min="-64" max="64" step="1" value="5"
+                     aria-label="Camera brightness, -64 to 64" />
+              <span id="camera-brightness-label">--</span>
+            </label>
+            <!-- Ausserhalb des <label>: ein Klick darin landete sonst beim Slider. -->
+            <button type="button" id="camera-brightness-reset-btn" class="ghost camera-brightness-reset"
+                    title="Camera brightness back to the default (5)">↺</button>
+            </span>
           </div>
         </div>
         <div class="panel-body">
@@ -3044,6 +3104,6 @@ body .camera-debug-panel:fullscreen #camera-debug-image {
     </section>
   </main>
 
-  <script src="live_data.js?v=line-cal-9"></script>
+  <script src="live_data.js?v=camera-brightness-4"></script>
 </body>
 </html>

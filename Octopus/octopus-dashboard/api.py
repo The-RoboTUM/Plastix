@@ -8,6 +8,7 @@ import sqlite3
 from pydantic import BaseModel
 from typing import List, Dict, Any
 import os
+import re
 from datetime import datetime
 
 DB_PATH = os.getenv("DB_PATH", "octopusfinal.db")
@@ -374,6 +375,58 @@ def octopus_eve_camera_log():
         "log": result["stdout"],
         "ssh": result,
     }
+
+
+# Helligkeit der Eve-Kamera: der UVC-Regler "brightness" (-64..64, Default 5).
+# Wirkt sofort, auch bei laufendem camera_node, und bleibt in der Kamera
+# gespeichert, bis sie neu eingesteckt wird oder die Pi neu startet. Deshalb
+# merkt sich das Backend nichts und liest immer aus der Kamera. Die Auto-
+# Belichtung bleibt an; der Wert verschiebt ihr Ziel, negativ gegen
+# Ueberbelichtung (gemessen 2026-10-23: 5 -> 1.7 % weisse Pixel, -30 -> 0 %).
+#
+# Ueber octopus_camera_brightness.sh auf der Pi, nicht v4l2-ctl: v4l2-ctl
+# fragt jedes Mal alle Regler ab, einer davon schlaegt bei dieser Kamera immer
+# fehl, und nach einer Reihe davon hing ihr Steuerkanal und zuletzt der
+# Bildstrom (2026-10-23, siehe das Skript). Haengt er trotzdem, braucht ein
+# Zugriff 5-10 s bis zum Timeout im Treiber; die ssh-Timeouts liegen darueber,
+# damit die Antwort den Kamerafehler zeigt und nicht "Command timed out".
+EVE_CAMERA_BRIGHTNESS_MIN = -64
+EVE_CAMERA_BRIGHTNESS_MAX = 64
+EVE_CAMERA_BRIGHTNESS_DEFAULT = 5
+
+
+class EveCameraBrightness(BaseModel):
+    brightness: int
+
+
+def _octopus_eve_brightness_reply(result):
+    # Das Skript liest nach dem Setzen zurueck: das ist, was die Kamera hat.
+    match = re.search(r"brightness:\s*(-?\d+)", result["stdout"])
+    return {
+        "status": "ok" if result["ok"] and match else "failed",
+        "brightness": int(match.group(1)) if match else None,
+        "min": EVE_CAMERA_BRIGHTNESS_MIN,
+        "max": EVE_CAMERA_BRIGHTNESS_MAX,
+        "default": EVE_CAMERA_BRIGHTNESS_DEFAULT,
+        "ssh": result,
+    }
+
+
+@app.get("/api/eve/camera_brightness")
+def octopus_eve_camera_brightness():
+    result = _octopus_run_eve_command(
+        _octopus_eve_script("octopus_camera_brightness.sh"), timeout=12
+    )
+    return _octopus_eve_brightness_reply(result)
+
+
+@app.post("/api/eve/camera_brightness")
+def octopus_eve_set_camera_brightness(payload: EveCameraBrightness):
+    value = max(EVE_CAMERA_BRIGHTNESS_MIN, min(EVE_CAMERA_BRIGHTNESS_MAX, payload.brightness))
+    result = _octopus_run_eve_command(
+        f"{_octopus_eve_script('octopus_camera_brightness.sh')} {value}", timeout=15
+    )
+    return _octopus_eve_brightness_reply(result)
 # --- END OCTOPUS EVE CAMERA ROUTES ---
 
 # --- OCTOPUS EVE PX4 BRIDGE ROUTES ---
