@@ -4384,6 +4384,50 @@ function drawCellNamePlate(ctx, name, x, y) {
   ctx.fillText(name, x, y);
 }
 
+// Guard: does the camera frame match the camera model everything is projected
+// with? Detections arrive as normalized u/v, and the overlay, the footprint and
+// flight_camera_transform_node all turn them into rays through
+// OCTOPUS_HBVCAM_640X480. A 1280x720 frame has the same horizontal field of
+// view but is cut vertically, so pushed through the 640x480 model every
+// distance across the image comes out about a third too long — up to ~40 cm at
+// the top and bottom edge at 2.5 m, with nothing on screen looking wrong. That
+// ran unnoticed for two weeks in October 2026.
+//
+// Compared by aspect ratio, not pixel size, so a resized debug image does not
+// raise a false alarm. A frame the bridge already cropped is scaled back up by
+// the crop it carries before comparing.
+const CAMERA_FORMAT_ASPECT_TOLERANCE = 0.01;
+let cameraFormatWarningShown = false;
+
+function checkCameraFrameFormat(img) {
+  const box = $("camera-format-warning");
+  if (!box || !img || !img.naturalWidth || !img.naturalHeight) return;
+
+  const crop = effectiveCameraCrop();
+  const fullW = crop.preCropped ? img.naturalWidth / crop.kx : img.naturalWidth;
+  const fullH = crop.preCropped ? img.naturalHeight / crop.ky : img.naturalHeight;
+  const model = OCTOPUS_HBVCAM_640X480;
+  const frameAspect = fullW / fullH;
+  const modelAspect = model.image_width / model.image_height;
+  const mismatch = Math.abs(frameAspect / modelAspect - 1) > CAMERA_FORMAT_ASPECT_TOLERANCE;
+
+  if (mismatch === cameraFormatWarningShown) return;
+  cameraFormatWarningShown = mismatch;
+  box.hidden = !mismatch;
+  if (!mismatch) {
+    addTimeline("Camera frame matches the 640x480 camera model again.", "success");
+    return;
+  }
+  const size = `${Math.round(fullW)}×${Math.round(fullH)}`;
+  box.innerHTML =
+    `<strong>Camera format does not match the camera model.</strong> ` +
+    `The camera delivers ${escapeHtml(size)}, the projection assumes ` +
+    `${model.image_width}×${model.image_height}. Trash positions, grid and footprint ` +
+    `are wrong across the image height. Restart the camera at 640×480 ` +
+    `(<code>octopus_start_camera.sh</code> on the Pi, default <code>CAM_W=640 CAM_H=480</code>).`;
+  addTimeline(`Camera delivers ${size} but the camera model is 640x480 — positions are wrong.`, "error");
+}
+
 function drawCameraFeedOverlay() {
   const frame = $("camera-feed-frame");
   const img = $("camera-feed-image");
@@ -4406,6 +4450,7 @@ function drawCameraFeedOverlay() {
 
   const hasImage = !!(img && img.src && img.complete && img.naturalWidth > 0);
   const gpsEnabled = isGpsGridActive();
+  if (hasImage) checkCameraFrameFormat(img);
 
   // Keep the <img> itself in sync with the crop before the early exits, so a
   // reset still un-crops a frame that no longer draws an overlay.
