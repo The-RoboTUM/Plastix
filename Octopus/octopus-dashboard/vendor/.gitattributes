@@ -1,0 +1,9 @@
+# Vendored third-party assets are small and stay in plain git, not LFS.
+# The root .gitattributes routes *.png (and friends) through LFS, but these
+# files were committed as plain blobs, so the clean filter made git report
+# them as permanently modified. Unsetting the filter here restores a clean diff.
+*.png -filter -diff -merge
+*.jpg -filter -diff -merge
+*.jpeg -filter -diff -merge
+*.gif -filter -diff -merge
+*.ico -filter -diff -merge
