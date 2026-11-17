@@ -65,8 +65,12 @@ struct StallDetectorConfig
   /// hold continuously for this long before the wheel is latched off.
   double window_sec{1.0};
 
-  /// Arming threshold on |commanded wheel angular velocity|, rad/s. Below it
-  /// the wheel is not considered "commanded to move" and cannot trip.
+  /// Arming threshold of the NET-DISPLACEMENT criterion on |commanded wheel
+  /// angular velocity|, rad/s. At or below it that criterion does not judge.
+  /// TO-VERIFY, kept in step with stall_min_command_rad_s in
+  /// ros2_controllers.yaml. Since 2026-10-22 it is no longer the wheel
+  /// regulator's slow-end floor (WheelRegulatorConfig::floor_rad_s), which must
+  /// not lie below it — WheelRegulator::validate_floor refuses that.
   double min_command_rad_s{2.0};
 
   /// How much the ACCUMULATED wheel position (rad) must change inside the
@@ -77,9 +81,32 @@ struct StallDetectorConfig
   double min_position_delta_rad{0.05};
 
   /// OP-25 release band: |command| must fall to or below this before a rise
-  /// back above min_command_rad_s counts as a FRESH command. Must be
-  /// <= min_command_rad_s.
+  /// back above the latching criterion's arming threshold (min_command_rad_s,
+  /// or silent_min_command_rad_s for a zero-count latch) counts as a FRESH
+  /// command (user decision 2026-10-29, option a). Must be below both.
   double release_command_rad_s{0.1};
+
+  /// ZERO-COUNT CRITERION (user decision 2026-10-22, option c). A LIVE wheel
+  /// whose |requested command| is above this and whose position shows NO
+  /// encoder count change at all for an accumulated silent_window_sec trips —
+  /// the same tier-1 latch as the net-displacement criterion. NOT a parameter of
+  /// its own: the controller feeds encoder_confirm_min_command_rad_s, the one
+  /// number meaning "a healthy wheel commanded above this at least twitches,
+  /// and a twitch is a count". Must be <= min_command_rad_s.
+  double silent_min_command_rad_s{0.71};
+
+  /// TO-VERIFY. Accumulated watched time with no count change before the
+  /// zero-count criterion trips, seconds. Accumulates while the wheel is LIVE,
+  /// commanded above silent_min_command_rad_s and the drive is not withheld;
+  /// pauses otherwise; resets on any count change, on leaving LIVE, on a latch
+  /// and on reset().
+  double silent_window_sec{2.0};
+
+  /// One encoder count in wheel radians: 2*pi/COUNTS_PER_OUTPUT_REV =
+  /// 2*pi/3200 (firmware include/motor_controller.hpp, confirmed to ~1 % by a
+  /// rolling measurement). A "count change" is a position change of at least
+  /// HALF of this from the position at the last change.
+  double count_rad{2.0 * 3.14159265358979323846 / 3200.0};
 
   /// Tier-1 IS A SINGLE-MOTOR RESPONSE (HWR-30). A trip that would take the
   /// number of simultaneously latched wheels above this cap is REFUSED and
@@ -103,6 +130,10 @@ struct StallWheelEvent
   bool released{false};           ///< latch cleared by a fresh command on this cycle
   /// Would have tripped, but that is tier 2 — see config.max_latched_wheels.
   bool multi_wheel_refused{false};
+  /// Qualifies `tripped` / `multi_wheel_refused`: it was the ZERO-COUNT
+  /// criterion (no encoder count change for silent_window_sec), not the
+  /// net-displacement one.
+  bool zero_count{false};
 };
 
 struct StallDetectorResult
@@ -133,6 +164,16 @@ public:
   /// deactivate: a latch must never survive a controller lifecycle transition,
   /// or the robot comes back with a wheel silently disabled.
   void reset();
+
+  /// OPERATOR CLEAR of the whole-drive fault (SR-18 amendment 2026-11-09):
+  /// releases every tier-1 latch WITHOUT the OP-25 fall-and-rise edge (D2
+  /// overrides OP-25 for this event only) and restarts detection from scratch
+  /// on all four wheels -- displacement windows and zero-count accumulators.
+  /// Unlike reset() it KEEPS the diagnostic trip counts and the time base. It
+  /// emits no `released` event: the caller tells the drive-fault monitor about
+  /// the clear itself. Never called for a tier-1 latch without a whole-drive
+  /// fault; that one keeps its OP-25 release.
+  void release_for_operator_clear();
 
   /// Latest per-wheel provenance, joint order FL, FR, BL, BR. A short or absent
   /// array must be passed as kStallProvenanceUnknown, never dropped.
@@ -174,7 +215,24 @@ public:
   /// i.e. whether this wheel is currently being watched at all. Published so
   /// that "the detector is asleep" can never look like "the detector is happy".
   bool armed(std::size_t wheel) const { return armed_[wheel]; }
+  /// Whether the ZERO-COUNT criterion watched this wheel on the last update.
+  bool silent_armed(std::size_t wheel) const { return silent_armed_[wheel]; }
+  /// Accumulated watched time without a count change, seconds.
+  double silent_sec(std::size_t wheel) const { return silent_sec_[wheel]; }
+  /// Whether the current latch was set by the zero-count criterion.
+  bool latched_by_zero_count(std::size_t wheel) const
+  {
+    return latched_[wheel] && latched_zero_count_[wheel];
+  }
   std::size_t latched_count() const;
+  /// How long this wheel has been armed with no position movement beyond the
+  /// delta (the age of its open dwell window), seconds; 0 when not armed.
+  /// Read-only diagnostics for the whole-drive fault's classification.
+  double no_motion_sec(std::size_t wheel, double now_sec) const
+  {
+    return (armed_[wheel] && window_open_[wheel] && now_sec >= window_start_sec_[wheel]) ?
+           now_sec - window_start_sec_[wheel] : 0.0;
+  }
 
 private:
   void restart_window(std::size_t wheel, double now_sec, double position);
@@ -192,6 +250,15 @@ private:
   std::array<double, kNumWheels> window_start_sec_{};
   std::array<double, kNumWheels> window_start_position_{};
   std::array<uint32_t, kNumWheels> trip_count_{};
+
+  // Zero-count criterion.
+  std::array<bool, kNumWheels> latched_zero_count_{};
+  std::array<bool, kNumWheels> silent_armed_{};
+  std::array<double, kNumWheels> silent_sec_{};
+  std::array<bool, kNumWheels> silent_ref_valid_{};
+  std::array<double, kNumWheels> silent_ref_position_{};
+  bool have_prev_now_{false};
+  double prev_now_sec_{0.0};
 };
 
 }  // namespace gripperx_swerve_controller

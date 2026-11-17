@@ -13,6 +13,11 @@ Raspberry Pi 5.
 - **Arm:** LeRobot SO-ARM100-based gripper arm.
 - **Compute:** Raspberry Pi 5 (ROS 2 Jazzy, Ubuntu) for high-level control,
   ESP32 (micro-ROS) for motor-level control.
+- **Sensors:** LD06 LiDAR, BNO085 IMU (yaw rate fused in the EKF), USB front camera
+  (live view in the web teleop, started by its own systemd unit).
+- **Operation:** web and keyboard teleop, leader-arm teleoperation for the arm, an aimed
+  pick of litter at a given position, and the Octopus goal link; see
+  [`documentation/DEPLOYMENT.md`](documentation/DEPLOYMENT.md) §7.
 - **Autonomy:** Gazebo simulation, localization (EKF, laser odometry, SLAM,
   AMCL), and Nav2 for path planning and navigation.
 

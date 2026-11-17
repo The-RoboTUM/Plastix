@@ -28,6 +28,7 @@ R = 0.070                    # wheel radius, ros2_controllers.yaml
 IDX_VEL, IDX_POS, IDX_ENC = 4, 8, 12
 LABELS = ["FL", "FR", "BL", "BR"]
 STALL_MIN_CMD = 2.0          # stall_min_command_rad_s
+ENCODER_CONFIRM_CMD = 0.71   # encoder_confirm_min_command_rad_s (zero-count criterion, 2026-10-22)
 
 class Stopper(Node):
     def __init__(self, topic):
@@ -96,6 +97,9 @@ def main():
           f"({'BELOW' if wheel_omega < STALL_MIN_CMD else 'ABOVE'} stall_min_command {STALL_MIN_CMD}) ")
     if wheel_omega >= STALL_MIN_CMD:
         print("  HWR-30a CAN arm at this speed -- a wheel may be latched off mid-run.")
+    elif wheel_omega > ENCODER_CONFIRM_CMD:
+        print("  Only HWR-30a's ZERO-COUNT criterion can arm: a wheel whose encoder shows no "
+              "count change for stall_silent_window_sec may be latched off mid-run.")
     else:
         print("  HWR-30a cannot arm: no wheel can be silently latched off.")
     rec(event="derivation", speed=a.speed, wheel_omega=wheel_omega,

@@ -13,8 +13,10 @@ front-extended feature from `STEERING_LIMITS.md`).
 - **Motion approval is obtained for EACH step individually**, not as a
   blanket approval for the whole session — per the safety rule (incident
   2026-07-06). After a rejection by the user, do not retry on your own.
-- No `gripperx-bringup.service` restart during the test series (triggers
-  an arm home run + steering servo centering) — the node is already
+- No `gripperx-bringup.service` restart during the test series: a restart
+  counts as motion (SR-1, the motor-enable process rule; it makes the drive
+  path commandable again and leaves the steering limp at an unknown angle).
+  It does not home the arm or centre the steering. The node is already
   running, parameters are changed live via `ros2 param set`.
 - Torque stays ON (unlike the calibration procedure in
   `steer_servo_calibrate.py`, which moves things by hand with torque
@@ -122,7 +124,8 @@ After the test series, with the three/four determined values:
    *angle*, not the servo counts for it.
 4. Mirror the new window (`steering_outward_limit_deg`,
    `steering_inward_limit_deg`, `steering_outward_sign`) into
-   `gripperx_control/config/swerve_cmd.yaml` and
+   `gripperx_control/config/ros2_controllers.yaml` (the live controller; the
+   leftover `swerve_cmd.yaml` is not read any more) and
    `config/teleop_joint_commands.yaml`, into the URDF
    (`gripperx_description/urdf/gripperx_v1.core.xacro`, properties
    `steer_outward_limit`/`steer_inward_limit`) and — laptop-side — into
@@ -131,9 +134,8 @@ After the test series, with the three/four determined values:
    additionally capped at what the window allows). Single symmetric values no
    longer exist anywhere; see the stage-B section of `STEERING_LIMITS.md`. Then
    re-run `python3 src/gripperx_control/test/check_steering_limits.py`.
-5. Record the result in the journal (`gripperx-journal`) and in
-   `HANDOVER.md`, including the three/four measured values and whether
-   front-extended was activated.
+5. Record the result (date, the three/four measured values, whether
+   front-extended was activated) in the project's test records.
 
 ## Not part of this test
 

@@ -122,7 +122,7 @@
                  swing into the crab pose, and 1.70 s of travel plus a worst-case
                  1.50 s of that would not have fitted in 2.8 s - a CORRECT crab
                  would have failed with TIMEOUT. The standing-still phase is
-                 bounded separately by crab_walk.alignment_grace_sec (2.0 s) in
+                 bounded separately by crab_walk.alignment_grace_sec (current value there; it has changed since) in
                  nav2.yaml, deliberately rather than by inflating this number,
                  because inflating it would have relaxed bound (c) from 0.28 m to
                  0.43 m. Bound (c) is now 0.10 x 2.8 + one cycle of travel

@@ -1,0 +1,128 @@
+# Servo ticks <-> URDF joint angles for the SO101 arm.
+#
+#   q [rad] = sign * (ticks - zero_ticks) * 2 pi / ticks_per_rev,  wrapped to (-pi, pi]
+#
+# q = 0 is the CAD assembly pose of gripperx_description/urdf/gripperx_v1.arm.xacro.
+# Lists are in servo-ID order [1..6] = arm_action_server names
+# [limb1, limb2, limb3, limb4, limb5, gripper].
+#
+# CALIBRATION REFERENCE (user decision 2026-10-07): for BOTH arms, follower and leader,
+# the reference pose is the CAD assembly pose q = 0, shown in the reference image
+# claude/docs/arm_home_twin_reference.png (not in this branch's tree as of 2026-10-07).
+# The follower can therefore be re-calibrated against it at any time: pose the arm to
+# match the image, read the ticks, zero_ticks = those ticks.
+#
+# TICK WRAP. q = 0 may sit anywhere in 0..4095; the difference ticks - zero_ticks is
+# wrapped into the joint's window (to_radians), so a zero near the wrap converts
+# correctly. An absolute angle maps to ONE servo position (ticks modulo one turn), but
+# the servo's goal register is single-turn: a goal more than half a turn away from
+# where the servo is makes it travel the long way round, so arm_action_server REFUSES
+# such a leader setpoint, and arm_eeprom_limits flags a joint range that crosses the
+# wrap as not expressible.
+# A joint whose working range crosses 0/4095 needs a servo Homing_Offset (or a
+# re-mounted horn) first - TO-VERIFY per servo once the zeros are measured.
+#
+# CALIBRATION 2026-10-08 (follower, on the real robot; values decided by the user).
+# Evidence: gripperx_arm/calibration/2026-10-08/ (README.md, stop_extremes.csv,
+# touches.csv). Robot standing on its wheels, level (user statement, not measured
+# with a level). calibration_verified: true - verified by user 2026-10-09, touch tests
+# floor -2.7..+3.9 mm, block -2..+1 mm (tolerance +-5 mm).
+#   signs [1, -1, -1, -1, 1, 1] - procedure step 1: the user moved each joint by hand
+#     and compared the direction with the URDF model in RViz, joint by joint.
+#   zero_ticks [2108, 978, 3074, 1035, 2148, 1527]:
+#     limb1, limb4, limb5, gripper - the hand-taught home of 2026-08-25, unchanged
+#       (visual alignment to the CAD pose, not a measurement).
+#     limb3 3074 (was 3091) - user decision "option a": the follower's lower stop
+#       sweep read tick 3082, so 3091 lay 9 ticks BEHIND the stop and home pressed
+#       into it; with 3074 the stop is at -0.70 deg and home 0.7 deg inside it.
+#     limb2 978 (was 1003) - a FIT RESULT, not a direct measurement: 7 floor touches
+#       + 3 touches on a block of "just under 100 mm" (user, not measured more
+#       precisely), torque off, fingertips placed by hand. Least-squares fit of a
+#       limb2 zero offset to the TCP heights: -2.19 +- 0.38 deg (= -24.9 ticks with
+#       sign -1). Residual heights after the fix: floor -2.7 .. +3.9 mm, block
+#       -2 .. +1 mm against 100 mm. Accepted height tolerance +-5 mm (user: nothing
+#       is commanded below 10 mm). A forward mount tilt of ~2 deg fits the floor
+#       points alone equally well; the block points at a second height do not
+#       support it.
+#   Procedure step 3 (tape check at 3 poses) was done only roughly by eye
+#     (pose1..pose3 in the evidence) and is superseded by the touch fit for the
+#     height; horizontal TCP position remains unchecked to better than ~+-15 mm.
+#   TICK WRAP: no joint's travel crosses 0/4095 (raw ticks of every sweep stay
+#     within limb1 781..3487, limb2 817..3214, limb3 870..3083, limb4 905..3197,
+#     limb5 222..4005, gripper 1315..2774, no jump between samples), so no
+#     Homing_Offset / wrap offset is needed.
+#
+# LIMB1 RE-MEASURED 2026-10-12 (user): zero_ticks[0] 2108 -> 2068. User: "the
+#   original 0 value for limb1 was right; now the arm is turned a little clockwise".
+#   Measurement: torque off, the user aligned the base straight by hand, limb1 read
+#   2068 ticks on /arm/joint_states, three reads stable (the first home value of
+#   2026-08-13 was 2069; 2108 was the hand-taught home of 2026-08-25). The other
+#   joints read 980 3073 1036 2143 at that moment - their zeros are NOT changed.
+#   Derived from this zero and moved with it (+40 ticks = +3.516 deg) so they stay
+#   where they are physically: gripperx_geometry arm_joint_stop_lower/upper and
+#   arm_joint_lower/upper for limb1, and range_center_rad[0] below.
+#   calibration_verified stays true: its evidence (touch tests) was about heights,
+#   which a limb1 yaw does not change; the horizontal TCP position was and is
+#   unchecked to better than ~+-15 mm (above).
+#
+# PROCEDURE to determine them (needs the arm, torque OFF, no motion commanded;
+# the leader-arm session is the natural moment):
+#   1. Sign, per joint: with torque off move ONE joint by hand in the direction of
+#      the URDF axis (right-hand rule about the joint's z axis - display the model
+#      with `ros2 launch gripperx_description rviz.launch.py` and move the slider of
+#      that joint to see which way is positive). Read /arm/joint_states before and
+#      after. Ticks increased -> sign +1, decreased -> -1. This also confirms the
+#      ID -> joint order (only the expected servo changes).
+#   2. Offset, per joint, using a pose that does not depend on the hand-teach: a
+#      mechanical feature with a known URDF angle - e.g. limb2/limb3 against their
+#      end stops, or a link held level with a spirit level (q from
+#      ArmKinematics.fk of the model). zero_ticks = ticks - sign * q * 4096 / (2 pi).
+#      Repeat at a second, distant angle: the two results must agree to a few
+#      ticks; if they do not, the scale (4096/rev) or the joint assignment is wrong.
+#   3. Check: drive nothing - pose the arm by hand at 3+ poses, measure the TCP
+#      position with a tape against ArmKinematics.tcp(); record the error here.
+#   4. Set calibration_verified: true only after step 3, with the date and errors.
+arm_joint_state_relay:
+  ros__parameters:
+    calibration_verified: true        # verified by user 2026-10-09, touch tests floor -2.7..+3.9 mm, block -2..+1 mm; while false the relay WARNs
+    unverified_warn_period_sec: 30.0
+    ticks_per_rev: 4096
+    servo_names: [limb1, limb2, limb3, limb4, limb5, gripper]
+    urdf_joints: [arm_limb1_joint, arm_limb2_joint, arm_limb3_joint,
+                  arm_limb4_joint, arm_limb5_joint, arm_gripper_joint]
+    zero_ticks: [2068, 978, 3074, 1035, 2148, 1527]      # 2026-10-08; limb1 2026-10-12
+    signs: [1, -1, -1, -1, 1, 1]                         # 2026-10-08, see header
+    # Servo Homing_Offset registers (RAW, sign-magnitude, sign bit 11), servo-id order.
+    # MEASURED: robot boot journal 2026-10-13 17:13:34 CEST (gripperx-bringup start after
+    # Mode R, Theo c9fa4c2), arm_action_server line "Homing_Offset raw=decoded {1:
+    # '3624=-1576', 2: '3353=-1305', 3: '1323=1323', 4: '1748=1748', 5: '3325=-1277', 6:
+    # '4055=-2007'}". Ids 1-5 equal the LEADER arm's offsets read the same day: one LeRobot
+    # calibration was written to both arms. The 2026-10-08 zero_ticks and stop sweeps were
+    # measured with these offsets in place (Present = Actual - Homing_Offset), so they hold
+    # only for them; never change an offset without re-calibrating. arm_eeprom_limits
+    # --write and eeprom_check: enforce accept exactly these values.
+    # TO-VERIFY (first step of the EEPROM session, DEPLOYMENT.md section 5): one limp limb
+    # moved by hand to one mechanical stop reads within a few ticks of
+    # calibration/2026-10-08/stop_extremes.csv - proof the offsets did not change since.
+    # Frame evidence: limb1 stalled at present ~3232 = its Max_Position_Limit register, so
+    # the servo compares the angle limits in the present (post-offset) frame - the frame
+    # arm_eeprom_limits computes in.
+    homing_offsets_raw: [3624, 3353, 1323, 1748, 3325, 4055]
+    # Middle of each joint's travel, URDF radians: q is wrapped into
+    # [range_center_rad - pi, range_center_rad + pi). The SO101 limb2..limb4 travel
+    # past +-180 deg from the CAD zero, so the window is centred on the travel.
+    # 2026-10-08: the midpoints of the FOLLOWER's measured stops
+    # (gripperx_geometry arm_joint_stop_lower/upper), replacing the provisional
+    # leader-arm centres of 2026-10-07 (limb1 re-centred 2026-10-12 on its stops
+    # after the zero moved, 0.0399 -> 0.1012). Smallest distance of a stop to the window
+    # edge: 13.8 deg (limb5, whose travel leaves a 27.5 deg gap). Same parameter
+    # name on the leader side. The joint
+    # limits of geometry.yaml must lie inside the window (arm_action_server refuses
+    # to build its filter otherwise).
+    range_center_rad: [0.1012, -1.5915, 1.6835, -1.5585, -0.0529, 0.7938]
+    # How far the real home may sit from q = 0 per joint while this calibration
+    # is unverified. TO-VERIFY: 9 deg covers the largest hand-teach correction
+    # recorded so far (limb5, 8.88 deg, ARM_HOME_REFERENCE_2026-08-25 section 8),
+    # which is evidence of the order of magnitude, not a bound. Used by
+    # gripperx_arm.generate_acm for the home neighbourhood of the allowed pairs.
+    home_pose_tolerance_rad: 0.157

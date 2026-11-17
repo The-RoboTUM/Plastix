@@ -1,7 +1,18 @@
 localization_input_node:
   ros__parameters:
     use_sim_time: true
-    imu_input_topic: /imu/data
+    # Raw IMU in, conditioned IMU out. The SAME names on both platforms: the
+    # BNO085 driver publishes /imu/bno085/data (gripperx_sensors/config/
+    # bno085.yaml, imu_topic), and the twin's gz_bridge.yaml bridges the Gazebo
+    # IMU onto that name too, so a robot bag replays through this node with
+    # this file unchanged (2.5 A/B replay). /imu/data is no longer read: the
+    # bench mocks (gripperx_sensors sensor_mocks) still publish there and are
+    # therefore not fused any more.
+    # imu_frame_id is stamped on every output sample and must name a frame in
+    # the URDF: imu_link (gripperx_v1.core.xacro, mounted upside down,
+    # rpy = pi 0 0), the same frame the BNO085 driver stamps.
+    # test/check_imu_wiring.py fails if any of these drift apart.
+    imu_input_topic: /imu/bno085/data
     imu_output_topic: /imu/data/filtered
     imu_frame_id: imu_link
     joint_state_topic: /joint_states
@@ -82,9 +93,366 @@ localization_input_node:
       - 1.0
       - 1.0
       - 1.0
+    # STALE-READ COMPENSATION (wheel_rate_source "position" only). /joint_states
+    # is stamped with the controller's read time, not the ESP32 sample time.
+    # Measured in the 2026-10-07 21:02 bag: 389 of 1795 moving samples (21.7 %)
+    # re-published the previous /hw/joint_states message on all four wheels, each
+    # repaid by exactly one double step later; the ESP32 stream itself did not
+    # repeat. The position sum stays right, but the rate went 0 / 2x / 0.5x
+    # (21 % zero yaw rate while turning). WHY read() catches the old message is
+    # INFERRED, NOT PROVEN: both sides run at ~30 Hz on unrelated clocks, and in
+    # that run feedback arrived ~2-3 ms before the read (25-29 ms in clean runs),
+    # so jitter decides which message the read gets.
+    # The node holds one such repeat back and snaps the step count of the next
+    # deltas to an integer using the reported velocity; on a stream without
+    # repeats it changes nothing.
+    #
+    # Side effects, accepted: a real stop while the velocity still reads
+    # non-zero (e.g. a command echo) is reported up to one read (33 ms) later,
+    # and a frozen position with an echoed velocity is published as zero at
+    # 15 Hz instead of 30 Hz. On the 21:02 run the node published ~20 % fewer
+    # /wheel/odom messages while moving; the EKF sees ~67 ms gaps at each hold.
+    #
+    # BOTH THRESHOLDS ARE CHOSEN, NOT TUNED -- TO-VERIFY on the robot. For
+    # context (offline, 2026-10-07 clean runs): position/velocity step ratios
+    # p5-p95 0.79-1.23; at 0.35, 6-8 % of samples fall back to the read time.
+    #   stale_sample_min_wheel_rate  rad/s; a wheel counts as "turning" above it
+    #                                (0.3 rad/s = ~5 encoder counts per 33 ms read)
+    #   stale_sample_step_tolerance  max distance of the position/velocity step
+    #                                ratio from an integer before it is ignored
+    stale_sample_check: true
+    stale_sample_min_wheel_rate: 0.3
+    stale_sample_step_tolerance: 0.35
+    # WHEEL-POSITION RESET (wheel_rate_source "position" only). This node runs
+    # in gripperx-mapping.service and survives a bringup/controller restart.
+    # Reachable on the current stack:
+    #   - bringup/controller restart: GripperXInterface publishes 0.0 until its
+    #     first feedback, then the ESP32's absolute count reappears at once,
+    #     after a /joint_states gap;
+    #   - a controller_manager stall > state_timeout_sec that does not trip
+    #     read() ERROR: a /joint_states gap, the count continuing.
+    # NOT reachable as a resumed stream: an ESP32 reboot (> 2 s). read() returns
+    # ERROR after state_timeout_sec and ros2_control deactivates the hardware
+    # component and every controller until a full restart (SR-13, no
+    # auto-recovery) -- it shows up here as the bringup-restart case. The
+    # firmware clears its counters at boot, so positions then restart near 0.0;
+    # the check keeps that case as a defensive one.
+    # All four at 0.0 is also the NORMAL state of a freshly booted robot that
+    # has not moved yet, not only a fault; 0.0 -> 0.0 publishes zero as usual.
+    # A position difference across a reset is not a rate: without this
+    # handling, test/check_position_reset.py produces yaw-rate spikes of
+    # ~1300 rad/s (count reappearing after 0.0 frames) and 14 rad/s (defensive
+    # reboot case), which with the EKF odom0 gate removed reach the EKF
+    # unfiltered.
+    # A sample is RE-BASED (no rate, nothing published, pose kept) when
+    #   - all four drive positions step into or out of exactly 0.0 -- the reset
+    #     value itself, no threshold; or
+    #   - the /joint_states stamp gap exceeds reset_gap_sec (feedback chain down).
+    # Cost: one read of motion per re-base. If all four counts genuinely hit 0.0
+    # in the same read while moving, that is taken as a reset too and two reads
+    # of motion are lost -- no spike. No blanking period: nothing after the
+    # re-base needs one.
+    # reset_gap_sec is CHOSEN, NOT TUNED -- TO-VERIFY on the robot. 2.0 s is set
+    # equal to GripperXInterface's state_timeout_sec (gripperx_v1.ros2_control
+    # .xacro), past which the interface itself declares the feedback stale;
+    # test/check_position_reset.py fails if the two drift apart. A real gap shorter
+    # than this (e.g. a quick micro-ROS reconnect, where the ESP32 keeps its
+    # count) still yields the average rate over the gap, which is correct.
+    reset_detection: true
+    reset_gap_sec: 2.0
     odom_frame: odom
     base_frame: base_footprint
     publish_tf: false
+    # GYRO BIAS AT STANDSTILL (2.3, <<FR+3>> in the LIDAR/IMU issue draft of
+    # 2026-10-22). BNO085 dynamic calibration is off (user decision 2026-10-20),
+    # so the yaw-rate bias is estimated here and subtracted from
+    # angular_velocity.z of every sample published on imu_output_topic. Only z;
+    # the other axes pass through.
+    # Evidence: claude/docs/YAW_AGREEMENT_REPORT_2026-10-22.md section 4.5 (desk
+    # bag, 52.6 min): output quantised to 1/512 rad/s = 0.1119 deg/s, bias
+    # 0.00074 deg/s = 1/150 of one step, and a bias taken from a window of
+    # <= 5 s is WORSE than no correction (p95 error 5-10x the bias). Hence no
+    # deadband and no rounding in the estimator, and a long window.
+    # SIGN AND FRAME: the report quotes +0.00074 deg/s about the BODY z axis.
+    # This node works on the raw sample in imu_link, which is mounted upside
+    # down (rpy = pi 0 0), so the raw z mean it estimates is -0.00074 deg/s; the
+    # bias is subtracted in that same frame before any transform.
+    # TIME GOING BACKWARDS (a second bag or --loop in one replay, a twin
+    # /reset_simulation, a backward chrony step on the Pi, which has no RTC):
+    # the estimator restarts from nothing, as after a node start, and logs one
+    # WARN. The collected window is dropped on purpose: in a replay the next
+    # recording may come from another power cycle, whose bias is unmeasured
+    # (the Mode R repeat of 1.2 is owed), and carrying it over would mix two
+    # recordings into one A/B result. The cost on the robot is one more 30 s of
+    # uncorrected pass-through, against a bias of ~0.04 deg/min.
+    #
+    # DECIDED by the user on 2026-10-23 -- not TO-VERIFY:
+    #   gyro_bias_window_sec 120  D8: mean over the latest >= 120 s of standstill
+    #                             time, accumulated across separate standstills
+    #   gyro_bias_min_sec     30  D8: nothing is subtracted before 30 s of
+    #                             standstill have been collected (uncorrected
+    #                             pass-through until then)
+    #   gyro_bias_settle_sec 1.5  D7: a standstill counts only 1.5 s after motion
+    #                             ended. Standstill needs the drive wheels AND the
+    #                             steering still (report 4.5: steering moved with
+    #                             the wheels still and the gyro read -0.06...-0.08
+    #                             deg/s) AND no non-zero motion command.
+    #                             The node also discards the 1.5 s BEFORE motion
+    #                             is detected (CHOSEN to reuse this value: motion
+    #                             is seen only once a wheel has moved, after the
+    #                             body may already turn).
+    #                             It is also the backward-time threshold (CHOSEN
+    #                             to reuse this value, not tuned -- TO-VERIFY): a
+    #                             /joint_states or IMU stamp less than 1.5 s older
+    #                             than its stream's previous one is dropped (a
+    #                             reordered pair, a small clock step); a longer
+    #                             step back (bag loop, simulation reset) resets the
+    #                             estimate with one WARN.
+    #                             Since 2.4 the same value also orders the OUTPUT on
+    #                             imu_output_topic (read even with the estimator
+    #                             off): a sample older than the last published one
+    #                             by less than this is not published; a longer step
+    #                             back starts a new time base there too (accepted by
+    #                             the user 2026-10-29). One value, so the two can
+    #                             never disagree.
+    #
+    # NOT DECIDED -- TO-VERIFY on the robot:
+    #   gyro_bias_max_wheel_rate  rad/s per drive wheel, from position differences
+    #                             (or the reported velocity, if larger). 0.3 is the
+    #                             node's existing "wheel is turning" threshold
+    #                             (stale_sample_min_wheel_rate, ~5 encoder counts
+    #                             per 33 ms read), reused, not tuned.
+    #   gyro_bias_max_steer_rate  rad/s per steering joint, from position
+    #                             differences only (the steering velocity state is
+    #                             always 0.0 on the robot). 0.1 is a placeholder:
+    #                             one steering feedback count per 33 ms read must
+    #                             stay below it, or the robot never counts as still
+    #                             -- the count size is not verified here.
+    #   gyro_bias_cmd_topic       motion command watched; a non-zero Twist starts
+    #                             motion that lasts until a zero Twist arrives.
+    #                             /cmd_vel is what swerve_controller consumes and
+    #                             teleop_mux streams. /teleop/direct_steer is NOT
+    #                             watched; direct steering is caught by the
+    #                             steering-rate test only.
+    #                             Time base (CHOSEN): a command is stamped with the
+    #                             latest /joint_states or IMU header time seen, NOT
+    #                             the node clock, so the estimator runs on one time
+    #                             base. Node-clock stamping froze it on a bag replay
+    #                             without use_sim_time (motion ~22.7 h ahead of
+    #                             every sample). A command before the first sample
+    #                             only sets the state.
+    #   gyro_bias_max_sample_dt   s; the time one gyro sample counts for at most,
+    #                             so an IMU dropout does not inflate the collected
+    #                             standstill time (50 Hz robot -> 0.02 s, 100 Hz twin
+    #                             -> 0.01 s; 0.1 is a cap, not a period).
+    #   gyro_bias_trim_count      (2.4 audit) the estimate is the window mean
+    #                             WITHOUT the 3 largest and 3 smallest samples, so
+    #                             a corrupted sample inside the plausibility limits
+    #                             (imu_max_* below) cannot shift it: in the audit's
+    #                             replay one +1.0 rad/s sample at standstill moved
+    #                             the plain mean by +0.00031 rad/s for ~210 s
+    #                             (+2.5 deg EKF yaw; ~3 deg at the 1.2 limit).
+    #                             Not a median: the median, and a 25 % trim, are
+    #                             exactly 0 in all three 2026-10-22 bags (94 % of
+    #                             standstill samples read exactly 0 at a 1/512
+    #                             rad/s step); a symmetric trim keeps the bias,
+    #                             which lives in the count asymmetry of the +-1
+    #                             step samples, while each tail holds more than 3.
+    #                             MEASURED (replay of desk_check / rot13 / drive15
+    #                             through this node, estimate every 5 s): plain
+    #                             mean vs trim 3 differ by at most ~1e-6 rad/s;
+    #                             final values desk -5.2e-6 / -4.2e-6, rot13
+    #                             -2.54e-5 / -2.42e-5, drive15 -2.77e-5 / -2.78e-5
+    #                             rad/s. A 1 % trim already reads 0 on the desk
+    #                             bag (only 28 of 5987 samples at +1 step), so the
+    #                             count stays small. 3 is CHOSEN, not tuned --
+    #                             TO-VERIFY: it tolerates up to 3 corrupted
+    #                             samples per tail per 120 s window. Cost: the
+    #                             window is also kept sorted (bisect, ~2 us per
+    #                             sample on the laptop; Pi unmeasured).
+    gyro_bias_estimation: true
+    gyro_bias_settle_sec: 1.5
+    gyro_bias_window_sec: 120.0
+    gyro_bias_min_sec: 30.0
+    gyro_bias_max_wheel_rate: 0.3
+    gyro_bias_max_steer_rate: 0.1
+    gyro_bias_cmd_topic: /cmd_vel
+    gyro_bias_max_sample_dt: 0.1
+    gyro_bias_trim_count: 3
+    # BIAS PROTECTION (IMU proposal 4, user decision 2026-11-05). ALL THREE LIMITS
+    # ARE TO-VERIFY: provisional, chosen only so that healthy standstill data passes
+    # (BNO085 step 1/512 = 0.00195 rad/s), NOT measured on the robot. A rejected
+    # sample is counted (gyro_bias.rejected_band / rejected_frozen) and logged.
+    #   gyro_bias_band            rad/s; once an estimate exists, a standstill sample
+    #                             enters only within +-band of it (3 quantisation
+    #                             steps). RISK: a true bias drifting further than
+    #                             this from the stored estimate is rejected for good.
+    #   gyro_bias_cold_band       rad/s; before any estimate exists, only samples
+    #                             with |raw rate| <= this enter (5 steps; the cold
+    #                             start arc_stuck5 poison sat at +0.019).
+    #   gyro_bias_frozen_samples  more than this many bit-identical consecutive IMU
+    #                             samples on gyro x/y/z AND accel x/y/z = frozen; the
+    #                             run is kept out of the estimate (pending samples
+    #                             from its start are dropped). Measured healthy
+    #                             longest run 20 (desk_check, 0.4 s; 6 runs of
+    #                             13-20 in ~52 min) / 10 (rot13) / 12 (drive15),
+    #                             counted offline by the audit on the 2026-10-22
+    #                             bags (n=1 bag each, one robot, one temperature).
+    #                             30 = 0.6 s at 50 Hz = 1.5x margin over 20, not ~3x.
+    #                             0 = off.
+    gyro_bias_band: 0.006
+    gyro_bias_cold_band: 0.01
+    gyro_bias_frozen_samples: 30
+    # Guard state is published on /localization/gyro_bias_state (JSON in a String,
+    # TRANSIENT_LOCAL, every gyro_bias_diag_period_sec). level 1 = WARN. TO-VERIFY:
+    # both limits are provisional, not measured.
+    #   gyro_bias_diag_reject_sec       s of unbroken rejection of standstill samples
+    #                                   (lock-out or frozen sensor) before WARN.
+    #   gyro_bias_diag_no_estimate_sec  s after the first IMU sample without an
+    #                                   estimate before WARN (min 30 s + settle 1.5 s
+    #                                   of standstill needed). A robot that never
+    #                                   stands still also warns.
+    #   gyro_bias_diag_imu_silent_sec   s (wall clock) without an IMU message before
+    #                                   WARN, so a dead IMU is not reported as "ok".
+    # reject_run_sec counts standstill time only (driving adds nothing).
+    gyro_bias_diag_imu_silent_sec: 2.0
+    gyro_bias_diag_reject_sec: 10.0
+    gyro_bias_diag_no_estimate_sec: 180.0
+    gyro_bias_diag_period_sec: 1.0
+    # MEASUREMENT VARIANCES FOR THE EKF YAW RATE (2.4, <<FR+4>> in the LIDAR/IMU
+    # issue draft). Both are written into the messages this node publishes; the
+    # EKF takes them from there (robot_localization has no per-sensor variance
+    # parameter).
+    #   imu_yaw_rate_variance         (rad/s)^2, angular_velocity_covariance z-z on
+    #                                 imu_output_topic; 0 keeps the driver's value.
+    #     3.8e-6 = one quantisation step squared (sigma 1/512 rad/s = 0.112 deg/s),
+    #     the STARTING value proposed in YAW_AGREEMENT_REPORT_2026-10-22 section
+    #     5.5 (branch Theo-yaw-report): above the derived quantisation floor of
+    #     3.2e-7 and covering the drive15 true-standstill std (0.04-0.12 deg/s).
+    #     TO-VERIFY in the 2.5 replay: per-sample gyro noise IN MOTION has no rate
+    #     truth and is unmeasured. The driver's own value (bno085.yaml, datasheet
+    #     sigma 0.0541 rad/s, 2.9e-3) is ~770x looser and would leave the encoder
+    #     ~2 % of the yaw-rate weight, about 1.8 deg on 3 turns at its +8 % spin
+    #     error -- at the D3 limit (report 5.1, INFERRED static weighting).
+    #   wheel_odom_yaw_rate_variance  (rad/s)^2, twist covariance yaw-yaw on
+    #                                 wheel_odom_topic (formerly hard-coded 0.08).
+    #     User decision D1 = (a), 2026-10-29: the encoder yaw rate STAYS FUSED as
+    #     the fallback for a silent IMU (robot_localization has no automatic
+    #     sensor fallback; without it a dead IMU leaves the filter integrating
+    #     its last rate), with a large variance of NO LESS THAN 0.08 (report 5.1
+    #     variant A). 0.08 already exceeds the measured encoder-vs-gyro scatter
+    #     (drive15/rot13 p99 7.45 deg/s = 0.13 rad/s -> 0.017).
+    #     BLEED, MEASURED (audit replay of drive15 through ekf_node, 2026-10-29):
+    #     about 1 % of the encoder-minus-gyro difference reaches the EKF yaw,
+    #     +-0.07...0.37 deg per ~340 deg spin, ~0.84 deg over 3 same-direction
+    #     turns. NOT the ~0.003 % of report 5.1's static weighting, which ignores
+    #     process noise: between IMU samples Q * dt re-inflates P, so each odom0
+    #     update still has a gain of about 6 %, roughly
+    #     Q_vyaw * dt / (Q_vyaw * dt + 0.08) = 0.005 / 0.085 with dt ~0.01 s.
+    #     The bleed therefore GROWS if 2.5 raises imu_yaw_rate_variance (P after
+    #     each IMU update is larger) and with Q_vyaw * dt (P is re-inflated more);
+    #     a larger value here shrinks it. The encoder's errors are systematic
+    #     (+6.4...+9.0 % in spin), so the bleed pulls, it does not average out.
+    #     test/check_imu_wiring.py fails below 0.08 or if imu0 stops being the
+    #     tighter source.
+    imu_yaw_rate_variance: 3.8e-6
+    wheel_odom_yaw_rate_variance: 0.08
+    # GYRO PLAUSIBILITY (2.4). Checked on the raw yaw rate BEFORE the bias
+    # estimator and the publisher, so a rejected sample reaches neither. Why: in
+    # the audit's fault-injection replay of drive15 one +5 rad/s sample gave a
+    # -2.5 deg yaw step at standstill and -5.5 deg in a turn, and at standstill
+    # it also shifted the bias by +0.0018 rad/s for ~210 s, until it left the
+    # 120 s window (~12 deg of drift). Non-finite samples are dropped as well.
+    # MEASURED basis (bags 2026-10-22 drive15 + rot13, /imu/bno085/data): |z|
+    # max 1.48 rad/s (commanded spin 1.40 rad/s); change between consecutive
+    # samples (~20 ms) max 0.594, p99.9 0.34 rad/s; per second |dz/dt| p99 3.95,
+    # max 37.9 rad/s^2 (the max includes stamp jitter, dt down to 5.7 ms).
+    # All three limits are that evidence times a CHOSEN margin of 2 -- TO-VERIFY
+    # (outdoor surfaces, faster spins and collisions are unmeasured). 0 disables.
+    #   imu_max_abs_yaw_rate    rad/s, |z| limit: 2 x 1.48 -> 3.0
+    #   imu_max_yaw_rate_step   rad/s, change against the last PLAUSIBLE sample:
+    #                           2 x 0.594 -> 1.2
+    #   imu_max_yaw_rate_slope  rad/s per s since that sample; the step allowance
+    #                           is max(step, slope * elapsed), so it widens after a
+    #                           rejection and a fast spin start cannot chain-reject
+    #                           against an old reference. 1.2 per 0.02 s nominal
+    #                           period -> 60 (measured |dz/dt| max 37.9). It also
+    #                           bounds a lock-out: any real level is reached
+    #                           within (difference / 60) s.
+    # RESIDUAL RISK -- what this check plus the trimmed bias (gyro_bias_trim_count)
+    # still do not catch:
+    #   - a corrupted sample inside these limits reaches the EKF once (the bias
+    #     is protected, the yaw step of that one sample is not);
+    #   - a FROZEN or LATCHED sensor repeating any value up to 3 rad/s: every
+    #     sample passes both checks and the EKF integrates it, at standstill too
+    #     (the bias estimator then learns it as bias after 30 s);
+    #   - a REAL rate above 3 rad/s is rejected as a whole, so vyaw falls back to
+    #     the encoder for as long as it lasts.
+    #   - 4 or more in-limit bad samples in one 120 s window reach the bias, each
+    #     beyond the third at ~1/N (N ~6000): 4 x +1.0 rad/s shift it by ~1.7e-4
+    #     rad/s, ~1.2 deg over 120 s (audit replay 2026-10-29); a latched value at
+    #     standstill is exactly that case.
+    # No imu0 gate in the EKF until 2.5 (user decision 2026-10-29); whether a
+    # large finite one (about 15-20 sigma) is added is decided from the 2.5
+    # replay innovations (see above imu0 in ekf_filter_node).
+    imu_max_abs_yaw_rate: 3.0
+    imu_max_yaw_rate_step: 1.2
+    imu_max_yaw_rate_slope: 60.0
+
+odom_divergence_monitor:
+  ros__parameters:
+    use_sim_time: true
+    # YAW-RATE CHANNEL (2.6, <<FR+5>>): /wheel/odom twist.angular.z against the
+    # gyro on /imu/data/filtered, reported on /diagnostics only. It has NO effect
+    # on any command, on the EKF or on any node; do not wire it into one.
+    # Which rate: |rate| below is the 1 s MEAN OF THE GYRO yaw rate (reason in the
+    # module doc of odom_divergence_monitor.py).
+    # STATUS: provisional. The tolerance is the user's decision D9 (2026-11-02) on
+    # the evidence of report 1.6 section 5.4 (branch Theo-yaw-report, never
+    # audited): clean 1 s maxima 2.7 / 8.4 deg/s in 0.5 / 1.4 rad/s spins, 1.9
+    # straight, 3.2 arc, 1.8 crab. TO-VERIFY: that it DETECTS WHEEL SLIP; no
+    # recorded segment has known slip, so only "quiet when clean" is shown.
+    yaw_channel_enabled: true
+    wheel_odom_topic: /wheel/odom
+    gyro_topic: /imu/data/filtered          # = localization_input_node.imu_output_topic
+    base_frame: base_footprint
+    yaw_window_sec: 1.0                     # D9, TO-VERIFY (slip detection)
+    yaw_abs_tol_dps: 3.0                    # D9, TO-VERIFY (slip detection)
+    yaw_rel_gain: 0.15                      # D9, TO-VERIFY (slip detection)
+    # TWO STAGES (user decision D17, 2026-11-13, provisional, TO-VERIFY; the ONLY home of
+    # these values). WARNING = the 1 s means beyond abs_tol + rel_gain*|gyro| for
+    # yaw_warn_sustain_sec; not latched. ERROR = the mean over yaw_error_window_sec of
+    # the excess max(0, |enc-gyro| - rel_gain*|gyro|) (clipped at zero, D17 amendment
+    # 2026-11-13) beyond yaw_abs_tol_dps (strict >); latched until
+    # the stack restarts. E.g. 15 deg/s excess for 1 s inside 5 s already latches.
+    yaw_warn_sustain_sec: 1.0               # D17, TO-VERIFY
+    yaw_error_window_sec: 5.0               # D17, TO-VERIFY
+    # SILENCE. Largest gaps in the 2026-10-22 bags (indoor, Pi load): IMU 0.10 s,
+    # wheel odometry 0.35 s. The EKF falls back to the encoder when the IMU stops,
+    # without telling anyone; this reports it.
+    imu_silence_timeout_sec: 1.0            # TO-VERIFY: not measured on a loaded run
+    wheel_silence_timeout_sec: 1.0          # TO-VERIFY: not measured on a loaded run
+    startup_grace_sec: 10.0                 # TO-VERIFY: boot order of the nodes
+    # A sample whose header stamp is further than this from the arrival time (either
+    # way) is dropped, so a stale-stamped stream counts as silent. Observed
+    # arrival-minus-stamp p95 is 0.014 s.
+    max_sample_age_sec: 1.0                 # TO-VERIFY
+    min_window_fill: 0.8                    # fraction of yaw_window_sec both windows must span; TO-VERIFY
+    return_hold_sec: 10.0                   # how long "gyro returned" stays on WARN (whatever the sub-state); TO-VERIFY
+    # Every alarm EPISODE is counted and logged when it happens; the status stays on
+    # DIVERGED_HELD (ERROR) this long after the last diverged instant, so a 0.5 s
+    # /diagnostics tick cannot miss a short episode.
+    alarm_hold_sec: 5.0                     # TO-VERIFY
+    # GAPS. A window with less than min_window_fill of data cannot be judged; the
+    # sustain counter is FROZEN then (neither confirmed nor erased). When more than
+    # gap_report_fraction of the last gap_report_window_sec could not be judged the
+    # state is INTERMITTENT (WARN): a partly failing IMU or wheel feedback.
+    gap_report_window_sec: 10.0             # TO-VERIFY
+    gap_report_fraction: 0.25               # TO-VERIFY
+    # A node-clock jump that the monotonic clock did not make by more than this
+    # (chrony stepping the RTC-less Pi, either direction) restarts the channel
+    # instead of reading as a silence and a return. Not applied under use_sim_time.
+    clock_step_tolerance_sec: 0.5           # TO-VERIFY
 
 laser_odometry_node:
   ros__parameters:
@@ -114,7 +482,9 @@ ekf_filter_node:
     world_frame: odom
 
     odom0: /wheel/odom
-    # Holonomic 4WIS: fuse vx, vy, and yaw rate from wheel odometry.
+    # Holonomic 4WIS: fuse vx, vy, and yaw rate from wheel odometry. The yaw rate
+    # is the FALLBACK since 2.4 (D1 = (a)): imu0 carries the yaw rate with a
+    # variance ~20000x tighter, see wheel_odom_yaw_rate_variance above.
     odom0_config: [false, false, false,
                    false, false, false,
                    true, true, false,
@@ -123,7 +493,17 @@ ekf_filter_node:
     odom0_queue_size: 10
     odom0_differential: false
     odom0_relative: false
-    odom0_twist_rejection_threshold: 2.0
+    # NO Mahalanobis gate on odom0 (odom0_twist_rejection_threshold omitted).
+    # odom0 is the only source of vx/vy without laser fusion, and the only
+    # yaw-rate source whenever imu0 is silent (IMU unplugged, driver respawning).
+    # A rejected sample is replaced by nothing, so the filter keeps integrating
+    # its stale rate. Replay of the 2026-10-07 coast bags (robot_localization
+    # 3.8.3, before imu0 was fused): with 2.0, 170/6540 samples rejected in run 3
+    # and +46.8 deg final yaw drift against /wheel/odom; without the gate
+    # -0.3 deg; runs 1-2 unchanged within 2.3 deg. Do not reinstate a gate on
+    # odom0 in the deployed configuration (guarded by test/check_odom0_no_gate.py,
+    # which evaluates the robot's launch). With fuse_laser_odometry:=true odom1 is
+    # an independent source with its own gate, but this key is shared by both.
 
     odom1: /laser/odom
     odom1_config: [true, true, false,
@@ -136,9 +516,26 @@ ekf_filter_node:
     odom1_relative: false
     odom1_twist_rejection_threshold: 2.0
 
+    # imu0 FUSES THE YAW RATE ONLY (2.4, <<FR+4>>), on the robot AND the twin.
+    #   - index 11 (yaw rate): on. The BNO085 rate after localization_input_node
+    #     (bias at standstill removed, 2.3; variance set there, see
+    #     imu_yaw_rate_variance). Sign and scale checked in 1.3 (scale
+    #     0.9995-1.0009 against the settled scan match, report section 2).
+    #   - index 5 (absolute yaw) OFF permanently: user decision D2 (2026-10-22).
+    #   - everything else OFF: two_d_mode, and nothing else was measured.
+    # Guarded by test/check_imu_wiring.py, which evaluates the robot's and the
+    # twin's actual launch. Until 2.4 the twin alone fused [5, 11] through a
+    # launch override (imu0_twin_fusion); that override is gone so the twin runs
+    # the filter structure the robot runs (accepted by the user 2026-10-29,
+    # absolute IMU yaw dropped in the twin too). The twin's Gazebo IMU has no noise
+    # model, so it tests the wiring, not the noise.
+    # LOAD RISK, NOT TUNED (2.5/2.8): imu0 adds ~50 updates/s to the filter. The
+    # robot's EKF already logs "Failed to meet update rate" occasionally (~20-50 ms
+    # per step on the Pi; report 6: 9 per 7.3 min while driving, 3 per 34 min at
+    # rest). Measure the count with imu0 on in 2.8 before touching frequency.
     imu0: /imu/data/filtered
     imu0_config: [false, false, false,
-                  false, false, true,
+                  false, false, false,
                   false, false, false,
                   false, false, true,
                   false, false, false]
@@ -146,7 +543,30 @@ ekf_filter_node:
     imu0_differential: false
     imu0_relative: true
     imu0_remove_gravitational_acceleration: true
-    imu0_twist_rejection_threshold: 1.5
+    # NO Mahalanobis gate on imu0 (imu0_twist_rejection_threshold omitted, i.e.
+    # robot_localization's default: never reject) -- DELIBERATE, and the reason
+    # is the same failure mode as odom0's, now on the dominant source.
+    # MEASURED (bags 2026-10-22, /imu/bno085/data, change of z between
+    # consecutive samples ~20 ms apart): drive15 p99 0.076, p99.9 0.34, max
+    # 0.59 rad/s; rot13 (0.5 rad/s turns) max 0.18 rad/s. In drive15, 104
+    # samples (0.5 %) change by more than 0.15 rad/s, in runs of 3-5 CONSECUTIVE
+    # samples at every 1.4 rad/s spin start and stop (|z| ramping 0.35 -> 1.0
+    # rad/s within ~80 ms).
+    # INFERRED (robot_localization adds process noise as Q * dt per prediction):
+    # with Q_vyaw 0.50 and dt 0.01-0.02 s between updates the predicted vyaw
+    # sigma is ~0.07-0.10 rad/s, and the gyro's own variance adds almost nothing.
+    # The former 1.5 would therefore reject innovations above ~0.11-0.15 rad/s,
+    # i.e. exactly those runs. A rejected gyro sample hands vyaw to the encoder
+    # (+8 % in spin, report 5.1) and the next sample of the run differs even
+    # more from the held state, so rejections chain until Q * dt has grown the
+    # gate -- the stale-rate runaway measured on odom0 (+46.8 deg, 2026-10-07).
+    # Against that, no gyro glitch has been seen: 0 non-finite samples and
+    # |z| <= 1.48 rad/s in both bags. Non-finite, out-of-order and implausible
+    # samples are dropped in localization_input_node instead, before they reach
+    # this filter (imu_max_* above).
+    # DECIDED by the user 2026-10-29: no gate until 2.5; whether a large FINITE
+    # gate (about 15-20 sigma) is added against corrupted samples within those
+    # limits is decided from the 2.5 replay innovations, not from this estimate.
 
     # Yaw (index 5) and yaw-rate (index 11) process noise are raised above the
     # slam_toolbox/robot_localization defaults. Process noise bounds how fast
@@ -158,8 +578,15 @@ ekf_filter_node:
     # these back toward the defaults without addressing that lag. The other
     # axes are untouched: this is the yaw axis only, vx/vy track correctly.
     #
-    # NOT a claim about imu0: the BNO085 is not connected, imu0 publishes
-    # nothing, and it remains an un-ruled-out candidate for the same symptom.
+    # RE-EVALUATED in 2.4 and LEFT UNCHANGED, to be re-judged in the 2.5 replay.
+    # The lag was tuned away with odom0 as the only yaw-rate source (variance
+    # 0.08); imu0 fused nothing on the robot then, so on the robot it was not the
+    # cause (it may have been in the twin, which fused IMU yaw). With imu0 at
+    # 3.8e-6 the gyro dominates the vyaw update, so the lag argument for a high
+    # Q_vyaw weakens; Q_vyaw also sets how much of the encoder error bleeds in
+    # (wheel_odom_yaw_rate_variance above, ~1 % measured) and the innovation
+    # spread the omitted imu0 gate was argued from. Change it only on replay
+    # evidence.
     process_noise_covariance: [0.08, 0.08, 1.0,
                                1.0, 1.0, 0.15,
                                0.05, 0.05, 1.0,
@@ -228,8 +655,34 @@ slam_toolbox:
     minimum_travel_distance: 0.05 #0.10
 
     # Rotation in radians (0.05 rad ~= 2.8 deg) before processing a new scan;
-    # same trade-off as minimum_travel_distance.
+    # same trade-off as minimum_travel_distance. Only effective together with
+    # check_min_dist_and_heading_precisely: true (next key) -- without it slam_toolbox
+    # 2.8.5 ignores this value entirely.
     minimum_travel_heading: 0.05 #0.10
+
+    # Without this (upstream default false) SlamToolbox::shouldProcessScan checks
+    # DISTANCE ONLY (skip if dist^2 < 0.8 * minimum_travel_distance^2) and
+    # minimum_travel_heading is ignored, so a pure in-place rotation never
+    # triggers a scan match. Measured on the 2026-10-08 coast bag
+    # (~/gripperx_bags/2026-10-08_coast_nogate/): 0 map->odom updates in every
+    # rotation phase; corrections of 10-16 deg arrived only after ~4.5 cm of
+    # translation, while wheel odometry over-reports in-place rotation by ~9 %
+    # (EKF yaw is wheel-only, so slam is the only corrector). With true the scan
+    # is skipped only if dist < minimum_travel_distance AND heading change <
+    # minimum_travel_heading. Offline replay of that bag's /scan through
+    # async_slam_toolbox_node: 7-16 updates per rotation, heading error vs
+    # reference rms 7.2 -> 5.5 deg, p95 13.2 -> 7.6 deg, max 18.5 -> 10.3 deg
+    # (one bag, reference partly circular, laptop CPU far above the Pi).
+    # Scan rate during rotation: one candidate per 0.05 rad would allow 10/s at
+    # 0.5 rad/s and 16/s at 0.8 rad/s, but /scan is 10 Hz (bag median dt 0.100 s),
+    # so the LiDAR caps it at 10/s; minimum_time_interval (0.05 s) never binds.
+    # Measured in the audit replay: ~3.9 processed scans/s during rotation phases
+    # (86-88 updates in 22.7 s). CPU, offline replay on the laptop (i5-8265U):
+    # slam 53 -> 82 s CPU over 190 s (~1.5x, 0.28 -> 0.43 core). Pi effect
+    # UNMEASURED. RISK: the EKF already logs "Failed to meet update rate" and slam
+    # reported queue-full drops; the robot trial must count both during rotations.
+    # OFFLINE REPLAY ONLY; NOT ACCEPTED until confirmed on the robot.
+    check_min_dist_and_heading_precisely: true
 
     use_scan_matching: true
     use_scan_barycenter: true
@@ -270,23 +723,20 @@ slam_toolbox:
     # problem — they follow the rotation continuously.
     #
     # Deliberately raised only 2x, no further: the wheel odometry's own yaw is
-    # itself measurably wrong (imu0 would normally correct this, but the
-    # BNO085 is not connected on the real robot), so trusting the wheels
-    # further would let that yaw error author the map with confidence. Revisit
-    # once an IMU is connected.
+    # itself measurably wrong, so trusting the wheels further would let that yaw
+    # error author the map with confidence. Since 2.4 the EKF yaw rate comes from
+    # the gyro (imu0), so the odometry pose here is no longer wheel-only:
+    # revisit in 2.7, from the 2.5 replay.
     #
     # NOT A CURE — the scan smear itself isn't addressed here; that needs a
     # lower max_vel_theta or de-skewing the scan against odometry before
     # matching, neither of which this stack currently does.
     #
-    # TEST VALUE 2026-09-30 (user decision): angle_variance_penalty lowered
-    # 2.0 -> 1.5 to give the laser more say over yaw during in-place rotation,
-    # after the real robot showed 4-23 deg of heading change after Nav2's
-    # success (re-aim SETTLED log lines, 2026-09-29). Not yet evaluated; the
-    # value above this note's rationale was 2.0 — revert to 2.0 if the map
-    # lurches during turns or the drift does not improve.
+    # 1.5 was tested on 2026-09-30 (user decision) and REVERTED to 2.0 the
+    # same day (user decision): no visible improvement of the post-rotation
+    # heading coast (still 13-15 deg in 3 of 5 arrivals, SETTLED log lines).
     distance_variance_penalty: 0.8
-    angle_variance_penalty: 1.5
+    angle_variance_penalty: 2.0
     fine_search_angle_offset: 0.00349
     coarse_search_angle_offset: 0.349
     coarse_angle_resolution: 0.0349

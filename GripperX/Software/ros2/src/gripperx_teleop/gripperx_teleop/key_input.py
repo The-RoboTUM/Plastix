@@ -111,6 +111,7 @@ _CODE_TO_KEY = {
     ord("i"): "i",
     ord("u"): "u",
     ord("l"): "l",
+    ord("j"): "j",
 }
 
 # Kitty modifier bitmask, 1-based: 1 = none, and +4 is control.

@@ -575,6 +575,7 @@ def part2_pipeline() -> None:
             datum_unchanged=True,
             line_calibration_unchanged=True,
             pose=pose,
+            arm_ready=True,
         )
         defaults.update(overrides)
         return val.DispatchContext(**defaults)
@@ -947,6 +948,7 @@ def part4_correlation() -> None:
             datum_unchanged=True,
             line_calibration_unchanged=True,
             pose=(1.0, 0.0, 0.0),
+            arm_ready=True,
         )
         base.update(overrides)
         return val.validate_dispatch(val.DispatchContext(**base), ctx)
@@ -986,6 +988,19 @@ def part4_correlation() -> None:
         dispatch(armed=False, link_alive=False).reason == val.NOT_ARMED,
         "first failure wins, in the designed order",
     )
+    check(
+        dispatch(arm_ready=False).reason == val.ARM_NOT_HOME,
+        "AP1 H-pre: an arm not known idle at home refuses the dispatch (ARM_NOT_HOME)",
+    )
+    try:
+        val.DispatchContext(armed=True, dry_run=False, link_alive=True,
+                            teleop_mode="autonomous", teleop_mode_age_sec=0.1,
+                            nav2_available=True, datum_unchanged=True,
+                            line_calibration_unchanged=True, pose=(1.0, 0.0, 0.0))
+        arm_required = False
+    except TypeError:
+        arm_required = True
+    check(arm_required, "  ... and arm_ready has no default: a caller that forgets it fails")
     # The pose is re-checked against the world, not merely carried forward.
     moved_world = val.ValidationContext(
         goal=ctx.goal,
@@ -1006,6 +1021,7 @@ def part4_correlation() -> None:
             datum_unchanged=True,
             line_calibration_unchanged=True,
             pose=(1.0, 0.0, 0.0),
+            arm_ready=True,
         ),
         moved_world,
     )
@@ -1534,9 +1550,10 @@ def part6_package_e() -> None:
         f"msg={sorted(msg_codes.items())}",
     )
     check(
-        len(msg_codes) == 10 and msg_codes.get("CLOCK_JUMPED_BACK") == 9,
-        "  ... and there are NINE auto-disarm triggers plus NONE, the count "
-        "SR-15 rule 7 now names",
+        len(msg_codes) == 11 and msg_codes.get("CLOCK_JUMPED_BACK") == 9
+        and msg_codes.get("PICK_CONFIRM") == 10,
+        "  ... and there are the TEN auto-disarm triggers SR-15 rule 7 names (PICK_CONFIRM "
+        "= 10 since the amendment of 2026-11-05, aimed pick SR-16 E11 draft) plus NONE",
         f"{len(msg_codes) - 1} triggers + NONE",
     )
 
@@ -2046,10 +2063,10 @@ def part8_f40() -> None:
         "something about the gate that is not true",
     )
     check(
-        len(arm_mod.TRIGGER_CODES) == 10
+        len(arm_mod.TRIGGER_CODES) == 11 and "PICK_CONFIRM" in arm_mod.TRIGGER_CODES
         and not any("FORWARD" in name for name in arm_mod.TRIGGER_CODES),
         "F-40 (NON-FALSIFYING invariant guard - also passes pre-decision): there "
-        "is NO tenth `ArmingState` trigger. A constant would say a disarm can "
+        "is NO forward-jump `ArmingState` trigger. A constant would say a disarm can "
         "carry this reason, and by the user's decision it cannot",
         f"{len(arm_mod.TRIGGER_CODES)} codes",
     )
@@ -3052,9 +3069,9 @@ def part10_f35() -> None:
         "gates nothing must not start claiming a fault (the F-40 precedent)",
     )
     check(
-        len(arm_mod.TRIGGER_CODES) == 10,
+        len(arm_mod.TRIGGER_CODES) == 11 and "PICK_CONFIRM" in arm_mod.TRIGGER_CODES,
         "F-35 (NON-FALSIFYING invariant guard - also passes pre-change): still "
-        "NINE auto-disarm triggers plus NONE. Detecting this mismatch added no "
+        "TEN auto-disarm triggers (SR-15 rule 7 as amended 2026-11-05) plus NONE. Detecting this mismatch added no "
         "way to disarm on it",
         f"{len(arm_mod.TRIGGER_CODES)} codes",
     )

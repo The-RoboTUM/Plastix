@@ -1,0 +1,186 @@
+# Experiment plan of the desk work after 2.5: gyro injection (2.5b, D14) and the arc,
+# scan stamp and slam penalty questions of 2.7 (D15). Read by imu_replay.py with --plan,
+# always with --out ~/gripperx_bags/replay_2p6. Same format as imu_replay_plan.yaml.
+# Nothing here is an active value: a run overrides, localization.yaml stays as merged.
+#
+# arc_* /scan stamps are shifted by the number in the key, in ms; p = later, m = earlier.
+inputs:
+  arc_slice:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare: {start: 256.0, duration: 80.0, scan_lead_size: 454}
+  arc_p050:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare: {start: 256.0, duration: 80.0, scan_lead_size: 454, scan_stamp_shift: 0.05}
+  arc_m050:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare: {start: 256.0, duration: 80.0, scan_lead_size: 454, scan_stamp_shift: -0.05}
+  arc_m075:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare: {start: 256.0, duration: 80.0, scan_lead_size: 454, scan_stamp_shift: -0.075}
+  arc_m100:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare: {start: 256.0, duration: 80.0, scan_lead_size: 454, scan_stamp_shift: -0.10}
+  arc_m125:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare: {start: 256.0, duration: 80.0, scan_lead_size: 454, scan_stamp_shift: -0.125}
+  arc_m150:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare: {start: 256.0, duration: 80.0, scan_lead_size: 454, scan_stamp_shift: -0.15}
+  drive15s454:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare: {scan_lead_size: 454}
+  rot13s454:
+    bag: ~/gripperx_bags/2026-10-22_rot13/rot13_20261022_1551
+    prepare: {scan_lead_size: 454}
+  drive15s454_m050:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare: {scan_lead_size: 454, scan_stamp_shift: -0.05}
+  rot13s454_m050:
+    bag: ~/gripperx_bags/2026-10-22_rot13/rot13_20261022_1551
+    prepare: {scan_lead_size: 454, scan_stamp_shift: -0.05}
+  drive15s454_m100:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare: {scan_lead_size: 454, scan_stamp_shift: -0.1}
+  rot13s454_m100:
+    bag: ~/gripperx_bags/2026-10-22_rot13/rot13_20261022_1551
+    prepare: {scan_lead_size: 454, scan_stamp_shift: -0.1}
+  # Injection times count from the start of the source bag, slice or not. Turn: rot13
+  # 76.78-89.41 s, rate 0.5. Arc: drive15 282.21-284.68 s, rate -0.95. Spin: drive15
+  # 77.99-83.32 s, rate 1.45 (MEASURED, /imu/bno085/data).
+  spin_slice:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare: {start: 52.0, duration: 64.0, scan_lead_size: 454}
+  # check_tol 0.05: at the default 0.01 check_run failed this run, rightly: 3.6 s of the
+  # stuck value at rest moved the bias by 0.014 rad/s, so the output stayed off the clean
+  # stream after the end. That is a result (report section 3), not a broken run.
+  turn_stuck5:
+    bag: ~/gripperx_bags/2026-10-22_rot13/rot13_20261022_1551
+    prepare:
+      {scan_lead_size: 454, gyro_inject: {mode: stuck, start: 83.0, duration: 10.0, check_tol: 0.05}}
+  # max_slam_stall_s 8: the default 6 failed this run, rightly: with the gyro at zero the
+  # odometry shows no turn, so slam skips the scans of a real turn. A result (report
+  # section 3), not a broken run.
+  turn_zero5:
+    bag: ~/gripperx_bags/2026-10-22_rot13/rot13_20261022_1551
+    prepare:
+      {scan_lead_size: 454, gyro_inject: {mode: zero, start: 83.0, duration: 5.0, max_slam_stall_s: 8.0}}
+  turn_silent3:
+    bag: ~/gripperx_bags/2026-10-22_rot13/rot13_20261022_1551
+    prepare:
+      {scan_lead_size: 454, gyro_inject: {mode: silent, start: 83.0, duration: 3.0}}
+  turn_silent10:
+    bag: ~/gripperx_bags/2026-10-22_rot13/rot13_20261022_1551
+    prepare:
+      {scan_lead_size: 454, gyro_inject: {mode: silent, start: 83.0, duration: 10.0}}
+  turn_stuck45:
+    bag: ~/gripperx_bags/2026-10-22_rot13/rot13_20261022_1551
+    prepare:
+      {scan_lead_size: 454, gyro_inject: {mode: stuck, start: 83.0, duration: 45.0, check_tol: 0.3}}
+  arc_stuck5:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare:
+      {start: 256.0, duration: 80.0, scan_lead_size: 454, gyro_inject: {mode: stuck, start: 283.0, duration: 5.0}}
+  arc_zero5:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare:
+      {start: 256.0, duration: 80.0, scan_lead_size: 454, gyro_inject: {mode: zero, start: 283.0, duration: 5.0}}
+  arc_silent5:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare:
+      {start: 256.0, duration: 80.0, scan_lead_size: 454, gyro_inject: {mode: silent, start: 283.0, duration: 5.0}}
+  spin_stuck5:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare:
+      {start: 52.0, duration: 64.0, scan_lead_size: 454, gyro_inject: {mode: stuck, start: 80.0, duration: 5.0}}
+  spin_zero2:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare:
+      {start: 52.0, duration: 64.0, scan_lead_size: 454, gyro_inject: {mode: zero, start: 80.0, duration: 2.0}}
+  spin_silent2:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare:
+      {start: 52.0, duration: 64.0, scan_lead_size: 454, gyro_inject: {mode: silent, start: 80.0, duration: 2.0}}
+  # One slam session over both bags. MEASURED: the robot stood at the same pose at the
+  # seam (full-circle match 0.03 deg, score 0.016). See the report.
+  chain:
+    chain: {first: rot13s454, second: drive15s454, gap_s: 2.5}
+  chain_m100:
+    chain: {first: rot13s454_m100, second: drive15s454_m100, gap_s: 2.5}
+variants:
+  B_baseline: {imu0: false, wheel_odom_yaw_rate_variance: 0.08}
+  A_merged: {}
+  A_inject: {}
+  A_chain: {max_ekf_gap_s: 3.0}
+  B_chain: {imu0: false, wheel_odom_yaw_rate_variance: 0.08, max_ekf_gap_s: 3.0}
+  A_chain_avp1p0: {max_ekf_gap_s: 3.0, angle_variance_penalty: 1.0}
+  A_chain_avp3p0: {max_ekf_gap_s: 3.0, angle_variance_penalty: 3.0}
+  A_avp1p0: {angle_variance_penalty: 1.0}
+  A_avp1p5: {angle_variance_penalty: 1.5}
+  A_avp3p0: {angle_variance_penalty: 3.0}
+  A_avp4p0: {angle_variance_penalty: 4.0}
+stages:
+  arc_shift_core:
+    - {input: arc_slice, variant: A_merged, repeat: 3}
+    - {input: arc_slice, variant: B_baseline, repeat: 3}
+    - {input: arc_m100, variant: A_merged, repeat: 3}
+    - {input: arc_m100, variant: B_baseline, repeat: 3}
+    - {input: arc_m050, variant: A_merged, repeat: 3}
+    - {input: arc_m050, variant: B_baseline, repeat: 3}
+  arc_shift_wide:
+    - {input: arc_p050, variant: A_merged}
+    - {input: arc_p050, variant: B_baseline}
+    - {input: arc_m075, variant: A_merged}
+    - {input: arc_m125, variant: A_merged}
+    - {input: arc_m150, variant: A_merged}
+    - {input: arc_m150, variant: B_baseline}
+  inject:
+    - {input: spin_slice, variant: A_merged}
+    - {input: spin_slice, variant: B_baseline}
+    - {input: arc_stuck5, variant: A_inject}
+    - {input: arc_zero5, variant: A_inject}
+    - {input: arc_silent5, variant: A_inject}
+    - {input: spin_stuck5, variant: A_inject}
+    - {input: spin_zero2, variant: A_inject}
+    - {input: spin_silent2, variant: A_inject}
+    - {input: turn_stuck5, variant: A_inject}
+    - {input: turn_zero5, variant: A_inject}
+    - {input: turn_silent3, variant: A_inject}
+    - {input: turn_silent10, variant: A_inject}
+    - {input: turn_stuck45, variant: A_inject}
+    - {input: rot13s454, variant: A_merged}
+    - {input: rot13s454, variant: B_baseline}
+  full_shift:
+    - {input: drive15s454, variant: A_merged}
+    - {input: drive15s454, variant: B_baseline}
+    - {input: drive15s454_m100, variant: A_merged, repeat: 2}
+    - {input: drive15s454_m100, variant: B_baseline}
+    - {input: drive15s454_m050, variant: A_merged}
+    - {input: drive15s454_m050, variant: B_baseline}
+    - {input: rot13s454_m100, variant: A_merged}
+    - {input: rot13s454_m100, variant: B_baseline}
+    - {input: rot13s454_m050, variant: A_merged}
+    - {input: rot13s454_m050, variant: B_baseline}
+  chain:
+    - {input: chain, variant: A_chain}
+    - {input: chain, variant: B_chain}
+    - {input: chain_m100, variant: A_chain}
+  penalty:
+    - {input: arc_slice, variant: A_avp1p0}
+    - {input: arc_slice, variant: A_avp1p5}
+    - {input: arc_slice, variant: A_avp3p0}
+    - {input: arc_slice, variant: A_avp4p0}
+    - {input: arc_m100, variant: A_avp1p0}
+    - {input: arc_m100, variant: A_avp3p0}
+    - {input: arc_m100, variant: A_avp4p0}
+    - {input: drive15s454, variant: A_avp1p0}
+    - {input: drive15s454, variant: A_avp3p0}
+    - {input: drive15s454_m100, variant: A_avp1p0}
+    - {input: drive15s454_m100, variant: A_avp3p0}
+    - {input: rot13s454, variant: A_avp1p0}
+    - {input: rot13s454, variant: A_avp3p0}
+  # The chain is the only input that reproduces the robot in 1.4 rad/s spins, so the key
+  # result gets a repeat and the penalty is also judged there.
+  chain_more:
+    - {input: chain_m100, variant: A_chain, repeat: 2}
+    - {input: chain_m100, variant: A_chain_avp1p0}
+    - {input: chain_m100, variant: A_chain_avp3p0}

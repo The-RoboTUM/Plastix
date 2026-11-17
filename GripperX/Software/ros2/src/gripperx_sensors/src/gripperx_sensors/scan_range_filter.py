@@ -101,8 +101,11 @@ class ScanRangeFilter(Node):
                 dropped += 1
 
         out = LaserScan()
-        # Everything not deliberately changed is copied verbatim. The stamp above
-        # all: shifting it would break TF lookups for every consumer.
+        # Everything not deliberately changed is copied verbatim, the stamp and
+        # time_increment/scan_time included: this node is a pass-through. The stamp
+        # is set where the timing is known, in the driver (ldlidar_stl_ros2
+        # stamp_source, from per-point stamps); a constant shift here could not
+        # follow the driver's per-boot and mid-run loop wait.
         out.header = msg.header
         out.angle_min = msg.angle_min
         out.angle_max = msg.angle_max

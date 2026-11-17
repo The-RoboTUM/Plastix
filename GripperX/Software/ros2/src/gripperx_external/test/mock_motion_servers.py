@@ -107,11 +107,23 @@ class MockMotionServers(Node):
         self.declare_parameter("robot_x", 0.0)
         self.declare_parameter("robot_y", 0.0)
         self.declare_parameter("robot_yaw", 0.0)
+        # After a pick the jaws may hold the object: the gripper is then not at home.
+        # at_home follows the arm node's switch arm_state.at_home_includes_gripper
+        # (audit AP3 F1; user decision 2026-10-13: variant a, false).
+        self.declare_parameter("arm_holds_object_after_pick", False)
+        self.declare_parameter("at_home_includes_gripper", False)
 
         self._group = ReentrantCallbackGroup()
         self._tf = TransformBroadcaster(self)
         self._odom_pub = self.create_publisher(Odometry, "/odometry/filtered", 10)
         self._mode_pub = self.create_publisher(String, "/teleop/active_mode", 10)
+        # The arm's state for the gateway's ARM_NOT_HOME gate: idle and at home,
+        # except while a mock pick runs.
+        from gripperx_arm_msgs.msg import ArmState
+        self._arm_state_cls = ArmState
+        self._arm_state_pub = self.create_publisher(ArmState, "/arm/state", _latched())
+        self._picking = False
+        self._holding = False
         self._costmap_pub = self.create_publisher(
             OccupancyGrid, "/global_costmap/costmap", _latched()
         )
@@ -130,8 +142,19 @@ class MockMotionServers(Node):
         # something against a producer that republishes rather than latches.
         self.create_timer(0.05, self._tick, callback_group=self._group)
         self.create_timer(0.1, self._publish_odom, callback_group=self._group)
+        self.create_timer(0.5, self._publish_arm_state, callback_group=self._group)
         self.create_timer(1.0, self._sync_servers, callback_group=self._group)
         self.get_logger().info("mock motion servers up (nothing here can move anything)")
+
+    def _publish_arm_state(self) -> None:
+        gripper = not self._picking and not self._holding
+        with_gripper = bool(self.get_parameter("at_home_includes_gripper").value)
+        st = self._arm_state_cls(known=True, idle=not self._picking,
+                                 at_home=not self._picking and (gripper or not with_gripper),
+                                 gripper_at_home=gripper, torque_on=True,
+                                 owner="pick" if self._picking else "")
+        st.header.stamp = self.get_clock().now().to_msg()
+        self._arm_state_pub.publish(st)
 
     # -- server lifecycle, so availability itself can be a scenario -------
     def _sync_servers(self) -> None:
@@ -322,6 +345,14 @@ class MockMotionServers(Node):
     def _execute_pick(self, goal_handle):
         with self._lock:
             self._pick_goals += 1
+        self._picking = True
+        try:
+            return self._run_pick(goal_handle)
+        finally:
+            self._holding = bool(self.get_parameter("arm_holds_object_after_pick").value)
+            self._picking = False
+
+    def _run_pick(self, goal_handle):
         outcome = str(self.get_parameter("pick_outcome").value)
         deadline = time.time() + float(self.get_parameter("pick_duration_sec").value)
         while time.time() < deadline:

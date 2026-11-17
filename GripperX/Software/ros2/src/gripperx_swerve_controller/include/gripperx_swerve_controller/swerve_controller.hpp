@@ -56,15 +56,19 @@
 #include <array>
 #include <atomic>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
 #include "controller_interface/controller_interface.hpp"
 #include "geometry_msgs/msg/twist.hpp"
+#include "gripperx_control_msgs/msg/drive_fault.hpp"
 #include "gripperx_control_msgs/msg/swerve_intent_echo.hpp"
 #include "gripperx_control_msgs/msg/wheel_stall_state.hpp"
 #include "gripperx_control_msgs/msg/wheel_velocity_report.hpp"
+#include "gripperx_control_msgs/srv/clear_drive_fault.hpp"
 #include "gripperx_swerve_controller/alignment_gate.hpp"
+#include "gripperx_swerve_controller/drive_fault_monitor.hpp"
 #include "gripperx_swerve_controller/stall_detector.hpp"
 #include "gripperx_swerve_controller/steering_limits.hpp"
 #include "gripperx_swerve_controller/swerve_kinematics.hpp"
@@ -84,6 +88,9 @@ class SwerveController : public controller_interface::ControllerInterface
 {
 public:
   SwerveController() = default;
+  /// Withdraws the clear service and waits for an in-flight clear call
+  /// (F-57): the callback must never outlive this object.
+  ~SwerveController() override;
 
   controller_interface::CallbackReturn on_init() override;
   controller_interface::InterfaceConfiguration command_interface_configuration() const override;
@@ -94,8 +101,37 @@ public:
     const rclcpp_lifecycle::State & previous_state) override;
   controller_interface::CallbackReturn on_deactivate(
     const rclcpp_lifecycle::State & previous_state) override;
+  /// controller_manager calls this on unload of an inactive controller: the
+  /// clear service is withdrawn here (an in-flight call is rejected).
+  controller_interface::CallbackReturn on_cleanup(
+    const rclcpp_lifecycle::State & previous_state) override;
   controller_interface::return_type update(
     const rclcpp::Time & time, const rclcpp::Duration & period) override;
+
+  /// Outcome of an operator clear request (SR-18 amendment 2026-11-09).
+  struct DriveFaultClearOutcome
+  {
+    bool success{false};
+    int reason{kDriveFaultNone};
+    std::string message;
+  };
+
+  /// The body of the /swerve_controller/clear_drive_fault service: hands the
+  /// request to update() (realtime-safe, lock-free on the realtime side) and
+  /// BLOCKS until update() has applied or refused it, at most
+  /// drive_fault_clear_timeout_sec (TO-VERIFY). Never touches controller state
+  /// itself. Must not be called from the thread that runs update(). Public so
+  /// that tests can drive it without the service plumbing.
+  /// `expected_fault_id` 0 = no expectation; otherwise it must equal the
+  /// latched fault's DriveFault.fault_id.
+  DriveFaultClearOutcome request_drive_fault_clear(
+    const std::string & requester, int expected_reason, uint32_t expected_fault_id = 0);
+
+  /// FR-14 integrator of one wheel (joint order). For the tests only.
+  double wheel_regulator_integrator(std::size_t wheel) const
+  {
+    return wheel_regulator_.integrator(wheel);
+  }
 
 private:
   /// /cmd_vel as received, with the time it arrived and its arrival index.
@@ -154,6 +190,8 @@ private:
   /// default, so normally a no-op), and then HWR-30a's stall gate forces every
   /// latched wheel to exactly zero. The gate is LAST, so no correction can ever
   /// stand between a latched wheel and its zero.
+  /// After it, the whole-drive fault (2026-10-16, drive_fault_monitor.hpp) has the
+  /// final word: while latched, all four wheels get exactly 0.0.
   /// `steer_target` / `steer_measured` are the POST-ARBITRATION commanded
   /// steering angles and the measured ones, joint order, for the alignment gate.
   /// BOTH NULL means "no steering command is being written on this cycle", which
@@ -168,6 +206,21 @@ private:
     const StallDetectorResult & result, const std::array<double, kNumWheels> & requested,
     const rclcpp::Time & time);
   void publish_stall_state(const rclcpp::Time & time);
+  /// Whole-drive fault (user decision 2026-10-16). Adopt a fault latched earlier
+  /// in this process (by this or a previous instance of the controller), and
+  /// publish the current state on the latched topic.
+  void adopt_process_drive_fault();
+  void publish_drive_fault(const rclcpp::Time & time);
+  /// Write the crash-surviving marker (no-op if the path is empty or the file
+  /// exists). Only an accepted operator clear deletes it
+  /// (apply_pending_drive_fault_clear).
+  void write_drive_fault_marker();
+  /// Realtime side of request_drive_fault_clear(): called at the top of
+  /// update(), applies or refuses a pending request on this cycle.
+  void apply_pending_drive_fault_clear(const rclcpp::Time & time);
+  /// Withdraw the clear service; rejects and waits out an in-flight call.
+  void shutdown_clear_service();
+  std::string describe_drive_fault(const DriveFaultRecord & record) const;
   void write_steering_commands(const std::array<double, kNumWheels> & joint_order_rad);
   void publish_intent_echo(const rclcpp::Time & time, const StampedTwist & consumed);
   void publish_wheel_report(const rclcpp::Time & time);
@@ -349,6 +402,72 @@ private:
   std::array<double, kNumWheels> stall_last_log_sec_{};
   std::array<bool, kNumWheels> stall_ever_logged_{};
   bool stall_multi_wheel_condition_{false};
+
+  // --- WHOLE-DRIVE FAULT (user decision 2026-10-16) ---------------------------
+  // Missing encoder / persistent stall -> all four wheel commands exactly 0.0,
+  // latched until the PROCESS restarts. Stage 4 of write_wheel_commands(), after
+  // HWR-30a. Rationale at the top of drive_fault_monitor.hpp.
+  DriveFaultConfig drive_fault_config_{};
+  DriveFaultMonitor drive_fault_;
+  std::string drive_fault_topic_{"/swerve_controller/drive_fault"};
+  /// tmpfs marker that carries the fault across a crash-respawn; "" = none.
+  std::string drive_fault_marker_path_{""};
+  /// Period of the repeated ERROR line while commands keep arriving into a
+  /// latched fault. A LOGGING cadence, not a safety threshold.
+  double drive_fault_log_period_sec_{2.0};
+  double drive_fault_last_log_sec_{0.0};
+  bool drive_fault_ever_logged_{false};
+  /// Set by the provenance callback; reset when the subscription is recreated.
+  std::atomic<bool> provenance_received_{false};
+  bool provenance_subscribed_{false};
+  rclcpp::Publisher<gripperx_control_msgs::msg::DriveFault>::SharedPtr drive_fault_pub_;
+  /// Set on the trip cycle; the marker is written after the command interfaces.
+  bool drive_fault_marker_pending_{false};
+
+  // --- OPERATOR CLEAR (SR-18 amendment 2026-11-09) ------------------------------
+  // Hand-over between the service thread and update(): a single-slot mailbox
+  // driven by one atomic state. The service side fills the request, then
+  // publishes kClearPending (release); update() claims it with a CAS to
+  // kClearTaken, so a request the service withdrew on its time-out (CAS
+  // kClearPending -> kClearIdle) can never be applied late. update() writes the
+  // outcome, then publishes kClearDone (release). No lock, no allocation on
+  // the realtime side for the hand-over itself.
+  static constexpr int kClearIdle = 0;
+  static constexpr int kClearPending = 1;
+  static constexpr int kClearTaken = 2;
+  static constexpr int kClearDone = 3;
+  static constexpr std::size_t kClearTextSize = 512;
+  static constexpr std::size_t kClearRequesterSize = 64;
+  std::atomic<int> clear_state_{kClearIdle};
+  /// Serialises service callers (non-realtime side only).
+  std::mutex clear_service_mutex_;
+  char clear_request_requester_[kClearRequesterSize]{};
+  int clear_request_expected_reason_{kDriveFaultNone};
+  uint32_t clear_request_expected_fault_id_{0};
+  /// Identity of the latched fault (DriveFault.fault_id); 0 = none.
+  uint32_t drive_fault_id_{0};
+  /// LIFETIME GUARD of the service callback (F-57). The callback holds a
+  /// shared_ptr to this, never only `this`: it runs with `mutex` held and only
+  /// while `alive`; shutdown_clear_service() sets `stopping` (the wait loop
+  /// gives up at once), then takes `mutex` and clears `alive`, so no callback
+  /// can touch this object after on_cleanup / the destructor returned.
+  struct ClearGuard
+  {
+    std::mutex mutex;
+    bool alive{true};
+    std::atomic<bool> stopping{false};
+  };
+  std::shared_ptr<ClearGuard> clear_guard_;
+  bool clear_outcome_success_{false};
+  int clear_outcome_reason_{kDriveFaultNone};
+  char clear_outcome_message_[kClearTextSize]{};
+  /// TO-VERIFY (OP-50 (a)): bound on the service's wait for update(). To be
+  /// derived from the MEASURED controller update period; the value in
+  /// ros2_controllers.yaml is a provisional placeholder, not a measurement.
+  double drive_fault_clear_timeout_sec_{0.5};
+  std::string drive_fault_clear_service_name_{"/swerve_controller/clear_drive_fault"};
+  rclcpp::CallbackGroup::SharedPtr clear_callback_group_;
+  rclcpp::Service<gripperx_control_msgs::srv::ClearDriveFault>::SharedPtr clear_service_;
 };
 
 }  // namespace gripperx_swerve_controller

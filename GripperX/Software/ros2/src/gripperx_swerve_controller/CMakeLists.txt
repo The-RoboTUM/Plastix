@@ -28,7 +28,9 @@ add_library(swerve_kinematics SHARED
   src/wheel_regulator.cpp
   # And the steering alignment gate, which replaces the teleop-side
   # TransitionGuard for every command source rather than only the keyboard.
-  src/alignment_gate.cpp)
+  src/alignment_gate.cpp
+  # And the whole-drive fault monitor (user decision 2026-10-16).
+  src/drive_fault_monitor.cpp)
 target_include_directories(swerve_kinematics PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
   $<INSTALL_INTERFACE:include/${PROJECT_NAME}>)
@@ -86,6 +88,44 @@ if(BUILD_TESTING)
 
   ament_add_gtest(test_alignment_gate test/test_alignment_gate.cpp)
   target_link_libraries(test_alignment_gate swerve_kinematics)
+
+  # Whole-drive fault (user decision 2026-10-16). Both tests read the ACTIVE
+  # ros2_controllers.yaml that gripperx_control installs (test/active_config.hpp),
+  # never a copied constant.
+  find_package(ament_index_cpp REQUIRED)
+  find_package(yaml_cpp_vendor REQUIRED)
+  find_package(yaml-cpp REQUIRED)
+  ament_add_gtest(test_drive_fault_monitor test/test_drive_fault_monitor.cpp)
+  target_link_libraries(test_drive_fault_monitor swerve_kinematics yaml-cpp)
+  ament_target_dependencies(test_drive_fault_monitor ament_index_cpp)
+
+  # wheel_encoder_count_rad against the firmware sources. ASSUMES the firmware
+  # tree is Software/microros/firmware in the same checkout as this package;
+  # the test fails (not skips) if it is not there.
+  ament_add_gtest(test_encoder_count_firmware test/test_encoder_count_firmware.cpp)
+  target_link_libraries(test_encoder_count_firmware swerve_kinematics yaml-cpp)
+  ament_target_dependencies(test_encoder_count_firmware ament_index_cpp)
+  get_filename_component(GRIPPERX_FIRMWARE_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/../../../microros/firmware" ABSOLUTE)
+  target_compile_definitions(test_encoder_count_firmware PRIVATE
+    GRIPPERX_FIRMWARE_DIR="${GRIPPERX_FIRMWARE_DIR}")
+
+  # The fault through the real controller lifecycle and choke point. Runs ~10 s
+  # of wall time (the controller judges /cmd_vel staleness on its node clock).
+  ament_add_gtest(test_swerve_controller_drive_fault test/test_swerve_controller_drive_fault.cpp
+    SKIP_LINKING_MAIN_LIBRARIES TIMEOUT 120)
+  target_link_libraries(test_swerve_controller_drive_fault ${PROJECT_NAME} yaml-cpp gtest)
+  ament_target_dependencies(test_swerve_controller_drive_fault ament_index_cpp)
+
+  # One scenario per executable: the fault is latched process-wide, so each
+  # needs its own process (and its own marker directory, keyed by PID).
+  foreach(scenario latched_held multi_wheel feedback_lost marker_adoption config_refusal zero_count
+      clear clear_reasons clear_marker_failure clear_shutdown)
+    ament_add_gtest(test_drive_fault_${scenario} test/test_drive_fault_${scenario}.cpp
+      SKIP_LINKING_MAIN_LIBRARIES TIMEOUT 120)
+    target_link_libraries(test_drive_fault_${scenario} ${PROJECT_NAME} yaml-cpp gtest)
+    ament_target_dependencies(test_drive_fault_${scenario} ament_index_cpp)
+  endforeach()
 
   # Functional-equivalence harness against the live Python chain — see
   # test/dump_reference.cpp / test/dump_reference.py.

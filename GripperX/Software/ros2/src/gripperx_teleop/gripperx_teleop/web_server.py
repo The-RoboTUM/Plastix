@@ -13,6 +13,9 @@ library does both:
 
   POST /api/input      operator -> node   (held-key set + one-shot events)
   GET  /api/telemetry  node -> operator   (Server-Sent Events, text/event-stream)
+  GET  /api/camera/stream   camera JPEGs, unchanged (multipart/x-mixed-replace, one
+                            connection = one viewer; closing it = viewer gone)
+  POST /api/camera/profile  {"profile": "view"|"detail"} -> camera node parameter
 
 Latency on localhost is well under a millisecond per POST, and HTTP/1.1
 keep-alive means no TCP handshake per beat.
@@ -29,9 +32,15 @@ This module knows nothing about ROS or about teleop. It owns the socket, the
 session bookkeeping and the exclusive-control rule; the caller supplies a
 `sink` (what to do with operator input) and a `snapshot` (what to stream back).
 """
+import collections
+import fcntl
 import json
 import mimetypes
 import os
+import select
+import socket
+import struct
+import termios
 import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -45,6 +54,11 @@ MAX_BODY_BYTES = 8192
 # Deliberately longer than the dead-man window: taking control away from an
 # operator who is merely mid-beat would be worse than waiting.
 DEFAULT_TAKEOVER_SEC = 2.0
+
+# Camera stream socket: kernel send buffer (the OS doubles it) and the time one frame
+# may take to be written before the viewer counts as dead. TO-VERIFY on the robot link.
+CAMERA_SNDBUF = 32768
+CAMERA_WRITE_TIMEOUT_SEC = 5.0
 
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'web')
 
@@ -77,6 +91,18 @@ class ControlRegistry:
                 return True
             return False
 
+    def holder_at(self, now: float):
+        """The holder, or None when its lease has lapsed (no refresh for > takeover_sec).
+
+        A lapsed holder is reported free so a page that decided to observe sees
+        the seat open and claims it; claim() already grants it after the same
+        interval, so the two views cannot disagree.
+        """
+        with self._lock:
+            if (now - self._seen) > self._takeover_sec:
+                return None
+            return self._holder
+
     def refresh(self, session: str, now: float) -> bool:
         """True if this session holds control (and its lease was renewed)."""
         with self._lock:
@@ -93,8 +119,137 @@ class ControlRegistry:
 
     @property
     def holder(self):
-        with self._lock:
-            return self._holder
+        return self.holder_at(time.monotonic())
+
+
+class CameraRelay:
+    """Newest-frame relay between one ROS subscription and any number of HTTP viewers.
+
+    The subscription exists only while viewers exist: the first acquire() calls
+    `subscribe`, the last release() calls `unsubscribe`. Frames are kept as the
+    original JPEG bytes; wait_frame() always returns the newest one. That alone
+    does NOT keep a slow browser from falling behind: bytes already handed to the
+    kernel sit in socket buffers. The stream handler therefore bounds those buffers
+    (small SO_SNDBUF, skip a frame when the socket is not writable), and the relay
+    tracks per viewer which frame was last handed over completely (delivered()), so
+    the tile's frame age is that of what the viewer was actually given.
+    """
+
+    def __init__(self, subscribe, unsubscribe):
+        self._subscribe = subscribe
+        self._unsubscribe = unsubscribe
+        self._viewers = 0
+        self._next_token = 0
+        self._delivered = {}    # token -> rx time of the last frame fully handed over, or None
+        self._vlock = threading.Lock()
+        self._cv = threading.Condition()
+        self._seq = 0
+        self._frame = None      # (seq, data, t_rx)
+        self._times = []        # rx times of the last frames, for fps
+
+    @property
+    def viewers(self) -> int:
+        return self._viewers
+
+    def acquire(self):
+        """Register a viewer and return its token. If subscribing fails the viewer is
+        not counted (an exception here must not leave the count above zero for good)."""
+        with self._vlock:
+            first = self._viewers == 0
+            if first:
+                with self._cv:
+                    self._frame = None
+                    self._times = []
+                self._subscribe()   # may raise: nothing is counted yet
+            self._viewers += 1
+            self._next_token += 1
+            token = self._next_token
+            self._delivered[token] = None
+            return token
+
+    def release(self, token):
+        """Unregister a viewer. The count drops before `unsubscribe` runs, so a failing
+        unsubscribe cannot keep a phantom viewer alive."""
+        with self._vlock:
+            if token not in self._delivered:
+                return
+            del self._delivered[token]
+            self._viewers -= 1
+            if self._viewers == 0:
+                self._unsubscribe()
+
+    def delivered(self, token, t_rx: float):
+        """The viewer was handed the frame that arrived at t_rx, completely."""
+        with self._vlock:
+            if token in self._delivered:
+                self._delivered[token] = t_rx
+
+    def push(self, data: bytes):
+        now = time.monotonic()
+        with self._cv:
+            self._seq += 1
+            self._frame = (self._seq, data, now)
+            self._times.append(now)
+            del self._times[:-30]
+            self._cv.notify_all()
+
+    def wait_frame(self, last_seq: int, timeout: float):
+        """Newest frame with seq > last_seq as (seq, data, t_rx), or None on timeout."""
+        with self._cv:
+            self._cv.wait_for(
+                lambda: self._frame is not None and self._frame[0] > last_seq, timeout)
+            if self._frame is not None and self._frame[0] > last_seq:
+                return self._frame
+            return None
+
+    def status(self) -> dict:
+        """fps/bytes describe what arrives from ROS; age_sec is the age of the frame the
+        most-behind viewer was last handed, acknowledged by its TCP peer (None until one was), so a viewer
+        that is not being served shows as stale even while the camera is live."""
+        now = time.monotonic()
+        with self._cv:
+            frame = self._frame
+            times = [t for t in self._times if now - t <= 3.0]
+        with self._vlock:
+            seen = [t for t in self._delivered.values() if t is not None]
+        fps = ((len(times) - 1) / (times[-1] - times[0])
+               if len(times) >= 2 and times[-1] > times[0] else 0.0)
+        return {
+            'viewers': self._viewers,
+            'fps': round(fps, 1),
+            'age_sec': round(now - min(seen), 2) if seen else None,
+            'arrival_age_sec': None if frame is None else round(now - frame[2], 2),
+            'bytes': None if frame is None else len(frame[1]),
+        }
+
+
+def _writable(sock) -> bool:
+    """True if a send would be accepted without waiting."""
+    try:
+        return bool(select.select([], [sock], [], 0)[1])
+    except (OSError, ValueError):
+        return False
+
+
+def _unsent_bytes(sock) -> int:
+    """Bytes still in the kernel send queue (unsent or not yet acknowledged), 0 if unknown."""
+    try:
+        buf = bytearray(4)
+        fcntl.ioctl(sock.fileno(), termios.TIOCOUTQ, buf, True)
+        return struct.unpack('i', bytes(buf))[0]
+    except (OSError, ValueError):
+        return 0
+
+
+def _peer_closed(sock) -> bool:
+    """True if the client has closed its end (a quiet stream cannot notice that by writing)."""
+    try:
+        ready, _, _ = select.select([sock], [], [], 0)
+        if ready:
+            return sock.recv(1, socket.MSG_PEEK) == b''
+    except (OSError, ValueError):
+        return True
+    return False
 
 
 class TeleopWebServer:
@@ -114,7 +269,14 @@ class TeleopWebServer:
         stream_hz: float = 20.0,
         takeover_sec: float = DEFAULT_TAKEOVER_SEC,
         logger=None,
+        camera=None,
+        camera_profile=None,
     ):
+        """camera: a CameraRelay, or None (no camera routes).
+        camera_profile(name) -> dict, must not block: starts the parameter change.
+        """
+        self._camera = camera
+        self._camera_profile = camera_profile
         self._sink = sink
         self._snapshot = snapshot
         self._host = host
@@ -167,12 +329,14 @@ class TeleopWebServer:
                 route = urlparse(self.path).path
                 if route == '/api/telemetry':
                     self._stream_telemetry()
+                elif route == '/api/camera/stream':
+                    self._stream_camera()
                 else:
                     self._send_static(route)
 
             def do_POST(self):
                 route = urlparse(self.path).path
-                if route != '/api/input':
+                if route not in ('/api/input', '/api/camera/profile'):
                     self._send_json({'error': 'not found'}, status=404)
                     return
                 try:
@@ -187,6 +351,10 @@ class TeleopWebServer:
                     message = json.loads(self.rfile.read(length).decode('utf-8'))
                 except (UnicodeDecodeError, json.JSONDecodeError):
                     self._send_json({'error': 'bad json'}, status=400)
+                    return
+
+                if route == '/api/camera/profile':
+                    self._camera_profile_post(message)
                     return
 
                 session = str(message.get('session') or '')[:64]
@@ -217,6 +385,92 @@ class TeleopWebServer:
                     'control': bool(granted),
                     'holder': server.control.holder,
                 })
+
+            def _camera_profile_post(self, message):
+                if server._camera_profile is None:
+                    self._send_json({'error': 'no camera'}, status=404)
+                    return
+                try:
+                    result = server._camera_profile(str(message.get('profile') or '')[:32])
+                except Exception as exc:  # noqa: BLE001
+                    server._warn(f'camera profile handler failed: {exc}')
+                    result = {'ok': False, 'detail': str(exc)}
+                self._send_json(result)
+
+            # -- camera ------------------------------------------------------
+
+            def _stream_camera(self):
+                relay = server._camera
+                if relay is None:
+                    self._send_json({'error': 'no camera'}, status=404)
+                    return
+                try:
+                    token = relay.acquire()
+                except Exception as exc:  # noqa: BLE001 -- e.g. the subscription failed
+                    server._warn(f'camera stream refused: {exc}')
+                    self._send_json({'error': 'camera subscription failed'}, status=503)
+                    return
+                sock = self.connection
+                try:
+                    # Delay must not build in the kernel: a small send buffer, and a
+                    # frame is only started when the socket can take data now, else it
+                    # is skipped (the next wait picks the then-newest one).
+                    sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, CAMERA_SNDBUF)
+                    # One frame must be written within this, or the viewer is dropped.
+                    sock.settimeout(CAMERA_WRITE_TIMEOUT_SEC)
+                    boundary = 'gxframe'
+                    self.send_response(200)
+                    self.send_header(
+                        'Content-Type', f'multipart/x-mixed-replace; boundary={boundary}')
+                    self.send_header('Cache-Control', 'no-store')
+                    self.send_header('Connection', 'close')
+                    self.end_headers()
+                    self.close_connection = True
+                    seq = 0
+                    sent_total = 0
+                    pending = collections.deque()   # (end offset in the byte stream, t_rx)
+                    blocked_since = None
+                    while not server._stop.is_set():
+                        got = relay.wait_frame(seq, 0.1)
+                        # A frame counts as delivered when the kernel has no more of its
+                        # bytes queued (acknowledged by the peer), not when write() returned.
+                        if pending:
+                            acked = sent_total - _unsent_bytes(sock)
+                            while pending and pending[0][0] <= acked:
+                                relay.delivered(token, pending.popleft()[1])
+                        if got is None:
+                            if _peer_closed(sock):
+                                break
+                            continue
+                        if not _writable(sock):
+                            # A connected client that stops reading (frozen tab, half-open
+                            # link) must not hold the camera subscription for ever: no
+                            # progress for CAMERA_WRITE_TIMEOUT_SEC ends the stream.
+                            now = time.monotonic()
+                            if blocked_since is None:
+                                blocked_since = now
+                            elif now - blocked_since > CAMERA_WRITE_TIMEOUT_SEC:
+                                break
+                            if _peer_closed(sock):
+                                break
+                            time.sleep(0.02)   # retry with the then-newest frame
+                            continue
+                        blocked_since = None
+                        seq, data, t_rx = got
+                        head = (f'--{boundary}\r\nContent-Type: image/jpeg\r\n'
+                                f'Content-Length: {len(data)}\r\n\r\n').encode('ascii')
+                        part = head + data + b'\r\n'
+                        self.wfile.write(part)
+                        self.wfile.flush()
+                        sent_total += len(part)
+                        pending.append((sent_total, t_rx))
+                except (BrokenPipeError, ConnectionResetError, TimeoutError, OSError):
+                    pass  # tab closed / link dropped / browser not reading
+                finally:
+                    try:
+                        relay.release(token)
+                    except Exception as exc:  # noqa: BLE001
+                        server._warn(f'camera unsubscribe failed: {exc}')
 
             # -- SSE -------------------------------------------------------
 

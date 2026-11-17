@@ -120,11 +120,22 @@ held non-zero velocity asserts that a possibly stationary robot is still moving 
 feed that fiction into odometry. The value is passed through as sent and marked
 not-a-measurement instead; acting on that mark is the consumer's job (FR-11 item 6).
 
-`hw_firmware_mock` reports `NO_ENCODER` on all four wheels, because it **is** an echo by
-construction — which makes it the standing negative test for this path.
+`hw_firmware_mock` simulates encoders (since 2026-10-16): per wheel `simulated_encoders`
+(`ok` = position integrated from the command, `LIVE_UNCONFIRMED` until the first simulated
+count, then `LIVE`; `unconfirmed` / `none` / `init_failed` reproduce a missing encoder).
+`ok` is still the command handed back, not a measurement.
 
 ## Bench testing
 
-Launch with `use_mock_firmware:=true` (default) to run `hw_firmware_mock` instead of ESP32/micro-ROS.
+Launch with `use_mock_firmware:=true` to run `hw_firmware_mock` instead of ESP32/micro-ROS.
+The default is `false` (2026-10-16), so it has to be passed explicitly; the mock also refuses
+to publish while any other publisher exists on `/hw/joint_states`.
+
+**Drive-fault marker on the Pi.** `swerve_controller` keeps its whole-drive fault in
+`/run/gripperx/drive_fault` (`drive_fault_marker_path` in `ros2_controllers.yaml`), shared by
+every stack started on the machine, mock or not: a bench run adopts a standing fault of the
+service, and a fault the bench run latches is adopted by the service until its next explicit
+start. Both directions err towards "stopped". To keep a bench run out of it, override the
+controller parameter `drive_fault_marker_path` with `""` (or another path).
 
 When micro-ROS is ready on the ESP32, publish/subscribe the same topics and set `use_mock_firmware:=false`.

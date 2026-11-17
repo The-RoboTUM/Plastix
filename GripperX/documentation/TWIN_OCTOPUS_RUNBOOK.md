@@ -1,6 +1,6 @@
 # Twin run book — Octopus link on the 2.5 x 2.5 m demo area
 
-Created 2026-08-21. Brings up the digital twin so external Octopus goals can be
+Created 2026-08-21; §5 note added 2026-11-17. Brings up the digital twin so external Octopus goals can be
 fed in by hand, previewed, armed and executed. **Twin only, ROS_DOMAIN_ID=220,
 no hardware, no Pi.**
 
@@ -100,8 +100,14 @@ ros2 service call /gripperx/external/set_arming \
 
 ## 5. Optional — the pick success path
 
-The twin has no arm in the URDF (DT-8 / OP-11), so `auto_pick` exercises the
-decision logic and nothing moves. For a run that reaches `trash_goal_done`, add a
+The twin model contains the arm links (`gripperx_v1.gazebo.xacro` includes `gripperx_v1.core.xacro`,
+which includes `gripperx_v1.arm.xacro`), but no launch file under `gripperx_gazebo` starts the arm
+server (`/pick_plastic`; it is started by the real-robot launches only), and whether the arm joints are
+controlled in the Gazebo twin is TO-VERIFY. On the real robot the arm is shown live in the RViz robot
+model (confirmed 2026-11-17). `octopus_link_twin.yaml` ships `auto_pick: false` and
+`grasp.aimed_pick: "off"`, so a default twin run neither picks nor aims. With `auto_pick: true` and no pick
+server the gateway reports `auto_pick_available` false; the decision logic can be exercised, nothing moves
+(checked in the code 2026-11-17). The aimed pick (`DEPLOYMENT.md` §7.2) is configured for the real robot only. For a run that reaches `trash_goal_done`, add a
 mock pick server with its nav server switched OFF so it does not compete with the
 real Nav2:
 

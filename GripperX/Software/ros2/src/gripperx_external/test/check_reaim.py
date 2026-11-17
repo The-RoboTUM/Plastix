@@ -289,9 +289,11 @@ def part4_structure() -> None:
     check("if mission.state == NAV_REAIMING:\n            holds, detail = "
           "self._reaim_correlation_holds(mission)" in source,
           "#358: the re-aim in flight uses the re-aim-phase correlation rule")
-    check("self._correlation_holds(mission)\n            if first_pass\n            else "
-          "self._reaim_correlation_holds(mission)" in source,
-          "#358: ... and so does the pick gate after it; the first pass keeps the full rule")
+    check("self._correlation_holds(mission, hold=CORR_HOLD_PICK)\n"
+          "            if first_pass or mission.confirm_pass\n"
+          "            else self._reaim_correlation_holds(mission)" in source,
+          "#358: ... and so does the pick gate after it; the first pass (and the aimed "
+          "pick's confirmation pass after a re-arm) keeps the full rule")
     check("REAIM_CORRELATION_VARIANT" not in source,
           "variant B is final: no switch left that could select 'no re-check at all'")
     check(names("_reaim_correlation_holds", "_REAIM_ABSENCE_STATUSES") == 1

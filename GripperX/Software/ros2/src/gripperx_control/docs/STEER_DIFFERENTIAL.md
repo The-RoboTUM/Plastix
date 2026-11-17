@@ -6,7 +6,7 @@
 > `swerve_controller`** (`gripperx_swerve_controller`), which replaced
 > `swerve_cmd_node` and `joint_command_bridge` on both platforms. The six
 > parameters carried over unchanged and are set in
-> `gripperx_control/config/ros2_controllers.yaml` (lines 178-183):
+> `gripperx_control/config/ros2_controllers.yaml` (lines 136-141):
 > `steer_diff_omega_gate: 0.05`, `steer_diff_min_speed_mps: 0.03`,
 > `steer_diff_time_constant_sec: 0.3`, `steer_diff_max_omega: 1.5`,
 > `steer_diff_min_ratio: 0.5`, `steer_diff_max_ratio: 1.5` — the same values this
@@ -152,7 +152,7 @@ colcon build --packages-select gripperx_control
 
 `colcon build --packages-select gripperx_control` automatically updates both
 install paths for `swerve_cmd_node.py` (unlike `gripperx_arm`, which the trap
-documentation in the internal `REQUIREMENTS`/agent rules explicitly mentions —
+documentation in `documentation/DEPLOYMENT.md` explicitly mentions —
 `gripperx_control` uses the normal setuptools install, not the gripperx_arm special
 case). Still, verify after the build:
 

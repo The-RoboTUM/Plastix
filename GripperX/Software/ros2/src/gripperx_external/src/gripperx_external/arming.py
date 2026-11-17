@@ -69,6 +69,12 @@ TRIGGER_CLOCK_STALLED = "CLOCK_STALLED"
 #: machine-distinguishable, not merely readable in the detail string. The
 #: behaviour behind the two codes is deliberately identical.
 TRIGGER_CLOCK_JUMPED_BACK = "CLOCK_JUMPED_BACK"
+#: Aimed pick, mode ``confirm_by_rearm`` (user decision 2026-10-13, SR-16 extension
+#: E11, draft): the gateway disarms itself BEFORE an aimed pick, and the operator's
+#: next arming approves exactly that one pending pick. Expected, not an error. The tenth
+#: trigger of SR-15 rule 7 (amended 2026-11-05, user); a normal trigger like OPERATOR and
+#: TIMEOUT, no ERROR diagnostic (user decision 2026-11-05, OP-47 (b) closed).
+TRIGGER_PICK_CONFIRM = "PICK_CONFIRM"
 
 TRIGGER_CODES = {
     TRIGGER_NONE: 0,
@@ -81,11 +87,12 @@ TRIGGER_CODES = {
     TRIGGER_EXCESSIVE_ABORTS: 7,
     TRIGGER_CLOCK_STALLED: 8,
     TRIGGER_CLOCK_JUMPED_BACK: 9,
+    TRIGGER_PICK_CONFIRM: 10,
 }
 
 #: Triggers that are part of normal operation. Everything else additionally
 #: raises an ERROR-level diagnostic (SR-13: an active signal, not an absence).
-_EXPECTED_TRIGGERS = frozenset({TRIGGER_OPERATOR, TRIGGER_TIMEOUT})
+_EXPECTED_TRIGGERS = frozenset({TRIGGER_OPERATOR, TRIGGER_TIMEOUT, TRIGGER_PICK_CONFIRM})
 
 REQUIRED_TELEOP_MODE = "autonomous"
 
@@ -149,6 +156,10 @@ class ArmingMachine:
         self.last_disarm_detail = ""
         self.last_disarm_cancelled = False
         self.arm_count = 0
+        #: Every disarm REQUEST, armed or not (audit AP1 M1): a pending aimed pick
+        #: (gateway mode confirm_by_rearm) is void once any disarm was requested after
+        #: it was recorded - including an operator disarm while already disarmed.
+        self.disarm_requests = 0
 
     # -- state ----------------------------------------------------------
     def is_armed(self, now_sec: float) -> bool:
@@ -233,6 +244,7 @@ class ArmingMachine:
         no-op and returns ``None``, so repeated triggers cannot spam cancels."""
         if trigger not in TRIGGER_CODES or trigger == TRIGGER_NONE:
             raise ValueError(f"unknown disarm trigger: {trigger!r}")
+        self.disarm_requests += 1
         if not self._armed:
             return None
         if (

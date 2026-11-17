@@ -1,7 +1,16 @@
 #include "gripperx_swerve_controller/swerve_controller.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cmath>
+#include <chrono>
+#include <cstdio>
+#include <cstring>
+#include <filesystem>
+#include <fstream>
+#include <sstream>
+#include <system_error>
+#include <thread>
 #include <cstdint>
 #include <limits>
 #include <string>
@@ -9,6 +18,7 @@
 #include <vector>
 
 #include "hardware_interface/types/hardware_interface_type_values.hpp"
+#include "lifecycle_msgs/msg/state.hpp"
 #include "pluginlib/class_list_macros.hpp"
 
 namespace gripperx_swerve_controller
@@ -102,6 +112,73 @@ bool all_finite(const std::array<double, kNumWheels> & values)
 {
   return std::all_of(
     values.begin(), values.end(), [](double v) { return std::isfinite(v); });
+}
+
+using DriveFaultMsg = gripperx_control_msgs::msg::DriveFault;
+static_assert(kDriveFaultNone == DriveFaultMsg::REASON_NONE, "drive fault reason mismatch");
+static_assert(
+  kDriveFaultEncoderMissing == DriveFaultMsg::REASON_ENCODER_MISSING, "drive fault reason mismatch");
+static_assert(
+  kDriveFaultStallRetrip == DriveFaultMsg::REASON_STALL_RETRIP, "drive fault reason mismatch");
+static_assert(
+  kDriveFaultStallTripCount == DriveFaultMsg::REASON_STALL_TRIP_COUNT,
+  "drive fault reason mismatch");
+static_assert(
+  kDriveFaultStallMultiWheel == DriveFaultMsg::REASON_STALL_MULTI_WHEEL,
+  "drive fault reason mismatch");
+static_assert(
+  kDriveFaultStallLatchedHeld == DriveFaultMsg::REASON_STALL_LATCHED_HELD,
+  "drive fault reason mismatch");
+static_assert(
+  kDriveFaultFeedbackLost == DriveFaultMsg::REASON_FEEDBACK_LOST, "drive fault reason mismatch");
+
+/// THE PROCESS-WIDE DRIVE-FAULT LATCH (user decision 2026-10-16: cleared by a
+/// stack restart; the STALL_* reasons also by an operator clear, SR-18
+/// amendment 2026-11-09, which releases this mirror on the same update cycle).
+/// Deactivate/activate and re-configure cannot reset it. This mirror closes the
+/// remaining path: `unload_controller` + `load_controller` creates a NEW
+/// SwerveController object with a fresh member. The mirror lives in this plugin
+/// library, which controller_manager's pluginlib ClassLoader keeps mapped for
+/// the life of the process (on-demand unload is off), so the new instance
+/// adopts the record in on_init. Written once, from the update loop, on the
+/// trip cycle: the record is filled before the flag is released, and readers
+/// acquire the flag before reading the record. The operator clear (also from
+/// the update loop) releases the flag and counts itself here, process-wide,
+/// because DriveFault.clear_count is "since the controller process started".
+struct ProcessDriveFault
+{
+  std::atomic<bool> latched{false};
+  DriveFaultRecord record{};
+  /// DriveFault.fault_id: `fault_seq` counts every latch in this process
+  /// (trip or marker adoption); `fault_id` is the latched fault's, 0 = none.
+  uint32_t fault_seq{0};
+  uint32_t fault_id{0};
+  uint32_t clear_count{0};
+  int64_t last_clear_stamp_ns{0};
+  rcl_clock_type_t last_clear_clock{RCL_ROS_TIME};
+  int last_cleared_reason{kDriveFaultNone};
+  char last_clear_requester[64]{};
+};
+
+const char * clear_refusal_text(DriveFaultClearRefusal refusal)
+{
+  switch (refusal) {
+    case DriveFaultClearRefusal::kNone:
+      return "none";
+    case DriveFaultClearRefusal::kNotLatched:
+      return "no whole-drive fault is latched";
+    case DriveFaultClearRefusal::kNotClearable:
+      return "reason not operator-clearable";
+    case DriveFaultClearRefusal::kExpectedReasonMismatch:
+      return "expected_reason does not match the latched reason";
+  }
+  return "unknown";
+}
+
+ProcessDriveFault & process_drive_fault()
+{
+  static ProcessDriveFault instance;
+  return instance;
 }
 }  // namespace
 
@@ -250,6 +327,18 @@ controller_interface::CallbackReturn SwerveController::on_init()
       auto_declare<std::string>("wheel_feedback_valid_topic", wheel_feedback_valid_topic_);
     stall_state_topic_ = auto_declare<std::string>("stall_state_topic", stall_state_topic_);
     stall_log_period_sec_ = auto_declare<double>("stall_log_period_sec", stall_log_period_sec_);
+    // ZERO-COUNT CRITERION (user decision 2026-10-22, option c). Its arming
+    // threshold is NOT a parameter of its own: encoder_confirm_min_command_rad_s
+    // is the one number meaning "a healthy wheel commanded above this at least
+    // twitches, and a twitch is a count" -- the encoder trigger reads it for
+    // non-LIVE wheels, this criterion for LIVE ones. Declared here, before the
+    // stall validation that relates it to stall_min_command_rad_s.
+    drive_fault_config_.encoder_confirm_min_command_rad_s = auto_declare<double>(
+      "encoder_confirm_min_command_rad_s", drive_fault_config_.encoder_confirm_min_command_rad_s);
+    stall_config_.silent_min_command_rad_s = drive_fault_config_.encoder_confirm_min_command_rad_s;
+    stall_config_.silent_window_sec =
+      auto_declare<double>("stall_silent_window_sec", stall_config_.silent_window_sec);
+    stall_config_.count_rad = auto_declare<double>("wheel_encoder_count_rad", stall_config_.count_rad);
 
     std::string stall_error;
     if (!StallDetector::validate(stall_config_, stall_error)) {
@@ -257,6 +346,74 @@ controller_interface::CallbackReturn SwerveController::on_init()
       return controller_interface::CallbackReturn::ERROR;
     }
     stall_detector_.configure(stall_config_);
+
+    // --- WHOLE-DRIVE FAULT (user decision 2026-10-16) ------------------------
+    // EVERY THRESHOLD IS TO-VERIFY: chosen conservative, not derived. Per-value
+    // reasoning in ros2_controllers.yaml.
+    drive_fault_config_.enabled =
+      auto_declare<bool>("drive_fault_enabled", drive_fault_config_.enabled);
+    drive_fault_config_.encoder_confirm_window_sec = auto_declare<double>(
+      "encoder_confirm_window_sec", drive_fault_config_.encoder_confirm_window_sec);
+    drive_fault_config_.stall_escalation_window_sec = auto_declare<double>(
+      "stall_escalation_window_sec", drive_fault_config_.stall_escalation_window_sec);
+    const auto escalation_trips = auto_declare<int64_t>(
+      "stall_escalation_trips", static_cast<int64_t>(drive_fault_config_.stall_escalation_trips));
+    if (escalation_trips < 0) {
+      RCLCPP_ERROR(get_node()->get_logger(), "Drive fault: stall_escalation_trips must be >= 0");
+      return controller_interface::CallbackReturn::ERROR;
+    }
+    drive_fault_config_.stall_escalation_trips = static_cast<uint32_t>(escalation_trips);
+    drive_fault_config_.stall_escalate_on_multi_wheel = auto_declare<bool>(
+      "stall_escalate_on_multi_wheel", drive_fault_config_.stall_escalate_on_multi_wheel);
+    drive_fault_config_.stall_escalation_latched_sec = auto_declare<double>(
+      "stall_escalation_latched_sec", drive_fault_config_.stall_escalation_latched_sec);
+    // ONE number, not two: "held" is exactly "above HWR-30a's release band".
+    drive_fault_config_.stall_hold_min_command_rad_s = stall_config_.release_command_rad_s;
+    drive_fault_config_.stall_window_sec = stall_config_.window_sec;
+    drive_fault_config_.stall_silent_window_sec = stall_config_.silent_window_sec;
+    // Same platform statement as the stall detector's, but read narrower: in the
+    // twin a wheel counts as LIVE only UNTIL a provenance message arrives, so a
+    // provenance array published into the twin exercises the encoder trip.
+    drive_fault_config_.assume_live_until_provenance_received =
+      stall_config_.assume_live_provenance;
+    drive_fault_topic_ = auto_declare<std::string>("drive_fault_topic", drive_fault_topic_);
+    drive_fault_log_period_sec_ =
+      auto_declare<double>("drive_fault_log_period_sec", drive_fault_log_period_sec_);
+    // Empty = no marker (the twin, where a marker on the developer's laptop
+    // would latch every later sim run until reboot).
+    drive_fault_marker_path_ =
+      auto_declare<std::string>("drive_fault_marker_path", drive_fault_marker_path_);
+    // Operator clear (SR-18 amendment 2026-11-09). The wait bound is TO-VERIFY:
+    // it is to be derived from the MEASURED update period (OP-50 (a)).
+    drive_fault_clear_service_name_ = auto_declare<std::string>(
+      "drive_fault_clear_service", drive_fault_clear_service_name_);
+    drive_fault_clear_timeout_sec_ =
+      auto_declare<double>("drive_fault_clear_timeout_sec", drive_fault_clear_timeout_sec_);
+    if (!std::isfinite(drive_fault_clear_timeout_sec_) || drive_fault_clear_timeout_sec_ <= 0.0) {
+      RCLCPP_ERROR(
+        get_node()->get_logger(), "drive_fault_clear_timeout_sec must be finite and > 0");
+      return controller_interface::CallbackReturn::ERROR;
+    }
+
+    // Logging cadences, not thresholds -- but a NaN one makes `elapsed >= NaN`
+    // false forever, silencing every trip line after the first.
+    for (const auto & [name, value] :
+      {std::pair<const char *, double>{"stall_log_period_sec", stall_log_period_sec_},
+        std::pair<const char *, double>{"drive_fault_log_period_sec", drive_fault_log_period_sec_}})
+    {
+      if (!std::isfinite(value) || value < 0.0) {
+        RCLCPP_ERROR(get_node()->get_logger(), "%s must be finite and >= 0", name);
+        return controller_interface::CallbackReturn::ERROR;
+      }
+    }
+
+    std::string drive_fault_error;
+    if (!DriveFaultMonitor::validate(drive_fault_config_, drive_fault_error)) {
+      RCLCPP_ERROR(get_node()->get_logger(), "Drive fault: %s", drive_fault_error.c_str());
+      return controller_interface::CallbackReturn::ERROR;
+    }
+    drive_fault_.configure(drive_fault_config_);
+    adopt_process_drive_fault();
 
     // --- STEERING ALIGNMENT GATE --------------------------------------------
     // DEFAULT FALSE, IN THE STRUCT AND IN ros2_controllers.yaml. While it is
@@ -305,6 +462,8 @@ controller_interface::CallbackReturn SwerveController::on_init()
       "wheel_regulator_max_sample_age_sec", regulator_config_.max_sample_age_sec);
     regulator_log_period_sec_ =
       auto_declare<double>("wheel_regulator_log_period_sec", regulator_log_period_sec_);
+    regulator_config_.floor_rad_s =
+      auto_declare<double>("wheel_regulator_floor_rad_s", regulator_config_.floor_rad_s);
     // NOT a parameter of its own, on purpose: the correction must not be able to
     // push the command past the ceiling the control law already applied to the
     // setpoint, and a second copy of that ceiling could disagree with the first.
@@ -317,7 +476,10 @@ controller_interface::CallbackReturn SwerveController::on_init()
     regulator_config_.assume_live_provenance = stall_config_.assume_live_provenance;
 
     std::string regulator_error;
-    if (!WheelRegulator::validate(regulator_config_, regulator_error)) {
+    if (
+      !WheelRegulator::validate(regulator_config_, regulator_error) ||
+      !WheelRegulator::validate_floor(regulator_config_, stall_config_, regulator_error))
+    {
       RCLCPP_ERROR(
         get_node()->get_logger(), "Wheel velocity regulator: %s", regulator_error.c_str());
       return controller_interface::CallbackReturn::ERROR;
@@ -487,7 +649,12 @@ controller_interface::CallbackReturn SwerveController::on_configure(
   // stall detector and the velocity regulator both gate per wheel on this same
   // latched provenance. A second subscription to the same topic would be a
   // second decoder of a safety-relevant flag, able to disagree with the first.
-  if (stall_config_.enabled || regulator_config_.enabled) {
+  // The whole-drive fault (2026-10-16) is a third consumer of the same
+  // subscription, and it needs it even with the other two switched off.
+  provenance_received_.store(false);
+  provenance_subscribed_ =
+    stall_config_.enabled || regulator_config_.enabled || drive_fault_config_.enabled;
+  if (provenance_subscribed_) {
     rclcpp::QoS provenance_qos(rclcpp::KeepLast(1));
     provenance_qos.reliable();
     provenance_qos.transient_local();
@@ -526,6 +693,50 @@ controller_interface::CallbackReturn SwerveController::on_configure(
   stall_qos.transient_local();
   stall_state_pub_ = get_node()->create_publisher<gripperx_control_msgs::msg::WheelStallState>(
     stall_state_topic_, stall_qos);
+
+  // Whole-drive fault: latched for the same reason, and published right away so
+  // a late subscriber learns "no fault" as positively as "fault". The monitor is
+  // configured, never reset: re-configure cannot clear a latch.
+  rclcpp::QoS drive_fault_qos(rclcpp::KeepLast(1));
+  drive_fault_qos.reliable();
+  drive_fault_qos.transient_local();
+  drive_fault_pub_ = get_node()->create_publisher<gripperx_control_msgs::msg::DriveFault>(
+    drive_fault_topic_, drive_fault_qos);
+  drive_fault_.configure(drive_fault_config_);
+  adopt_process_drive_fault();
+  publish_drive_fault(get_node()->get_clock()->now());
+
+  // Operator clear (SR-18 amendment 2026-11-09). Its OWN callback group: the
+  // callback blocks until update() has applied the request, and must not hold
+  // up /cmd_vel and the other subscriptions of this node meanwhile
+  // (controller_manager spins controller nodes on a multi-threaded executor).
+  if (!clear_service_) {
+    clear_guard_ = std::make_shared<ClearGuard>();
+    clear_callback_group_ =
+      get_node()->create_callback_group(rclcpp::CallbackGroupType::MutuallyExclusive);
+    clear_service_ = get_node()->create_service<gripperx_control_msgs::srv::ClearDriveFault>(
+      drive_fault_clear_service_name_,
+      [this, guard = clear_guard_](
+        const std::shared_ptr<gripperx_control_msgs::srv::ClearDriveFault::Request> request,
+        std::shared_ptr<gripperx_control_msgs::srv::ClearDriveFault::Response> response) {
+        // F-57: `this` is only dereferenced under the guard, and only while
+        // alive; shutdown_clear_service() waits for this scope to end.
+        std::lock_guard<std::mutex> lifetime(guard->mutex);
+        if (!guard->alive || guard->stopping.load()) {
+          response->success = false;
+          response->reason = 0;
+          response->message = "controller is shutting down (cleanup/unload); nothing changed";
+          return;
+        }
+        const auto outcome = request_drive_fault_clear(
+          request->requester, static_cast<int>(request->expected_reason),
+          request->expected_fault_id);
+        response->success = outcome.success;
+        response->reason = static_cast<uint8_t>(outcome.reason);
+        response->message = outcome.message;
+      },
+      rclcpp::ServicesQoS(), clear_callback_group_);
+  }
 
   // RUNTIME SWITCH. Validation refuses what cannot work; the post-set
   // callback only publishes the accepted value into an atomic.
@@ -593,14 +804,14 @@ controller_interface::CallbackReturn SwerveController::on_configure(
       "provenance on %s is LIVE (assume_live_provenance=%s), its feedback is newer than %.2f s, "
       "and it is not latched off by HWR-30a. SLOW-END FLOOR %.2f rad/s (FR-14 item 12): at or below "
       "that commanded magnitude the correction is exactly 0.0, the integrator is held reset and the "
-      "wheel reports REGULATOR_OFF_BELOW_FLOOR. The floor IS stall_min_command_rad_s -- the "
-      "regulator only adds authority where HWR-30a is watching -- so moving that parameter moves "
-      "this floor. Corrections are published per wheel on %s.",
+      "wheel reports REGULATOR_OFF_BELOW_FLOOR. The floor is wheel_regulator_floor_rad_s and is "
+      "refused at configure if below stall_min_command_rad_s (%.2f) -- the regulator only adds "
+      "authority where HWR-30a is watching. Corrections are published per wheel on %s.",
       regulator_config_.kp, regulator_config_.ki,
       regulator_config_.max_correction_fraction * 100.0, wheel_feedback_valid_topic_.c_str(),
       regulator_config_.assume_live_provenance ? "true" : "false",
-      regulator_config_.max_sample_age_sec, stall_config_.min_command_rad_s,
-      wheel_report_topic_.c_str());
+      regulator_config_.max_sample_age_sec, regulator_config_.floor_rad_s,
+      stall_config_.min_command_rad_s, wheel_report_topic_.c_str());
   } else {
     RCLCPP_INFO(
       get_node()->get_logger(),
@@ -620,15 +831,21 @@ controller_interface::CallbackReturn SwerveController::on_configure(
     RCLCPP_INFO(
       get_node()->get_logger(),
       "Stall detection (HWR-30a tier 1) ON: trip when |command| > %.2f rad/s AND encoder "
-      "provenance LIVE AND wheel POSITION moves < %.4f rad for %.2f s. Response: that wheel's "
+      "provenance LIVE AND wheel POSITION moves < %.4f rad for %.2f s; OR (zero-count "
+      "criterion) |command| > %.2f rad/s AND provenance LIVE AND no encoder count change "
+      "(half-count threshold %.5f rad) for an accumulated %.2f s. Response: that wheel's "
       "velocity command -> 0, the other three and the steering untouched. Latch clears only when "
-      "|command| falls to <= %.2f rad/s and rises again (OP-25 proposal). At most %zu wheel(s) "
+      "|command| falls to <= %.2f rad/s and rises above the latching criterion's threshold again "
+      "(%.2f displacement / %.2f zero-count; OP-25, user decision 2026-10-29). At most %zu wheel(s) "
       "latched at once -- more is tier 2 (HWR-30b, blocked). Provenance from %s (latched); "
       "assume_live_provenance=%s. ALL THRESHOLDS ARE TO-VERIFY (no GB37-50 stall-current "
       "measurement exists).",
       stall_config_.min_command_rad_s, stall_config_.min_position_delta_rad,
-      stall_config_.window_sec, stall_config_.release_command_rad_s,
-      stall_config_.max_latched_wheels, wheel_feedback_valid_topic_.c_str(),
+      stall_config_.window_sec, stall_config_.silent_min_command_rad_s,
+      0.5 * stall_config_.count_rad, stall_config_.silent_window_sec,
+      stall_config_.release_command_rad_s, stall_config_.min_command_rad_s,
+      stall_config_.silent_min_command_rad_s, stall_config_.max_latched_wheels,
+      wheel_feedback_valid_topic_.c_str(),
       stall_config_.assume_live_provenance ? "true" : "false");
   } else {
     RCLCPP_WARN(
@@ -670,6 +887,47 @@ controller_interface::CallbackReturn SwerveController::on_activate(
   stall_ever_logged_.fill(false);
   stall_multi_wheel_condition_ = false;
   publish_stall_state(get_node()->get_clock()->now());
+  // THE DRIVE FAULT IS THE OPPOSITE CASE, ON PURPOSE: it MUST survive this
+  // transition (user decision 2026-10-16 -- cleared only by a stack restart).
+  // Only the "since activation" trip counters are reset; the latch has no clear.
+  drive_fault_.reset_activation_state();
+  adopt_process_drive_fault();
+  drive_fault_ever_logged_ = false;
+  publish_drive_fault(get_node()->get_clock()->now());
+  if (drive_fault_config_.enabled) {
+    RCLCPP_INFO(
+      get_node()->get_logger(),
+      "Whole-drive fault ON (user decision 2026-10-16): (1) ENCODER MISSING -- a wheel commanded "
+      "above %.2f rad/s for an accumulated %.2f s while its provenance on %s is not LIVE; "
+      "(2) PERSISTENT STALL -- a HWR-30a tier-1 re-trip within %.1f s of the latch clearing "
+      "(0 = off), a wheel latched for %.1f s while its command stays above %.2f rad/s (0 = off), "
+      "a second wheel stalling while one is latched (%s), or %u trips on one wheel since "
+      "activation (0 = off). Response: ALL FOUR wheel commands -> 0.0, steering untouched, "
+      "Nav2 goals cancelled by drive_fault_nav_guard; latched until the STACK RESTARTS, the "
+      "STALL_* reasons also until an operator clear on %s (a clear with a drive command held "
+      "DRIVES OFF AT ONCE). "
+      "assume_live_until_provenance_received=%s. Fault state on %s (latched), marker file '%s'. "
+      "ALL THRESHOLDS ARE TO-VERIFY.",
+      drive_fault_config_.encoder_confirm_min_command_rad_s,
+      drive_fault_config_.encoder_confirm_window_sec, wheel_feedback_valid_topic_.c_str(),
+      drive_fault_config_.stall_escalation_window_sec,
+      drive_fault_config_.stall_escalation_latched_sec,
+      drive_fault_config_.stall_hold_min_command_rad_s,
+      drive_fault_config_.stall_escalate_on_multi_wheel ? "on" : "off",
+      drive_fault_config_.stall_escalation_trips, drive_fault_clear_service_name_.c_str(),
+      drive_fault_config_.assume_live_until_provenance_received ? "true" : "false",
+      drive_fault_topic_.c_str(), drive_fault_marker_path_.c_str());
+  } else {
+    RCLCPP_WARN(
+      get_node()->get_logger(),
+      "Whole-drive fault is DISABLED by parameter (drive_fault_enabled: false): a wheel without a "
+      "confirmed encoder and a persistent stall will NOT stop the drive.");
+  }
+  if (drive_fault_.latched()) {
+    RCLCPP_ERROR(
+      get_node()->get_logger(), "DRIVE FAULT STILL LATCHED on activation: %s",
+      describe_drive_fault(drive_fault_.record()).c_str());
+  }
   // Drop anything that arrived while inactive, so the first update() cannot act
   // on a twist from before this activation.
   const StampedTwist empty_twist;
@@ -717,6 +975,8 @@ controller_interface::CallbackReturn SwerveController::on_deactivate(
   last_manoeuvre_ = ReportMsg::MANOEUVRE_IDLE;
   stall_multi_wheel_condition_ = false;
   publish_stall_state(get_node()->get_clock()->now());
+  // NOT reset: the drive fault survives deactivation (user decision 2026-10-16).
+  publish_drive_fault(get_node()->get_clock()->now());
   interfaces_resolved_ = false;
   return controller_interface::CallbackReturn::SUCCESS;
 }
@@ -777,6 +1037,7 @@ void SwerveController::wheel_feedback_valid_callback(
   // Int32MultiArray names its wheels, and a silent reordering would arm the
   // detector against the wrong encoder.
   wheel_provenance_buffer_.writeFromNonRT(provenance);
+  provenance_received_.store(true);
 }
 
 bool SwerveController::resolve_interface_indices()
@@ -911,7 +1172,7 @@ rcl_interfaces::msg::SetParametersResult SwerveController::validate_parameter_up
     if (
       name == "wheel_regulator_kp" || name == "wheel_regulator_ki" ||
       name == "wheel_regulator_max_correction_fraction" ||
-      name == "wheel_regulator_max_sample_age_sec")
+      name == "wheel_regulator_max_sample_age_sec" || name == "wheel_regulator_floor_rad_s")
     {
       result.successful = false;
       result.reason =
@@ -951,7 +1212,9 @@ void SwerveController::write_wheel_commands(
   // what follows. `joint_order_rad_s` is the REQUESTED command: the kinematic
   // feedforward, post wheel_command_multipliers.
   //
-  // THREE STAGES ACT ON IT, IN THIS ORDER, AND THE ORDER IS THE SAFETY PROPERTY:
+  // THREE STAGES ACT ON IT, IN THIS ORDER, AND THE ORDER IS THE SAFETY PROPERTY
+  // (plus STAGE 4, the whole-drive fault of 2026-10-16, after all three -- see
+  // its block below):
   //
   //   1. THE VELOCITY REGULATOR may add a BOUNDED CORRECTION to each wheel
   //      (FR-11; wheel_regulator.hpp). DISABLED BY DEFAULT — while
@@ -984,16 +1247,20 @@ void SwerveController::write_wheel_commands(
   //      stall_detector.cpp. Stage order is unchanged and so is stage 3's
   //      authority: exactly 0.0, nothing else.
   //
-  // THE TWO STAGES SHARE ONE THRESHOLD, AND IT IS A SAFETY COUPLING RATHER THAN
-  // A SHORTCUT: stage 1's slow-end floor (FR-14 item 12) IS stall_min_command_rad_s,
-  // so the regulator only ever adds authority inside the band where stage 2 is
-  // armed and watching. Below it stage 1 holds its correction at exactly 0.0 and
-  // reports kRegulatorOffBelowFloor. The floor is read from stall_config_ per
-  // cycle, never copied, so the two can never disagree about the one number.
+  // THE TWO STAGES' THRESHOLDS ARE A SAFETY INEQUALITY: stage 1's slow-end floor
+  // (FR-14 item 12, wheel_regulator_floor_rad_s) may not lie below stall_min_command_rad_s
+  // (refused at configure, WheelRegulator::validate_floor), so the regulator only
+  // ever adds authority inside the band where stage 3 is armed and watching.
+  // Until 2026-10-22 they were one number; they are two parameters since (both
+  // 2.0 rad/s today). Stage 3's zero-count criterion watches LIVE wheels lower
+  // still, from encoder_confirm_min_command_rad_s. Below the floor
+  // stage 1 holds its correction at exactly 0.0 and reports
+  // kRegulatorOffBelowFloor.
   //
   // The detector JUDGES the REQUESTED command, not the regulated one, and that
-  // is deliberate: OP-25's release edge and the arming threshold
-  // stall_min_command_rad_s are defined on what was ASKED FOR. The floor is
+  // is deliberate: OP-25's release edge and the arming thresholds
+  // (stall_min_command_rad_s, encoder_confirm_min_command_rad_s) are defined
+  // on what was ASKED FOR. The floor is
   // compared against that same requested command for the same reason, and with
   // the same strict `>` the detector arms with, so the boundary case cannot fall
   // between the two. Feeding it a
@@ -1081,25 +1348,30 @@ void SwerveController::write_wheel_commands(
     }
   }
 
+  // The whole-drive fault as it stood BEFORE this cycle (stage 4). While it is
+  // latched the regulator is not run and its integrators are held reset, and
+  // stage 3 is told the drive is withheld -- every wheel receives exactly 0.0,
+  // so a wheel that does not turn is obeying the fault, not stalling.
+  const bool drive_fault_before = drive_fault_.latched();
+  if (drive_fault_before && regulator_active_) {
+    wheel_regulator_.reset();
+  }
+
   // ------------------------------------------- STAGE 1: velocity regulator
   std::array<double, kNumWheels> regulator_measured{};
-  if (regulator_active_ && interfaces_resolved_) {
+  if (regulator_active_ && interfaces_resolved_ && !drive_fault_before) {
     WheelRegulatorInput input;
     input.now_sec = time.seconds();
     input.setpoint = joint_order_rad_s;
     input.position = wheel_position;
     input.position_valid = wheel_position_valid;
     input.provenance = provenance;
-    // THE SLOW-END FLOOR (FR-14 item 12, A17) IS HWR-30a's ARMING THRESHOLD, and
-    // this line is the whole coupling: the value is read out of the DETECTOR's
-    // own config, every cycle, so the floor cannot drift away from the threshold
-    // the detector arms on. The regulator may only add authority where HWR-30a is
-    // watching — the rationale is at the floor gate in wheel_regulator.cpp.
-    // NOTE THE SCOPE OF THE COUPLING: it is to the THRESHOLD VALUE, not to
-    // stall_detection_enabled. With the detector switched off the threshold is
-    // still configured and still floors the regulator, but nothing is watching
-    // above it either; that combination is not a configuration anything ships.
-    input.stall_min_command_rad_s = stall_config_.min_command_rad_s;
+    // THE SLOW-END FLOOR (FR-14 item 12, A17) travels in the regulator's own
+    // config (floor_rad_s); configure refused it below HWR-30a's arming
+    // threshold. NOTE THE SCOPE OF THAT RULE: it is to the THRESHOLD VALUE, not
+    // to stall_detection_enabled. With the detector switched off nothing is
+    // watching above the floor either; that combination is not a configuration
+    // anything ships.
     for (std::size_t i = 0; i < kNumWheels; ++i) {
       const auto measured = state_interfaces_[wheel_state_index_[i]].get_optional();
       input.measured_valid[i] = measured.has_value();
@@ -1179,11 +1451,24 @@ void SwerveController::write_wheel_commands(
     }
   }
 
-  // ------------------------------------------- STAGE 3: HWR-30a, TIER 1, LAST
+  // ------------------------------------------- STAGE 3: HWR-30a, TIER 1
+  std::array<StallWheelEvent, kNumWheels> stall_events{};
+  std::array<bool, kNumWheels> stall_latched{};
+  std::array<double, kNumWheels> stall_no_motion{};
+  std::array<double, kNumWheels> stall_silent{};
+  std::array<bool, kNumWheels> stall_latched_zero_count{};
   if (stall_config_.enabled && interfaces_resolved_) {
     stall_detector_.set_provenance(provenance);
     const auto result = stall_detector_.update(
-      time.seconds(), joint_order_rad_s, wheel_position, wheel_position_valid, drive_withheld);
+      time.seconds(), joint_order_rad_s, wheel_position, wheel_position_valid,
+      drive_withheld || drive_fault_before);
+    stall_events = result.events;
+    for (std::size_t i = 0; i < kNumWheels; ++i) {
+      stall_latched[i] = stall_detector_.latched(i);
+      stall_no_motion[i] = stall_detector_.no_motion_sec(i, time.seconds());
+      stall_silent[i] = stall_detector_.silent_sec(i);
+      stall_latched_zero_count[i] = stall_detector_.latched_by_zero_count(i);
+    }
     for (std::size_t i = 0; i < kNumWheels; ++i) {
       if (stall_detector_.latched(i)) {
         effective[i] = 0.0;
@@ -1201,6 +1486,75 @@ void SwerveController::write_wheel_commands(
     log_stall_events(result, joint_order_rad_s, time);
     if (result.state_changed) {
       publish_stall_state(time);
+    }
+  }
+
+  // ------------------------------- STAGE 4: WHOLE-DRIVE FAULT, ABSOLUTELY LAST
+  // User decision 2026-10-16. Missing encoder or persistent stall -> ALL FOUR
+  // wheel commands become EXACTLY 0.0, latched until the process restarts. Its
+  // only authority is the same as stage 3's: substitute 0.0, never anything
+  // else, and it comes after every stage that could add to a command. Steering
+  // is not touched -- this function never writes it.
+  {
+    DriveFaultInput input;
+    input.now_sec = time.seconds();
+    input.requested = joint_order_rad_s;
+    input.drive_withheld = drive_withheld;
+    input.stall_latched = stall_latched;
+    input.stall_events = stall_events;
+    input.stall_no_motion_sec = stall_no_motion;
+    input.stall_silent_sec = stall_silent;
+    input.stall_latched_zero_count = stall_latched_zero_count;
+    if (provenance_subscribed_) {
+      input.provenance = *wheel_provenance_buffer_.readFromRT();
+      input.provenance_received = provenance_received_.load();
+    }
+    const auto result = drive_fault_.update(input, effective);
+    effective = result.commands;
+    if (drive_fault_.latched()) {
+      last_wheel_correction_.fill(0.0);
+      last_wheel_regulating_.fill(false);
+    }
+    if (result.tripped) {
+      auto & mirror = process_drive_fault();
+      mirror.record = drive_fault_.record();
+      mirror.fault_id = ++mirror.fault_seq;
+      drive_fault_id_ = mirror.fault_id;
+      mirror.latched.store(true, std::memory_order_release);
+      // The marker is written AFTER the zeroed commands have reached the
+      // command interfaces (end of this function), so the file write can never
+      // delay the physical zero.
+      drive_fault_marker_pending_ = true;
+      drive_fault_ever_logged_ = true;
+      drive_fault_last_log_sec_ = input.now_sec;
+      RCLCPP_ERROR(
+        get_node()->get_logger(), "DRIVE FAULT LATCHED: %s",
+        describe_drive_fault(drive_fault_.record()).c_str());
+      publish_drive_fault(time);
+    } else if (drive_fault_.latched()) {
+      // Repeated while commands keep arriving, so nobody driving the robot can
+      // miss why it does not move. A zero request is not "a command arriving".
+      bool commanded = false;
+      for (std::size_t i = 0; i < kNumWheels; ++i) {
+        commanded =
+          commanded || (std::isfinite(joint_order_rad_s[i]) && joint_order_rad_s[i] != 0.0);
+      }
+      const double now = input.now_sec;
+      if (
+        commanded &&
+        (!drive_fault_ever_logged_ ||
+         (now - drive_fault_last_log_sec_) >= drive_fault_log_period_sec_ ||
+         now < drive_fault_last_log_sec_))
+      {
+        drive_fault_ever_logged_ = true;
+        drive_fault_last_log_sec_ = now;
+        RCLCPP_ERROR(
+          get_node()->get_logger(),
+          "DRIVE FAULT LATCHED -- wheel commands [%+.2f %+.2f %+.2f %+.2f] rad/s REFUSED, all "
+          "four held at 0.0 until the stack restarts (STALL_* reasons: or an operator clear). %s",
+          joint_order_rad_s[0], joint_order_rad_s[1], joint_order_rad_s[2], joint_order_rad_s[3],
+          describe_drive_fault(drive_fault_.record()).c_str());
+      }
     }
   }
 
@@ -1287,6 +1641,14 @@ void SwerveController::write_wheel_commands(
     // `correction` says how much of it the regulator added.
     last_wheel_command_[i] = effective[i];
   }
+
+  // Once, after the trip cycle's zeros are written: a few hundred bytes to
+  // tmpfs. Same class of exception to realtime discipline as the latched
+  // publish, and it comes after the actuator command, never before it.
+  if (drive_fault_marker_pending_) {
+    drive_fault_marker_pending_ = false;
+    write_drive_fault_marker();
+  }
 }
 
 void SwerveController::log_stall_events(
@@ -1313,7 +1675,21 @@ void SwerveController::log_stall_events(
                          (now - stall_last_log_sec_[i]) >= stall_log_period_sec_ ||
                          now < stall_last_log_sec_[i];
 
-    if (event.tripped && rate_ok) {
+    if (event.tripped && event.zero_count && rate_ok) {
+      stall_ever_logged_[i] = true;
+      stall_last_log_sec_[i] = now;
+      RCLCPP_ERROR(
+        get_node()->get_logger(),
+        "STALL (HWR-30a tier 1, ZERO-COUNT criterion): %s commanded %+.2f rad/s (above %.2f) but "
+        "its LIVE encoder showed NO count change at all for an accumulated %.2f s -- a silent "
+        "encoder or an undriven wheel. That motor is now LATCHED OFF (velocity command forced to "
+        "0); the other three keep running and the steering is untouched. It stays off until its "
+        "command drops to <= %.2f rad/s and rises above %.2f rad/s again (OP-25). Trip #%u for "
+        "this wheel since activation. Thresholds are TO-VERIFY.",
+        wheel_joint_names_[i].c_str(), requested[i], stall_config_.silent_min_command_rad_s,
+        stall_config_.silent_window_sec, stall_config_.release_command_rad_s,
+        stall_config_.silent_min_command_rad_s, stall_detector_.trip_count(i));
+    } else if (event.tripped && rate_ok) {
       stall_ever_logged_[i] = true;
       stall_last_log_sec_[i] = now;
       RCLCPP_ERROR(
@@ -1321,11 +1697,11 @@ void SwerveController::log_stall_events(
         "STALL (HWR-30a tier 1): %s commanded %+.2f rad/s but its encoder position moved less "
         "than %.4f rad for %.2f s. That motor is now LATCHED OFF (velocity command forced to 0); "
         "the other three keep running and the steering is untouched. It stays off until its "
-        "command drops to <= %.2f rad/s and rises again (OP-25). Trip #%u for this wheel since "
-        "activation. Thresholds are TO-VERIFY.",
+        "command drops to <= %.2f rad/s and rises above %.2f rad/s again (OP-25). Trip #%u for "
+        "this wheel since activation. Thresholds are TO-VERIFY.",
         wheel_joint_names_[i].c_str(), requested[i], stall_config_.min_position_delta_rad,
         stall_config_.window_sec, stall_config_.release_command_rad_s,
-        stall_detector_.trip_count(i));
+        stall_config_.min_command_rad_s, stall_detector_.trip_count(i));
     }
     if (event.released) {
       RCLCPP_INFO(
@@ -1353,6 +1729,482 @@ void SwerveController::log_stall_events(
   }
 }
 
+void SwerveController::adopt_process_drive_fault()
+{
+  auto & mirror = process_drive_fault();
+  if (mirror.latched.load(std::memory_order_acquire) && !drive_fault_.latched()) {
+    drive_fault_.restore(mirror.record);
+    drive_fault_id_ = mirror.fault_id;  // the same fault: same identity
+    RCLCPP_ERROR(
+      get_node()->get_logger(),
+      "DRIVE FAULT from earlier in this process re-adopted (the controller was re-loaded, not the "
+      "stack restarted): %s",
+      describe_drive_fault(drive_fault_.record()).c_str());
+  }
+  // THE MARKER FILE (user decision 2026-10-16): the fault must also survive a
+  // crash-respawn of ros2_control_node -- a new PROCESS, so the mirror above is
+  // gone. It lives on tmpfs (/run), so a reboot clears it; the deliberate
+  // stack start (gripperx-bringup.sh) removes it. Inside this controller only
+  // an accepted operator clear deletes it (apply_pending_drive_fault_clear).
+  if (!drive_fault_marker_path_.empty() && !drive_fault_.latched()) {
+    std::ifstream in(drive_fault_marker_path_);
+    if (in.good()) {
+      std::stringstream text;
+      text << in.rdbuf();
+      DriveFaultRecord record;
+      const bool readable = parse_drive_fault(text.str(), record);
+      drive_fault_.restore(record);
+      mirror.record = drive_fault_.record();
+      mirror.fault_id = ++mirror.fault_seq;
+      drive_fault_id_ = mirror.fault_id;
+      mirror.latched.store(true, std::memory_order_release);
+      RCLCPP_ERROR(
+        get_node()->get_logger(),
+        "DRIVE FAULT re-adopted from the marker %s%s (it survives a crash-respawn; only a "
+        "deliberate stack restart or a reboot clears it): %s",
+        drive_fault_marker_path_.c_str(), readable ? "" : " -- CONTENTS UNREADABLE",
+        describe_drive_fault(drive_fault_.record()).c_str());
+    }
+  }
+  if (drive_fault_.latched()) {
+    write_drive_fault_marker();
+  }
+}
+
+void SwerveController::write_drive_fault_marker()
+{
+  if (drive_fault_marker_path_.empty()) {
+    return;
+  }
+  namespace fs = std::filesystem;
+  std::error_code ec;
+  const fs::path path(drive_fault_marker_path_);
+  if (fs::exists(path, ec)) {
+    return;
+  }
+  if (path.has_parent_path()) {
+    fs::create_directories(path.parent_path(), ec);
+  }
+  const fs::path tmp = path.string() + ".tmp";
+  bool ok = false;
+  {
+    std::ofstream out(tmp, std::ios::trunc);
+    if (out.good()) {
+      out << serialize_drive_fault(drive_fault_.record());
+      out.flush();
+      ok = out.good();
+    }
+  }
+  if (ok) {
+    fs::rename(tmp, path, ec);
+    ok = !ec;
+  }
+  if (!ok) {
+    RCLCPP_ERROR(
+      get_node()->get_logger(),
+      "DRIVE FAULT marker %s could NOT be written (%s): the fault is latched in this process, but "
+      "a crash-respawn of ros2_control_node would NOT keep it.",
+      drive_fault_marker_path_.c_str(), ec ? ec.message().c_str() : "write failed");
+  }
+}
+
+std::string SwerveController::describe_drive_fault(const DriveFaultRecord & record) const
+{
+  if (!record.active) {
+    return "no drive fault";
+  }
+  const auto wheel_name = [this](int index) -> std::string {
+    if (index >= 0 && static_cast<std::size_t>(index) < wheel_joint_names_.size()) {
+      return wheel_joint_names_[static_cast<std::size_t>(index)];
+    }
+    return "?";
+  };
+  char buffer[1024];
+  switch (record.reason) {
+    case kDriveFaultEncoderMissing:
+      std::snprintf(
+        buffer, sizeof(buffer),
+        "reason=ENCODER_MISSING wheel=%s: commanded %+.2f rad/s (threshold %.2f) for an "
+        "accumulated %.2f s (window %.2f s) while its encoder provenance was %s (code %d), not "
+        "LIVE. A wheel driven without a confirmed encoder is unwatched -- the WHOLE drive is "
+        "stopped. Check that encoder; restart the stack to clear. Thresholds are TO-VERIFY.",
+        wheel_name(record.wheel).c_str(), record.commanded_rad_s,
+        drive_fault_config_.encoder_confirm_min_command_rad_s, record.accumulated_sec,
+        drive_fault_config_.encoder_confirm_window_sec, provenance_label(record.provenance),
+        record.provenance);
+      break;
+    case kDriveFaultNone:
+      std::snprintf(
+        buffer, sizeof(buffer),
+        "reason=UNREADABLE MARKER: a drive fault marker exists (%s) but its contents could not be "
+        "read. The WHOLE drive is stopped. Restart the stack to clear.",
+        drive_fault_marker_path_.c_str());
+      break;
+    case kDriveFaultStallRetrip:
+      std::snprintf(
+        buffer, sizeof(buffer),
+        "reason=STALL_RETRIP wheel=%s: HWR-30a tier-1 criterion (commanded, encoder not moving) "
+        "tripped again %.2f s after its latch cleared (escalation window %.1f s), commanded "
+        "%+.2f rad/s, trip #%u since activation. "
+        "Persistent stall OR silent encoder -- not distinguishable without independent motion "
+        "evidence. The WHOLE drive is stopped. Restart the stack, or clear it by "
+        "operator (/swerve_controller/clear_drive_fault) after checking the robot. Thresholds "
+        "are TO-VERIFY.",
+        wheel_name(record.wheel).c_str(), record.since_release_sec,
+        drive_fault_config_.stall_escalation_window_sec, record.commanded_rad_s,
+        record.stall_trip_count);
+      break;
+    case kDriveFaultStallTripCount:
+      std::snprintf(
+        buffer, sizeof(buffer),
+        "reason=STALL_TRIP_COUNT wheel=%s: HWR-30a tier-1 stall trip #%u since activation "
+        "(escalation at %u), commanded %+.2f rad/s. Stall OR silent encoder (not distinguishable "
+        "without independent motion evidence) -- the WHOLE drive is "
+        "stopped. Restart the stack, or clear it by operator after checking the robot. "
+        "Thresholds are TO-VERIFY.",
+        wheel_name(record.wheel).c_str(), record.stall_trip_count,
+        drive_fault_config_.stall_escalation_trips, record.commanded_rad_s);
+      break;
+    case kDriveFaultFeedbackLost:
+      std::snprintf(
+        buffer, sizeof(buffer),
+        "reason=FEEDBACK_LOST: the wheel feedback LINK failed, not one encoder -- %s. First "
+        "criterion completed on %s (commanded %+.2f rad/s, provenance %s). Check /hw/joint_states "
+        "(ESP32 / micro-ROS link) and the encoder supply. The WHOLE drive is stopped. Restart the "
+        "stack to clear.",
+        record.accumulated_sec > 0.0
+          ? "no wheel reported a LIVE encoder while driving"
+          : "every driven wheel's encoder stopped moving together (frozen /hw/joint_states, or "
+            "every wheel blocked at once)",
+        wheel_name(record.other_wheel).c_str(), record.commanded_rad_s,
+        provenance_label(record.provenance));
+      break;
+    case kDriveFaultStallLatchedHeld:
+      std::snprintf(
+        buffer, sizeof(buffer),
+        "reason=STALL_LATCHED_HELD wheel=%s: HWR-30a tier-1 latch held for %.2f s (escalation at "
+        "%.1f s) while the command stayed above %.2f rad/s (commanded %+.2f rad/s) -- the latch "
+        "could never clear (OP-25). Stall OR silent encoder -- not distinguishable without "
+        "independent motion evidence. The WHOLE drive is stopped. Restart the "
+        "stack, or clear it by operator after checking the robot. Thresholds are TO-VERIFY.",
+        wheel_name(record.wheel).c_str(), record.latched_held_sec,
+        drive_fault_config_.stall_escalation_latched_sec,
+        drive_fault_config_.stall_hold_min_command_rad_s, record.commanded_rad_s);
+      break;
+    case kDriveFaultStallMultiWheel:
+      std::snprintf(
+        buffer, sizeof(buffer),
+        "reason=STALL_MULTI_WHEEL wheel=%s: satisfied the HWR-30a criterion (commanded %+.2f "
+        "rad/s, encoder not moving) while %s was already latched -- more than one wheel. Stall OR "
+        "silent encoder -- not distinguishable without independent motion evidence. The WHOLE "
+        "drive is stopped. Restart the stack, or clear it by operator after checking the robot.",
+        wheel_name(record.wheel).c_str(), record.commanded_rad_s,
+        wheel_name(record.other_wheel).c_str());
+      break;
+    default:
+      std::snprintf(
+        buffer, sizeof(buffer), "reason=%s wheel=%s", drive_fault_reason_label(record.reason),
+        wheel_name(record.wheel).c_str());
+      break;
+  }
+  std::string text(buffer);
+  if (record.zero_count) {
+    char criterion[256];
+    std::snprintf(
+      criterion, sizeof(criterion),
+      " Tier-1 criterion: ZERO-COUNT -- no encoder count change at all for an accumulated "
+      "%.2f s while commanded above %.2f rad/s.",
+      stall_config_.silent_window_sec, stall_config_.silent_min_command_rad_s);
+    text += criterion;
+  }
+  return text;
+}
+
+void SwerveController::publish_drive_fault(const rclcpp::Time & time)
+{
+  if (!drive_fault_pub_) {
+    return;
+  }
+  const auto & record = drive_fault_.record();
+  gripperx_control_msgs::msg::DriveFault msg;
+  msg.header.stamp = time;
+  msg.active = record.active;
+  msg.fault_id = record.active ? drive_fault_id_ : 0;
+  msg.reason = static_cast<uint8_t>(record.active ? record.reason : kDriveFaultNone);
+  msg.reason_text = drive_fault_reason_label(msg.reason);
+  msg.wheel_index = static_cast<int8_t>(record.active ? record.wheel : -1);
+  msg.wheel_name =
+    (record.active && record.wheel >= 0 &&
+     static_cast<std::size_t>(record.wheel) < wheel_joint_names_.size())
+      ? wheel_joint_names_[static_cast<std::size_t>(record.wheel)]
+      : std::string();
+  msg.other_wheel_index = static_cast<int8_t>(record.active ? record.other_wheel : -1);
+  if (record.active) {
+    msg.trip_stamp = rclcpp::Time(
+      static_cast<int64_t>(record.trip_time_sec * 1e9), time.get_clock_type());
+  }
+  msg.commanded_rad_s = record.commanded_rad_s;
+  msg.provenance = record.provenance;
+  msg.accumulated_sec = record.accumulated_sec;
+  msg.stall_trip_count = record.stall_trip_count;
+  msg.since_release_sec = record.since_release_sec;
+  msg.latched_held_sec = record.latched_held_sec;
+  msg.detail = describe_drive_fault(record);
+  // Last operator clear. Written only by the update loop (or read here on
+  // configure/activate, when no update() of this instance runs).
+  const auto & mirror = process_drive_fault();
+  msg.clear_count = mirror.clear_count;
+  if (mirror.clear_count > 0) {
+    msg.last_clear_stamp = rclcpp::Time(mirror.last_clear_stamp_ns, mirror.last_clear_clock);
+    msg.last_cleared_reason = static_cast<uint8_t>(mirror.last_cleared_reason);
+    msg.last_clear_requester = mirror.last_clear_requester;
+  }
+  drive_fault_pub_->publish(msg);
+}
+
+SwerveController::~SwerveController() { shutdown_clear_service(); }
+
+controller_interface::CallbackReturn SwerveController::on_cleanup(
+  const rclcpp_lifecycle::State & /*previous_state*/)
+{
+  shutdown_clear_service();
+  return controller_interface::CallbackReturn::SUCCESS;
+}
+
+void SwerveController::shutdown_clear_service()
+{
+  if (clear_guard_) {
+    clear_guard_->stopping.store(true);
+    // Waits for an in-flight callback, which gives up at once on `stopping`.
+    std::lock_guard<std::mutex> lifetime(clear_guard_->mutex);
+    clear_guard_->alive = false;
+  }
+  clear_service_.reset();
+  clear_callback_group_.reset();
+}
+
+SwerveController::DriveFaultClearOutcome SwerveController::request_drive_fault_clear(
+  const std::string & requester, int expected_reason, uint32_t expected_fault_id)
+{
+  // NON-REALTIME SIDE. Touches nothing but the mailbox; every decision about
+  // the fault is made by update() on the state it owns.
+  std::lock_guard<std::mutex> serialise(clear_service_mutex_);
+  DriveFaultClearOutcome outcome;
+  const std::string who = requester.empty() ? std::string("unspecified") : requester;
+  const auto refuse = [&](const std::string & why) {
+    outcome.success = false;
+    outcome.message = why;
+    RCLCPP_INFO(
+      get_node()->get_logger(), "drive fault clear REJECTED: requester=%s, cause: %s",
+      who.c_str(), why.c_str());
+    return outcome;
+  };
+
+  const auto state = get_lifecycle_state().id();
+  if (state != lifecycle_msgs::msg::State::PRIMARY_STATE_ACTIVE) {
+    return refuse(
+      "controller is not active (lifecycle state " + get_lifecycle_state().label() +
+      "); nothing changed");
+  }
+  int current = clear_state_.load(std::memory_order_acquire);
+  if (current == kClearDone) {
+    // Outcome of an earlier request whose caller stopped waiting: discard.
+    clear_state_.store(kClearIdle, std::memory_order_release);
+    current = kClearIdle;
+  }
+  if (current != kClearIdle) {
+    return refuse("a previous clear request is still being applied; nothing changed");
+  }
+
+  std::memset(clear_request_requester_, 0, sizeof(clear_request_requester_));
+  std::strncpy(clear_request_requester_, who.c_str(), sizeof(clear_request_requester_) - 1);
+  clear_request_expected_reason_ = expected_reason;
+  clear_request_expected_fault_id_ = expected_fault_id;
+  clear_state_.store(kClearPending, std::memory_order_release);
+
+  const auto bound = std::chrono::duration<double>(drive_fault_clear_timeout_sec_);
+  auto deadline = std::chrono::steady_clock::now() + bound;
+  bool taken_late = false;
+  while (true) {
+    if (clear_state_.load(std::memory_order_acquire) == kClearDone) {
+      outcome.success = clear_outcome_success_;
+      outcome.reason = clear_outcome_reason_;
+      outcome.message = clear_outcome_message_;
+      clear_state_.store(kClearIdle, std::memory_order_release);
+      if (!outcome.success) {
+        RCLCPP_INFO(
+          get_node()->get_logger(), "drive fault clear REJECTED: requester=%s, cause: %s",
+          who.c_str(), outcome.message.c_str());
+      }
+      return outcome;
+    }
+    if (clear_guard_ && clear_guard_->stopping.load()) {
+      int expected = kClearPending;
+      if (clear_state_.compare_exchange_strong(
+          expected, kClearIdle, std::memory_order_acq_rel, std::memory_order_acquire))
+      {
+        return refuse(
+          "controller is shutting down (cleanup/unload); request withdrawn, nothing changed, "
+          "the fault stays latched");
+      }
+    }
+    if (std::chrono::steady_clock::now() >= deadline) {
+      int expected = kClearPending;
+      if (clear_state_.compare_exchange_strong(
+          expected, kClearIdle, std::memory_order_acq_rel, std::memory_order_acquire))
+      {
+        char text[256];
+        std::snprintf(
+          text, sizeof(text),
+          "the control loop did not take the request within %.3f s "
+          "(drive_fault_clear_timeout_sec, TO-VERIFY); request withdrawn, nothing changed, the "
+          "fault stays latched",
+          drive_fault_clear_timeout_sec_);
+        return refuse(text);
+      }
+      if (taken_late) {
+        // update() took it but has not finished within a second bound: the
+        // outcome is unknown here, the latched drive_fault topic tells it.
+        outcome.success = false;
+        outcome.message =
+          "the control loop took the request but did not report back in time; outcome UNKNOWN "
+          "-- read /swerve_controller/drive_fault";
+        RCLCPP_WARN(
+          get_node()->get_logger(), "drive fault clear: requester=%s, %s", who.c_str(),
+          outcome.message.c_str());
+        return outcome;
+      }
+      taken_late = true;
+      deadline = std::chrono::steady_clock::now() + bound;
+    }
+    std::this_thread::sleep_for(std::chrono::milliseconds(1));
+  }
+}
+
+void SwerveController::apply_pending_drive_fault_clear(const rclcpp::Time & time)
+{
+  int expected = kClearPending;
+  if (!clear_state_.compare_exchange_strong(
+      expected, kClearTaken, std::memory_order_acq_rel, std::memory_order_relaxed))
+  {
+    return;
+  }
+  const char * requester = clear_request_requester_;
+  const int expected_reason = clear_request_expected_reason_;
+  const uint32_t expected_fault_id = clear_request_expected_fault_id_;
+  const DriveFaultRecord record = drive_fault_.record();
+  const bool fault_changed =
+    record.active && expected_fault_id != 0 && expected_fault_id != drive_fault_id_;
+  clear_outcome_success_ = false;
+  clear_outcome_reason_ = record.active ? record.reason : kDriveFaultNone;
+  clear_outcome_message_[0] = '\0';
+  const auto wheel_name = [this](int index) -> const char * {
+    if (index >= 0 && static_cast<std::size_t>(index) < wheel_joint_names_.size()) {
+      return wheel_joint_names_[static_cast<std::size_t>(index)].c_str();
+    }
+    return "-";
+  };
+
+  const auto refusal = drive_fault_.clear_refusal(expected_reason);
+  if (refusal == DriveFaultClearRefusal::kNotLatched) {
+    int tier1 = -1;
+    for (std::size_t i = 0; i < kNumWheels; ++i) {
+      if (stall_detector_.latched(i)) {
+        tier1 = static_cast<int>(i);
+        break;
+      }
+    }
+    if (tier1 >= 0) {
+      std::snprintf(
+        clear_outcome_message_, kClearTextSize,
+        "no whole-drive fault is latched; nothing changed. The single-wheel HWR-30a latch on %s "
+        "is not cleared by this service: it releases when the command falls to the release band "
+        "and rises again (OP-25).",
+        wheel_name(tier1));
+    } else {
+      std::snprintf(
+        clear_outcome_message_, kClearTextSize,
+        "no whole-drive fault is latched; nothing changed");
+    }
+  } else if (refusal == DriveFaultClearRefusal::kNotClearable) {
+    std::snprintf(
+      clear_outcome_message_, kClearTextSize,
+      "reason=%s is not operator-clearable: stack restart required (Mode R or bringup service "
+      "start); nothing changed",
+      drive_fault_reason_label(record.reason));
+  } else if (fault_changed) {
+    std::snprintf(
+      clear_outcome_message_, kClearTextSize,
+      "fault changed, review again: the request was for fault #%u, the latched fault is #%u "
+      "(reason=%s); nothing changed",
+      expected_fault_id, drive_fault_id_, drive_fault_reason_label(record.reason));
+  } else if (refusal == DriveFaultClearRefusal::kExpectedReasonMismatch) {
+    std::snprintf(
+      clear_outcome_message_, kClearTextSize,
+      "expected reason %s, but the latched reason is %s; nothing changed (the requester is "
+      "showing a stale fault -- refresh and look again)",
+      drive_fault_reason_label(expected_reason), drive_fault_reason_label(record.reason));
+  } else if (refusal != DriveFaultClearRefusal::kNone) {
+    std::snprintf(
+      clear_outcome_message_, kClearTextSize, "refused: %s; nothing changed",
+      clear_refusal_text(refusal));
+  } else {
+    // FAILURE RULE (item 5): the marker goes FIRST. If it cannot be removed,
+    // nothing else is touched -- the fault stays latched in memory AND in the
+    // marker. A missing marker (never written, or the twin's "") is no failure.
+    // One unlink on tmpfs: same class of exception to realtime discipline as
+    // the marker write on the trip cycle.
+    bool marker_ok = true;
+    if (!drive_fault_marker_path_.empty()) {
+      std::error_code ec;
+      std::filesystem::remove(drive_fault_marker_path_, ec);
+      if (ec) {
+        marker_ok = false;
+        std::snprintf(
+          clear_outcome_message_, kClearTextSize,
+          "could not remove the drive fault marker %s (%s): clear FAILED, the fault stays "
+          "latched (in memory and in the marker)",
+          drive_fault_marker_path_.c_str(), ec.message().c_str());
+      }
+    }
+    if (marker_ok) {
+      drive_fault_.clear(time.seconds(), expected_reason);
+      stall_detector_.release_for_operator_clear();
+      wheel_regulator_.reset();
+      last_wheel_correction_.fill(0.0);
+      auto & mirror = process_drive_fault();
+      mirror.latched.store(false, std::memory_order_release);
+      mirror.record = DriveFaultRecord{};
+      mirror.fault_id = 0;
+      drive_fault_id_ = 0;
+      ++mirror.clear_count;
+      mirror.last_clear_stamp_ns = time.nanoseconds();
+      mirror.last_clear_clock = time.get_clock_type();
+      mirror.last_cleared_reason = record.reason;
+      std::memset(mirror.last_clear_requester, 0, sizeof(mirror.last_clear_requester));
+      std::strncpy(
+        mirror.last_clear_requester, requester, sizeof(mirror.last_clear_requester) - 1);
+      drive_fault_ever_logged_ = false;
+      RCLCPP_WARN(
+        get_node()->get_logger(),
+        "drive fault CLEARED by operator: reason=%s, wheel=%s, other_wheel=%s, requester=%s, "
+        "clear #%u since bringup",
+        drive_fault_reason_label(record.reason), wheel_name(record.wheel),
+        wheel_name(record.other_wheel), requester, mirror.clear_count);
+      publish_drive_fault(time);
+      publish_stall_state(time);
+      clear_outcome_success_ = true;
+      std::snprintf(
+        clear_outcome_message_, kClearTextSize,
+        "drive fault CLEARED: reason=%s, wheel=%s, other_wheel=%s, clear #%u since bringup. "
+        "Detection is re-armed; a drive command that is still held drives at once.",
+        drive_fault_reason_label(record.reason), wheel_name(record.wheel),
+        wheel_name(record.other_wheel), mirror.clear_count);
+    }
+  }
+  clear_state_.store(kClearDone, std::memory_order_release);
+}
+
 void SwerveController::publish_stall_state(const rclcpp::Time & time)
 {
   if (!stall_state_pub_) {
@@ -1366,7 +2218,8 @@ void SwerveController::publish_stall_state(const rclcpp::Time & time)
   msg.trip_count.resize(kNumWheels);
   for (std::size_t i = 0; i < kNumWheels; ++i) {
     msg.latched[i] = stall_detector_.latched(i);
-    msg.armed[i] = stall_detector_.armed(i);
+    // Watched by EITHER criterion: "asleep" must never look like "happy".
+    msg.armed[i] = stall_detector_.armed(i) || stall_detector_.silent_armed(i);
     msg.trip_count[i] = stall_detector_.trip_count(i);
   }
   msg.multi_wheel_condition = stall_multi_wheel_condition_;
@@ -1566,6 +2419,11 @@ controller_interface::return_type SwerveController::update(
   if (!interfaces_resolved_) {
     return controller_interface::return_type::ERROR;
   }
+
+  // Operator clear of the whole-drive fault, BEFORE anything reads the latch on
+  // this cycle: an accepted clear takes effect on this very cycle (D2), and
+  // every detector runs re-armed on it (item 4).
+  apply_pending_drive_fault_clear(time);
 
   const StampedTwist consumed = *cmd_vel_buffer_.readFromRT();
   const StampedDirectSteer direct = *direct_steer_buffer_.readFromRT();

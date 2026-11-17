@@ -34,6 +34,7 @@ from gripperx_external import line_frame as lf  # noqa: E402
 from gripperx_external import validation as val  # noqa: E402
 from gripperx_external.geodesy import Datum, DatumTracker  # noqa: E402
 from gripperx_external.grasp import GraspOffset  # noqa: E402
+from shared_tf import shared_tf_overrides  # noqa: E402
 
 FAILURES = []
 
@@ -299,7 +300,7 @@ def part4_validation():
     def dispatch(**over):
         d = dict(armed=True, dry_run=False, link_alive=True, teleop_mode="autonomous",
                  teleop_mode_age_sec=0.1, nav2_available=True, datum_unchanged=True,
-                 line_calibration_unchanged=True, pose=(3.0, 3.6, 0.0))
+                 line_calibration_unchanged=True, pose=(3.0, 3.6, 0.0), arm_ready=True)
         d.update(over)
         return val.validate_dispatch(val.DispatchContext(**d),
                                      val.ValidationContext(line_calibration=c, **base))
@@ -338,7 +339,8 @@ def part5_gateway(rclpy):
 
     # Built with the SHARED section of the twin config - the gateway reads the
     # very keys the calibration node reads (audit H1).
-    node = GoalGatewayNode(parameter_overrides=shared_overrides("octopus_link_twin.yaml"))
+    node = GoalGatewayNode(parameter_overrides=shared_overrides("octopus_link_twin.yaml")
+                           + shared_tf_overrides())
     low, high = config_range("octopus_link_twin.yaml")
     L1, L2 = 0.5 * (low + high), 0.25 * low + 0.75 * high  # both inside the range
     visible = {"gids": [[1, 1]]}

@@ -1,7 +1,7 @@
 # GripperX — As-built Specification
 
-**Status:** component inventory 2026-07-13; **partially updated since — see the correction notice below.**
-**Responsible (survey):** Agent `gripperx-specification` (strictly read-only)
+**Status:** component inventory 2026-07-13; **partially updated since — see the correction notice below.** §1.4 (leader arm) and §1.5 (IMU fusion, camera, LiDAR stamp) updated 2026-11-17 from the code in branch `Theo`; fitted-hardware facts there not re-checked on the machine are marked TO-VERIFY. For whom: anyone who needs to know what is physically fitted and how the sensors are wired into the software.
+**Responsible (survey):** documentation survey (strictly read-only on the robot)
 
 > ## ⚠️ CORRECTION NOTICE — 2026-08-24. READ THIS BEFORE THE BANNER BELOW.
 > **The robot is NOT disassembled.** It was reassembled and has been **driving since 2026-08-19**, with
@@ -255,15 +255,61 @@ current internal requirements document (Section 10), that document applies.
   file's role is to record verified as-built values, not adjudicate between sources. The
   **positions** in the table above are not affected by this timing discrepancy.
 - Grip sequence `pick_plastic` verified at 12 V before disassembly.
+- **Leader arm (laptop side, for leader-mode teleoperation, FR-17 — leader-arm teleoperation):** a second SO101-class arm
+  with 6 Feetech STS3215-class servos, ids 1-6 (the gripper is id 6 since 2026-11-13), on a USB serial board on the
+  developer laptop, stable device name `/dev/gripperx_leader` (udev rule shipped in `Software/ros2/src/gripperx_leader/udev/`).
+  Its servo EEPROM (non-volatile servo memory) limits and the id 6 handling are in `Software/ros2/src/gripperx_leader/README.md`. Ids 1-4 of the
+  follower and the leader carry the same `Homing_Offset` values (`DEPLOYMENT.md` §5); the leader's id 5
+  `Homing_Offset` was rewritten on 2026-10-15 (details in the leader README), the follower's id 5 value is in
+  `Software/ros2/src/gripperx_arm/config/arm_calibration.yaml` (`homing_offsets_raw`). Leader connection
+  and supply (confirmed 2026-11-17): USB to the developer laptop, powered by its own external power supply
+  (not from the robot); the package README states 12 V for the self-alignment.
+- **As-built change 2026-10-08:** the mounting screws that limited limb1 (shoulder pan) were removed;
+  limb1's follower stops are now -116.6 / +121.2 deg (calibration evidence in
+  `Software/ros2/src/gripperx_arm/calibration/2026-10-08/`).
 
 ### 1.5 Sensors
 - **LiDAR LD06** on Pi GPIO UART (ttyAMA0), so far with a separate 5 V supply + GND bridge to the Pi.
-- **IMU: BNO085 9-DoF (STEMMA QT / I2C) is present** — not yet connected. Architecture decision
-  (2026-07-13): connection via **Pi I2C**, not the ESP32.
+- **IMU: BNO085 9-DoF (Adafruit breakout, STEMMA QT / I2C) — connected 2026-10-20** to the Pi
+  header (architecture decision 2026-07-13: Pi I2C, not the ESP32): SDA pin 3 (GPIO2, `i2c1`),
+  SCL pin 5 (GPIO3), VIN pin 17 (3.3 V), GND pin 6; **RST → pin 13 (GPIO27), fitted 2026-11-09**
+  (user; HWR-42, driver hard reset; first soldered to a wrong breakout pad, moved to `RST` the same day —
+  commanded reset then confirmed, SH-2 reset cause 4); INT and the other breakout pins are not connected. Detected at **0x4A** on `/dev/i2c-1` (`i2cdetect -y 1`, 2026-10-20); bus at the Pi
+  default 100 kHz. Mounted on the middle plate, centre above the `base_link` origin, y and z axes
+  mirrored against `base_link` (pose: `imu_mount_*` in `gripperx_geometry/config/geometry.yaml`).
+  Driver: `gripperx_sensors` `bno085_imu`, started by the real-robot bringup since 2026-10-20
+  (`real_robot.launch.py`, `use_imu`, default true). It publishes on `/imu/bno085/data`;
+  `localization_input_node` conditions it to `/imu/data/filtered`, and the EKF (extended Kalman filter,
+  `robot_localization`) fuses its **yaw rate only** as `imu0` (absolute yaw off; wheel-odometry yaw rate is the
+  fallback when the IMU is silent) — see `Software/ros2/src/gripperx_localization/config/localization.yaml`.
+  A two-stage yaw alarm (encoder vs. gyro, reported on `/diagnostics` and on the latched topic `/localization/yaw_alarm`, which the web teleop shows; ERROR latched until the stack restarts)
+  runs in `odom_divergence_monitor`; `DEPLOYMENT.md` §7.5.
+  **The breakout must be mounted stress-free.** Measured 2026-10-20 with `imu_axis_check --stats`:
+  with the screws tightened hard the accelerometer read an x offset of about +1.35 m/s² (≈ 8° false
+  pitch); loosening the screws removed it. After re-mounting, a level / front-raised / rear-raised
+  block test gave a residual x offset of about +0.29 m/s² (derived from the |a| difference between
+  the raised poses; ≈ 1.7° pitch), at the edge of the
+  datasheet's 0.3 m/s² accelerometer accuracy, and a constant roll of +1.2…+1.4° (y offset or real
+  board tilt, not separated). Not compensated in software: the EKF fuses only the yaw rate from the IMU.
+  Gyro dynamic calibration is off and calibration data is not saved periodically (user decisions
+  2026-10-20).
+- **LiDAR scan stamp:** the LD06 driver stamps `/scan` according to the bringup launch argument
+  `lidar_stamp_source` (`mid_sweep` default, `first_ray`, `publish`); `mid_sweep` deliberately deviates from the
+  LaserScan first-ray convention because SLAM, laser odometry and the costmaps treat a scan as a snapshot at its
+  stamp (`Software/ros2/src/gripperx_bringup/launch/real_robot.launch.py`). Which value the running stack uses:
+  `DEPLOYMENT.md` §7.5.
 - **GNSS/GPS:** no module installed; planned as a later requirement, HW preparation (space/connector/
   power) is part of the MVP rework, connection also planned via the Pi.
-- **Cameras:** currently **none** installed (the user's wish for a gripper camera and optionally a front camera is
-  new and part of the rework, see §10 of the internal requirements document).
+- **Front camera:** Arducam 1080P Low Light UC684 (USB, vendor:product 0c45:0261), read by the
+  `jpeg_camera` driver of `gripperx_sensors` through the stable device path
+  `/dev/v4l/by-id/usb-Arducam_Technology_Co.__Ltd._Arducam_1080P_Low_Light_UC684-video-index0`. Started at
+  boot by its own unit `gripperx-camera.service`, outside the motion stack (`DEPLOYMENT.md` §0.1, §7.6); the
+  camera is opened only while a subscriber exists. Topics `/camera/front/image_raw/compressed` and
+  `/camera/front/camera_info` (uncalibrated). Fitted (confirmed 2026-11-17):
+  at the front of the chassis, supplied through the USB hub (HWR-22 — hardware rework requirement 22 — actively
+  supplied USB hub). **TO-VERIFY:** exact mounting pose (`frame_id` `camera_link`; the pose is to live in
+  `gripperx_geometry/config/geometry.yaml`) and the hub port it is plugged into. A gripper camera is not fitted as far as the repository records.
+  Driver, profiles and measured load: `Software/ros2/src/gripperx_sensors/README.md`.
 
 ### 1.6 Power supply
 - **Battery (CHOSEN / swapped, user 2026-07-13):** **MHPOWOS 12 V 20 Ah LiFePO4**, manufacturer spec

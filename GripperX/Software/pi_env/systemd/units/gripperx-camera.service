@@ -1,0 +1,37 @@
+# /etc/systemd/system/gripperx-camera.service
+#
+# Front camera driver (jpeg_camera), autostart at boot. User decision 2026-11-17 (CAMVIEW).
+# Deliberately in NO Requires=/PartOf= relationship with the bringup or gripperx.target:
+# the camera is not in the motion path, so it is neither stopped by a stack stop nor
+# restarted by Mode R, and restarting it needs no SR-1 approval. Details and measured
+# load: /usr/local/bin/gripperx-camera.sh header.
+[Unit]
+Description=GripperX front camera driver (jpeg_camera, lazy capture: camera open only while subscribed)
+After=network-online.target
+Wants=network-online.target
+
+StartLimitIntervalSec=300
+StartLimitBurst=4
+
+[Service]
+Type=simple
+User=ubuntu
+Group=ubuntu
+Environment=HOME=/home/ubuntu
+
+ExecStart=/usr/local/bin/gripperx-camera.sh
+
+KillSignal=SIGINT
+KillMode=control-group
+TimeoutStopSec=10
+
+# The node exits with 1 if the camera delivers no JPEG (wrong mode); a missing device is
+# retried inside the node, so a restart loop here means something else is wrong.
+Restart=on-failure
+RestartSec=10
+
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

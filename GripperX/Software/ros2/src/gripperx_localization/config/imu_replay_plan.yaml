@@ -1,0 +1,88 @@
+# Experiment plan of the offline A/B replay (sub-issue 2.5), read by imu_replay.py.
+# A variant lists only what differs from config/localization.yaml as merged (2.4).
+#   imu0: false   true baseline: EKF without imu0, as the pre-2.4 robot
+#   wheel_odom_yaw_rate_variance 0.08 is the pre-2.4 value: hard-coded until 5dde26f,
+#   and read back from /wheel/odom twist covariance in the drive15 bag.
+#   q_vyaw / q_yaw  process noise, indices 11 and 5 of process_noise_covariance
+inputs:
+  smoke:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare: {start: 30.0, duration: 40.0}
+  drive15:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+  # slam's scan size forced, see imu_replay.prepare(scan_lead_size)
+  drive15s454:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare: {scan_lead_size: 454}
+  drive15s453:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare: {scan_lead_size: 453}
+  rot13:
+    bag: ~/gripperx_bags/2026-10-22_rot13/rot13_20261022_1551
+  drive15_imu_silent:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare: {drop_topic: /imu/bno085/data, drop_after: 120.0, scan_lead_size: 454}
+  # The arcs alone on a fresh map: does A's slam result need the map built during the spins?
+  arc_slice:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare: {start: 256.0, duration: 80.0, scan_lead_size: 454}
+  rot13s454:
+    bag: ~/gripperx_bags/2026-10-22_rot13/rot13_20261022_1551
+    prepare: {scan_lead_size: 454}
+  # First 2.7 candidate: pair each sweep with the pose 0.05 s earlier. Proves nothing yet.
+  arc_shift:
+    bag: ~/gripperx_bags/2026-10-22_drive15/drive15_20261022_1634
+    prepare: {start: 256.0, duration: 80.0, scan_lead_size: 454, scan_stamp_shift: -0.05}
+  desk_slice:
+    bag: ~/gripperx_bags/2026-10-22_desk_check/desk_check_20261022_1156
+    prepare: {start: 600.0, duration: 360.0}
+variants:
+  B_baseline: {imu0: false, wheel_odom_yaw_rate_variance: 0.08}
+  A_merged: {}
+  A_debug: {ekf_debug: true}
+  V_3p2e-7: {imu_yaw_rate_variance: 3.2e-7}
+  V_3p8e-5: {imu_yaw_rate_variance: 3.8e-5}
+  V_2p9e-3: {imu_yaw_rate_variance: 2.9e-3}
+  Q_0p1: {q_vyaw: 0.1}
+  Q_0p02: {q_vyaw: 0.02}
+  QY_0p06: {q_yaw: 0.06}
+  A_silent: {expect_silent_imu: true}
+  Q_0p1_debug: {q_vyaw: 0.1, ekf_debug: true}
+  Q_0p1_silent: {q_vyaw: 0.1, expect_silent_imu: true}
+  A_still: {expect_standstill: true}
+stages:
+  smoke:
+    - {input: smoke, variant: A_debug}
+  drive_core:
+    - {input: drive15, variant: B_baseline, repeat: 3}
+    - {input: drive15, variant: A_merged, repeat: 3}
+  scan_cross:
+    - {input: drive15s454, variant: B_baseline}
+    - {input: drive15s454, variant: A_merged, repeat: 2}
+    - {input: drive15s453, variant: B_baseline}
+    - {input: drive15s453, variant: A_merged}
+  drive_grid:
+    - {input: drive15s454, variant: A_debug}
+    - {input: drive15s454, variant: V_3p2e-7}
+    - {input: drive15s454, variant: V_3p8e-5}
+    - {input: drive15s454, variant: V_2p9e-3}
+    - {input: drive15s454, variant: Q_0p1}
+    - {input: drive15s454, variant: Q_0p02}
+  rot_core:
+    - {input: rot13, variant: B_baseline, repeat: 3}
+    - {input: rot13, variant: A_merged, repeat: 3}
+    - {input: rot13, variant: QY_0p06}
+  extras:
+    - {input: drive15_imu_silent, variant: A_silent}
+    - {input: desk_slice, variant: A_still}
+  followup:
+    - {input: arc_slice, variant: B_baseline}
+    - {input: arc_slice, variant: A_merged}
+    - {input: drive15s454, variant: Q_0p1_debug}
+    - {input: rot13, variant: Q_0p1}
+    - {input: drive15_imu_silent, variant: Q_0p1_silent}
+  fix_round:
+    - {input: rot13s454, variant: B_baseline}
+    - {input: rot13s454, variant: A_merged}
+    - {input: arc_shift, variant: B_baseline}
+    - {input: arc_shift, variant: A_merged}

@@ -62,7 +62,7 @@ def source():
 
 
 def test_source_is_wellformed(source):
-    allowed_provenance = {"cad", "measured", "derived", "rounded_from"}
+    allowed_provenance = {"cad", "measured", "derived", "rounded_from", "placeholder", "decision"}
     allowed_status = {"accepted", "TO-VERIFY"}
     for name, spec in source["quantities"].items():
         assert "value" in spec, f"{name}: no value"
@@ -71,8 +71,14 @@ def test_source_is_wellformed(source):
         assert spec.get("status") in allowed_status, f"{name}: bad status"
         assert spec.get("rationale", "").strip(), f"{name}: no rationale"
         assert isinstance(spec.get("decimals"), int), f"{name}: no decimals declared"
+        if spec["provenance"] == "placeholder":
+            assert spec["status"] == "TO-VERIFY", f"{name}: a placeholder cannot be accepted"
         if spec["provenance"] == "derived":
             assert spec.get("derived_from"), f"{name}: derived without derived_from"
+        if spec["provenance"] == "decision":
+            decision = spec.get("decision") or {}
+            for field in ("question", "by", "date", "outcome"):
+                assert decision.get(field), f"{name}: a chosen value without decision.{field}"
 
 
 def test_decided_quantities_record_their_decision(source):

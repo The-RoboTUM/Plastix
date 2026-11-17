@@ -24,6 +24,10 @@
   <!-- Arm/disarm keys call the external authority gate's SetArming service
        (gripperx_external/goal_gateway_node). -->
   <exec_depend>gripperx_external_msgs</exec_depend>
+  <!-- web_teleop_node: shows /swerve_controller/drive_fault (2026-10-16). -->
+  <exec_depend>gripperx_control_msgs</exec_depend>
+  <!-- PickPlastic action client (P key). -->
+  <depend>gripperx_arm_msgs</depend>
 
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>

@@ -200,7 +200,7 @@ def _extract_xacro_property(text: str, name: str) -> Any:
     literal = match.group(1).strip()
     if re.fullmatch(_NUMBER, literal):
         return float(literal)
-    if re.fullmatch(rf"(?:{_NUMBER}\s+){{2}}{_NUMBER}", literal):
+    if re.fullmatch(rf"(?:{_NUMBER}\s+)+{_NUMBER}", literal):
         return [float(part) for part in literal.split()]
     return Missing(f"{name} is an expression, not a literal: {literal!r}")
 

@@ -1,0 +1,64 @@
+# Leader arm calibration. Tick order = servo ids 1..6 = limb1..limb5, gripper.
+# HOMING OFFSETS: every tick value in this file is a Present_Position, measured with the leader
+# servos' EEPROM Homing_Offsets listed in homing_offset_raw (raw register 31, read 2026-10-13).
+# Present = Actual - Homing_Offset: changing or "cleaning" an offset shifts every angle here.
+# leader_arm_node compares these with the servos at startup and on every align request and
+# refuses (calibration reported unverified) on a mismatch. When leader_eeprom shifts an offset,
+# zero_ticks and homing_offset_raw of that servo change TOGETHER (README "Leader EEPROM step").
+# limb5 offset shifted 2026-10-15 by leader_eeprom (D = 1691, 3325 -> 414; wrap moved into the
+# unreachable gap), written, read back and confirmed after a power cycle; zero_ticks[4] changed
+# together with it (3718 -> 2027). Snapshot of the old registers: ~/leader_eeprom_before_wrap_shift.yaml
+# gripper (id 6): 4055 (= -2007 sign-magnitude, same as the follower's id 6), register 31 read
+# 2026-11-13 (read-only, torque off).
+homing_offset_raw: [3624, 3353, 1323, 1748, 414, 4055]
+# Check value, derived 2026-10-13 (not measured): (zero_ticks + signed Homing_Offset) mod 4096.
+# An offset shift changes zero_ticks and homing_offset_raw by opposite amounts, so this line
+# NEVER changes - do not edit it. A half-edited pair breaks it and leader_eeprom /
+# leader_arm_node refuse with the exact two-line edit.
+# gripper (id 6): derived 2026-11-13, (1986 + (-2007)) mod 4096 = 4075.
+zero_invariant_ticks: [150, 731, 3985, 2085, 2441, 4075]
+# radians = sign * wrap(ticks - zero_ticks) * 2*pi / ticks_per_rev, wrap into [-2048, 2048).
+#
+# zero_ticks: hand-aligned to the CAD q=0 reference image (claude/docs/arm_home_twin_reference.png)
+# on 2026-10-07, visual alignment, not a measurement; accuracy TO-VERIFY.
+# limb4 (337) and limb5 (3718) sit ~30 deg from the 0/4095 wrap; the conversion handles the wrap.
+# The node refuses to start if servo_ids contains an id with null.
+# limb1 re-measured 2026-10-12 (user): leader base hand-aligned straight, /arm/leader/ticks
+# limb1 = 1726, three reads stable; the reference-image value 1755 of 2026-10-07 read about
+# -2.5 deg off. Same session as the follower limb1 zero 2108 -> 2068. Other joints unchanged.
+# limb5 3718 -> 2027 on 2026-10-15 together with its Homing_Offset (see homing_offset_raw).
+# gripper (id 6) 2026-11-13 (user): leader gripper held by hand at the same opening as the
+# follower gripper at home q=0, /arm/leader ticks 1986 on 99 reads. Hand alignment, not a
+# measurement of q=0; accuracy TO-VERIFY like the other joints.
+zero_ticks: [1726, 2036, 2662, 337, 2027, 1986]
+# sign: signs determined 2026-10-07 by moving each leader joint and comparing the rotation direction
+# with the URDF model in RViz (visual, per joint); zero still hand-aligned. gripper: see below.
+# limb5 corrected -1 -> +1 on 2026-10-08: the user saw limb5 turn the wrong way in RViz, flipped it
+# and confirmed. limb5's range_center_rad and min/max below are negated (and min/max swapped) to match.
+# gripper (id 6) 2026-11-13: +1 from the hand sweep (closed end ~1777 = lower ticks, open end
+# ~3005-3028; the follower gripper is +1 too, opening = +q). Unconfirmed until the first robot
+# test: NO RViz check before it (user decision 2026-11-16) - the user reports a wrong direction
+# early in that test.
+sign: [1, -1, -1, -1, 1, 1]
+# range_center_rad: output window per joint is [center-pi, center+pi). Centre of the leader travel
+# recorded 2026-10-07 (record_limits, continuous min/max). gripper: see below.
+# limb1 shifted 2026-10-12 with its zero (+29 ticks = +0.0445 rad): 0.0023 -> 0.0468, min/max
+# -2.0831 / 2.0877 -> -2.0386 / 2.1322 (same raw ticks).
+# gripper (id 6): derived 2026-11-13, midpoint of its recorded travel below.
+range_center_rad: [0.0468, -1.5493, 1.6774, -1.5463, 0.0322, 0.6335]
+# travel_min_rad / travel_max_rad: the leader travel recorded 2026-10-07 by record_limits
+# (`leader_range` min_rad/max_rad, continuous, calibrated radians; not follower limits). Was a
+# "Reference only" comment until 2026-10-13; now read by the self-alignment, which refuses a
+# target outside it (minus align_travel_margin_rad). limb1 values already shifted with its zero
+# on 2026-10-12 (see range_center_rad); limb5 negated/swapped with its sign on 2026-10-08.
+# gripper (id 6): recorded 2026-11-13 by a read-only hand sweep (user moved the leader gripper
+# end to end, raw ticks 1770..3028, no 0/4095 wrap), converted with the zero/sign above.
+#   unreachable gap: [2.1123, 2.6722, 2.9038, 2.7182, 0.4387, 4.3534]  (limb5: 25.1 deg, < 30 deg flag, little margin)
+travel_min_rad: [-2.0386, -3.3548, -0.0123, -3.3287, -2.8900, -0.3313]
+travel_max_rad: [ 2.1322,  0.2562,  3.3671,  0.2362,  2.9544,  1.5984]
+ticks_per_rev: 4096
+# One flag for the whole file (calibration.py, /arm/leader/calibration_verified). It records
+# the user's 2026-10-09 verification of limb1..limb5; id 6 (2026-11-13) is covered by it because
+# the flag stays file-wide (user decision 2026-11-16); its direction is confirmed only by the
+# first robot test, without an RViz gate.
+calibration_verified: true   # verified by user 2026-10-09 (ids 1..5)

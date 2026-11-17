@@ -80,6 +80,8 @@ import sys
 import time
 from typing import List, Optional
 
+from shared_tf import SHARED_TF_FILE
+
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PKG = os.path.dirname(_HERE)
 
@@ -458,7 +460,8 @@ def start_gateway(name: str = "goal_gateway_node", calibrate: bool = True,
     params.update({k: str(v) for k, v in SHARED_PARAMS.items()})
     params.update(overrides)
     argv = [os.path.join(_INSTALL, "goal_gateway_node"), "--ros-args",
-            "-r", f"__ns:={NS}", "-r", "__node:=goal_gateway_node"]
+            "-r", f"__ns:={NS}", "-r", "__node:=goal_gateway_node",
+            "--params-file", SHARED_TF_FILE]       # the TF bound shared with the arm
     for key, value in params.items():
         argv += ["-p", f"{key}:={value}"]
     if calibrate:

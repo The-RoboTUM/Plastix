@@ -8,31 +8,87 @@ namespace gripperx_swerve_controller
 
 StallDetector::StallDetector(const StallDetectorConfig & config) { configure(config); }
 
+namespace
+{
+// Every number here can come from a YAML, which may carry .nan or .inf. A NaN
+// window turns `elapsed < window` false on every cycle (a trip one cycle after
+// arming); an infinite one disables a criterion while it reports itself armed.
+// So each check is written to fail for NaN and infinity, not only for <= 0.
+bool finite_positive(double value, const char * name, std::string & error)
+{
+  if (std::isfinite(value) && value > 0.0) {
+    return true;
+  }
+  error = std::string(name) + " must be finite and > 0";
+  return false;
+}
+
+bool finite_non_negative(double value, const char * name, std::string & error)
+{
+  if (std::isfinite(value) && value >= 0.0) {
+    return true;
+  }
+  error = std::string(name) + " must be finite and >= 0";
+  return false;
+}
+}  // namespace
+
 bool StallDetector::validate(const StallDetectorConfig & config, std::string & error)
 {
-  if (config.window_sec <= 0.0) {
-    error = "stall_window_sec must be > 0";
+  if (
+    !finite_positive(config.window_sec, "stall_window_sec", error) ||
+    !finite_positive(config.min_command_rad_s, "stall_min_command_rad_s", error) ||
+    // > 0, not >= 0: "moved less than 0 rad" can never hold, so 0 would disable
+    // the criterion while it reports itself armed (the count rule below needs > 0 too).
+    !finite_positive(config.min_position_delta_rad, "stall_min_position_delta_rad", error) ||
+    // 0 is meaningful here: the command must fall to exactly zero.
+    !finite_non_negative(config.release_command_rad_s, "stall_release_command_rad_s", error) ||
+    !finite_positive(
+      config.silent_min_command_rad_s, "encoder_confirm_min_command_rad_s", error) ||
+    !finite_positive(config.silent_window_sec, "stall_silent_window_sec", error) ||
+    !finite_positive(config.count_rad, "wheel_encoder_count_rad", error))
+  {
     return false;
   }
-  if (config.min_command_rad_s <= 0.0) {
-    error = "stall_min_command_rad_s must be > 0";
+  // The rise edge of a displacement latch (OP-25). Also implied by the two
+  // checks further down (release < encoder_confirm_min <= min_command); kept
+  // for its more specific message. With release >= the arming threshold, a
+  // held command in between would both arm the release and re-trip the latch.
+  if (config.release_command_rad_s >= config.min_command_rad_s) {
+    error = "stall_release_command_rad_s must be < stall_min_command_rad_s (OP-25 hysteresis)";
     return false;
   }
-  if (config.min_position_delta_rad < 0.0) {
-    error = "stall_min_position_delta_rad must be >= 0";
-    return false;
-  }
-  if (config.release_command_rad_s < 0.0) {
-    error = "stall_release_command_rad_s must be >= 0";
+  // A "count" coarser than the displacement criterion would make the
+  // zero-count criterion weaker than the one it complements, not finer.
+  if (!(0.5 * config.count_rad < config.min_position_delta_rad)) {
+    error = "half of wheel_encoder_count_rad must be < stall_min_position_delta_rad";
     return false;
   }
   // THE HYSTERESIS IS THE WHOLE OP-25 ANSWER, so a configuration that removes it
-  // is refused rather than accepted and quietly de-fanged. With
-  // release >= arm there is a band in which one and the same held command both
-  // releases the latch and re-trips it, which is the 30 Hz chatter OP-25 exists
-  // to prevent.
-  if (config.release_command_rad_s >= config.min_command_rad_s) {
-    error = "stall_release_command_rad_s must be < stall_min_command_rad_s (OP-25 hysteresis)";
+  // is refused rather than accepted and quietly de-fanged. A zero-count latch
+  // releases on a rise above silent_min_command_rad_s; with release >= that
+  // there is a band in which one and the same held command both releases the
+  // latch and re-trips it, which is the 30 Hz chatter OP-25 exists to prevent.
+  // Since encoder_confirm_min <= min_command, this bounds both rise edges.
+  if (!(config.release_command_rad_s < config.silent_min_command_rad_s)) {
+    error =
+      "stall_release_command_rad_s must be < encoder_confirm_min_command_rad_s (OP-25 hysteresis: "
+      "it bounds the rise edge of both stall latch kinds)";
+    return false;
+  }
+  // NO UNWATCHED BAND FOR A LIVE WHEEL (user decision 2026-10-22). The zero-count
+  // criterion watches a LIVE wheel from encoder_confirm_min_command_rad_s upwards
+  // with no upper bound, so coverage is continuous whatever the order. The rule
+  // is about the OTHER side: encoder_confirm_min is "above this a healthy wheel
+  // at least counts"; a net-displacement threshold below it would judge "has not
+  // moved 0.05 rad" where a healthy wheel is not even expected to count -- false
+  // trips by the project's own definition. Equal is allowed (empty band).
+  if (!(config.silent_min_command_rad_s <= config.min_command_rad_s)) {
+    error =
+      "encoder_confirm_min_command_rad_s (" + std::to_string(config.silent_min_command_rad_s) +
+      ") must be <= stall_min_command_rad_s (" + std::to_string(config.min_command_rad_s) +
+      "): the net-displacement criterion must not judge a LIVE wheel below the command at which "
+      "a healthy wheel is even expected to produce a count.";
     return false;
   }
   if (config.max_latched_wheels < 1 || config.max_latched_wheels > kNumWheels) {
@@ -57,10 +113,29 @@ void StallDetector::reset()
   window_start_sec_.fill(0.0);
   window_start_position_.fill(0.0);
   trip_count_.fill(0);
+  latched_zero_count_.fill(false);
+  silent_armed_.fill(false);
+  silent_sec_.fill(0.0);
+  silent_ref_valid_.fill(false);
+  silent_ref_position_.fill(0.0);
+  have_prev_now_ = false;
+  prev_now_sec_ = 0.0;
   // Provenance is deliberately NOT reset: it is latched state published by the
   // hardware component on a TRANSIENT_LOCAL topic and it describes the encoder,
   // not this controller's lifecycle. Dropping it here would silently disarm the
   // detector after every activation until the next (rare) provenance change.
+}
+
+void StallDetector::release_for_operator_clear()
+{
+  latched_.fill(false);
+  latched_zero_count_.fill(false);
+  release_armed_.fill(false);
+  armed_.fill(false);
+  window_open_.fill(false);
+  silent_armed_.fill(false);
+  silent_sec_.fill(0.0);
+  silent_ref_valid_.fill(false);
 }
 
 void StallDetector::set_provenance(const std::array<int, kNumWheels> & provenance)
@@ -94,8 +169,15 @@ StallDetectorResult StallDetector::update(
   StallDetectorResult result;
   result.commands = requested;
 
+  // The period this cycle closes, for the zero-count accumulator. A clock that
+  // runs backwards adds nothing.
+  const double dt = (have_prev_now_ && now_sec > prev_now_sec_) ? now_sec - prev_now_sec_ : 0.0;
+  prev_now_sec_ = now_sec;
+  have_prev_now_ = true;
+
   if (!config_.enabled) {
     armed_.fill(false);
+    silent_armed_.fill(false);
     return result;
   }
 
@@ -104,10 +186,10 @@ StallDetectorResult StallDetector::update(
   for (std::size_t i = 0; i < kNumWheels; ++i) {
     const double command_magnitude = std::isfinite(requested[i]) ? std::fabs(requested[i]) : 0.0;
 
-    // OP-25 (open decision — option F2's magnitude half): a latched wheel
-    // releases only once its own commanded magnitude has FALLEN to or below
-    // release_command_rad_s and then RISEN back above min_command_rad_s —
-    // two edges, in that order, on the REQUESTED command, never the gated
+    // OP-25 (option F2's magnitude half): a latched wheel releases only once
+    // its own commanded magnitude has FALLEN to or below release_command_rad_s
+    // and then RISEN back above the arming threshold of the criterion that set
+    // the latch (below) — two edges, in that order, on the REQUESTED command, never the gated
     // one, which is zero by construction while latched. Not "the next
     // command received" (F1): /cmd_vel repeats a held command at 30 Hz, so
     // F1 would re-energise, re-stall and chatter on/off with inrush current
@@ -120,11 +202,24 @@ StallDetectorResult StallDetector::update(
     // robot moving, Nav2 sees progress and never reverses, and the latched
     // wheel stays off indefinitely, visibly (stall-state topic, ERROR log,
     // SR-13).
+    // PER-CRITERION RISE EDGE (user decision 2026-10-29, OP-25 option a): a
+    // zero-count latch releases on a rise above silent_min_command_rad_s, so it
+    // can clear at the slow speeds it was set at; a net-displacement latch only
+    // on a rise above min_command_rad_s, where that criterion judges again.
+    // A uniform silent_min edge was tried and rejected the same day (audit M3):
+    // a displacement-latched wheel whose LIVE encoder dithers +-1 count, released
+    // by a slow rise, is watched by NOTHING -- displacement does not judge below
+    // min_command_rad_s, every dither resets the zero-count window, and the
+    // latched-and-held escalation no longer applies. Kept latched instead, a
+    // held slow command escalates to the whole-drive fault (STALL_LATCHED_HELD).
     if (latched_[i]) {
+      const double rise_above =
+        latched_zero_count_[i] ? config_.silent_min_command_rad_s : config_.min_command_rad_s;
       if (command_magnitude <= config_.release_command_rad_s) {
         release_armed_[i] = true;
-      } else if (release_armed_[i] && command_magnitude > config_.min_command_rad_s) {
+      } else if (release_armed_[i] && command_magnitude > rise_above) {
         latched_[i] = false;
+        latched_zero_count_[i] = false;
         release_armed_[i] = false;
         window_open_[i] = false;
         result.events[i].released = true;
@@ -141,6 +236,9 @@ StallDetectorResult StallDetector::update(
       // This is deliberately NOT a hard stop of the machine (HWR-30 tier 1).
       armed_[i] = false;
       window_open_[i] = false;
+      silent_armed_[i] = false;
+      silent_sec_[i] = 0.0;
+      silent_ref_valid_[i] = false;  // re-seeded on the first cycle after release
       result.commands[i] = 0.0;
       continue;
     }
@@ -186,6 +284,71 @@ StallDetectorResult StallDetector::update(
       config_.assume_live_provenance || provenance_[i] >= kStallProvenanceLive;
     const bool commanded = command_magnitude > config_.min_command_rad_s;
     const bool feedback_usable = position_valid[i] && std::isfinite(position[i]);
+
+    // ------------------------------------------- ZERO-COUNT CRITERION (2026-10-22)
+    // A LIVE wheel commanded above silent_min_command_rad_s at least twitches,
+    // and a twitch is a count; a wheel that shows NO count change at all over
+    // an accumulated silent_window_sec has a silent encoder (or no drive). It
+    // complements, and does not replace, the net-displacement criterion below:
+    // a blocked wheel whose live encoder dithers +-1 count never trips this --
+    // that is the other criterion's job, above min_command_rad_s.
+    //
+    // COUNT CHANGE = the position moved by at least HALF a count from where it
+    // was at the last change, in either direction. Not net displacement: a
+    // twitch forward and back resets it twice. Half a count because the
+    // position is an integer count times count_rad (computed in double on the
+    // ESP32), so any real change is a whole count and half of one is
+    // insensitive to rounding. A twitch that goes out and back BETWEEN two
+    // ~30 Hz samples is invisible -- inherent to the sampling, not to this test.
+    //
+    // NO UPPER BOUND on the command, deliberately: above min_command_rad_s a
+    // zero-count wheel also fails the 1 s displacement test and trips there
+    // first under a steady command; the zero-count accumulator only matters
+    // there when the command FLICKERS across min_command_rad_s, which restarts
+    // the displacement window each time but only pauses this one.
+    bool counted = false;
+    if (feedback_usable) {
+      if (!silent_ref_valid_[i]) {
+        silent_ref_position_[i] = position[i];
+        silent_ref_valid_[i] = true;
+      } else if (std::fabs(position[i] - silent_ref_position_[i]) >= 0.5 * config_.count_rad) {
+        counted = true;
+        silent_ref_position_[i] = position[i];
+      }
+    }
+    silent_armed_[i] = command_magnitude > config_.silent_min_command_rad_s && !drive_withheld &&
+                       provenance_live && feedback_usable;
+    if (!provenance_live || counted) {
+      // Not LIVE: the wheel is the encoder trigger's (drive_fault_monitor),
+      // judged afresh if it comes back. A count: the encoder is not silent.
+      silent_sec_[i] = 0.0;
+    } else if (silent_armed_[i]) {
+      // Every watched cycle adds the period since the previous cycle (the same
+      // rule as the encoder trigger, so a flickering command cannot drop time).
+      silent_sec_[i] += dt;
+    }
+    if (silent_armed_[i] && silent_sec_[i] >= config_.silent_window_sec) {
+      silent_sec_[i] = 0.0;  // a refusal is then reported once per window
+      result.events[i].zero_count = true;
+      if (latched_now >= config_.max_latched_wheels) {
+        result.events[i].multi_wheel_refused = true;
+        // The displacement window is left as it is: it judges its own criterion.
+      } else {
+        latched_[i] = true;
+        latched_zero_count_[i] = true;
+        release_armed_[i] = false;
+        window_open_[i] = false;
+        armed_[i] = false;
+        silent_armed_[i] = false;
+        silent_ref_valid_[i] = false;
+        ++trip_count_[i];
+        ++latched_now;
+        result.commands[i] = 0.0;
+        result.events[i].tripped = true;
+        result.state_changed = true;
+        continue;
+      }
+    }
 
     armed_[i] = commanded && !drive_withheld && provenance_live && feedback_usable;
 
@@ -245,9 +408,13 @@ StallDetectorResult StallDetector::update(
     }
 
     latched_[i] = true;
+    latched_zero_count_[i] = false;
     release_armed_[i] = false;
     window_open_[i] = false;
     armed_[i] = false;
+    silent_armed_[i] = false;
+    silent_sec_[i] = 0.0;
+    silent_ref_valid_[i] = false;
     ++trip_count_[i];
     ++latched_now;
     result.commands[i] = 0.0;

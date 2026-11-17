@@ -20,6 +20,27 @@ export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 # permanently eliminates SHM as a source of failure.
 export FASTRTPS_DEFAULT_PROFILES_FILE=/home/ubuntu/fastdds_udp_only.xml
 export HOME=/home/ubuntu
+# WHOLE-DRIVE FAULT MARKER (user decision 2026-10-16). swerve_controller writes it
+# on a drive fault and re-adopts it on every load, so a crash-respawn of
+# ros2_control_node keeps the robot stopped. A DELIBERATE stack start is the one
+# thing that clears it -- this script, on an EXPLICIT start (`systemctl start` /
+# `restart`, the Mode R button, gripperx-stack-stop --mode=restart). NOT on
+# systemd's automatic Restart=on-failure: NRestarts is > 0 exactly then
+# (measured on systemd 255: first start 0, automatic restart 1, explicit
+# `systemctl restart` 0 again). If the counter cannot be read the marker is KEPT
+# -- the safe direction -- and the line below says how to clear it by hand.
+DRIVE_FAULT_MARKER=/run/gripperx/drive_fault
+if [ -e "$DRIVE_FAULT_MARKER" ]; then
+    NRESTARTS=$(systemctl show -p NRestarts --value gripperx-bringup.service 2>/dev/null)
+    if [ "$NRESTARTS" = "0" ]; then
+        echo "[bringup] deliberate start: clearing the drive-fault marker:"
+        cat "$DRIVE_FAULT_MARKER"
+        rm -f "$DRIVE_FAULT_MARKER"
+    else
+        echo "[bringup] DRIVE FAULT MARKER KEPT (NRestarts='$NRESTARTS', automatic restart or" \
+             "unknown): the drive stays stopped. Clear deliberately: rm $DRIVE_FAULT_MARKER"
+    fi
+fi
 # NO LONGER INTERIM (updated 2026-08-25). This started as a stopgap while the arm
 # poses were stale (#340). The home pose has since been re-taught and accepted, and
 # the user decided startup homing stays OFF permanently: the node runs with

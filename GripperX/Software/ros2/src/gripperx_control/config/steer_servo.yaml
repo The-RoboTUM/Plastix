@@ -34,7 +34,13 @@ steer_servo_node:
     # protocol_end=0 selects SCS (no byte swap in SCS_LOBYTE/HIBYTE); protocol_end=1 would
     # swap bytes and drive to wrong positions.
     servo_ids:     [13, 14, 11, 12]
-    center_counts: [2511, 1617, 1606, 2625]
+    # FL/FR centres re-read 2026-10-13 17:2x after the user replaced both front
+    # servo-to-steering connectors and set the wheels straight: read at standstill with the
+    # stack up, 260 samples, constant (FL 2414, FR 1700). A first reading at 15:11 the same
+    # day (FL 2496, FR 1630) arrived wrong on the robot and is superseded. BL/BR unchanged
+    # from 2026-09-18. The FL/FR limit counts below were recomputed from the new centres
+    # with the rule stated there.
+    center_counts: [2414, 1700, 1606, 2625]
     # The 2026-07-01 spring-linkage ids/centres and their computed counts_plus_90 /
     # counts_minus_90 pair are deleted rather than kept as a fallback: those ids were
     # wrong, so the arrays would silently mis-pair with the wheels if the legacy path
@@ -88,11 +94,11 @@ steer_servo_node:
     # warns that the row probably belongs to a different servo.
     #
     # Real mechanical travel per wheel, measured 2026-09-18 (stops held at the actual
-    # hard limit, computed from counts via 11.3778 ticks/deg):
-    #     FL outward 196.4deg  inward 51.2deg
-    #     FR outward 193.7deg  inward 52.1deg
-    #     BL outward 193.6deg  inward 50.3deg
-    #     BR outward 196.4deg  inward 56.7deg
+    # hard limit, computed from counts via 11.3778 ticks/deg): the two
+    # steering_mechanical_*_deg keys below, FL, FR, BL, BR. Machine-readable since
+    # 2026-10-07 (transcribed unchanged from this comment's former table) because the
+    # arm safety filter (gripperx_arm, SR-17) sweeps the wheels over these stops when the
+    # steering angle is not known - steer_servo_node itself does not read them.
     # This closes the earlier TO-VERIFY on inward travel: the 2026-08-13 figures were
     # taken at first resistance rather than at the hard stop and understated it by
     # 10-15deg on every wheel; the scale check above excludes a skewed angle model as the
@@ -142,10 +148,14 @@ steer_servo_node:
     # toe-based description of "outward" reliably produces the wrong sign on one axle
     # pair; steer_servo_calibrate.py's step list still uses that wrong wording (its
     # per-wheel line is correct) — fix it there, do not re-derive it here.
-    counts_outward_limit: [1089, 3039, 3028, 1203]
-    counts_inward_limit:  [2909, 1219, 1208, 3023]
+    counts_outward_limit: [992, 3122, 3028, 1203]
+    counts_inward_limit:  [2812, 1302, 1208, 3023]
     steering_outward_limit_deg: 125.0
     steering_inward_limit_deg: 35.0
+    # MEASURED mechanical stops (see the travel note above), FL, FR, BL, BR, degrees from
+    # centre, positive = in that direction. Not commandable limits; read by gripperx_arm.
+    steering_mechanical_outward_deg: [196.4, 193.7, 193.6, 196.4]
+    steering_mechanical_inward_deg: [51.2, 52.1, 50.3, 56.7]
     steering_outward_sign: [-1, 1, 1, -1]
     steering_outward_tick_direction: [-1, 1, 1, -1]
     #

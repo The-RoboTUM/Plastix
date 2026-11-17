@@ -29,6 +29,12 @@ def make_arm_action_server(arm_home_on_startup):
         respawn_delay=5.0,
         parameters=[
             os.path.join(gripperx_arm, "config", "arm_poses.yaml"),
+            # SR-17 safety filter + FR-17 leader settings. Without it the node runs
+            # on code defaults and says so loudly (safety_filter.config_loaded).
+            os.path.join(gripperx_arm, "config", "arm_safety_filter.yaml"),
+            # TF age bound shared with the goal gateway (SR-16 E3): no default.
+            os.path.join(get_package_share_directory("gripperx_arm_msgs"), "config",
+                         "tf_freshness.yaml"),
             {
                 "use_sim_time": False,
                 # Startup homing repeats on every respawn. Set false while the home
@@ -42,8 +48,22 @@ def make_arm_action_server(arm_home_on_startup):
     )
 
 
+def make_arm_joint_state_relay():
+    """/arm/joint_states (raw servo angles) -> /joint_states (URDF arm joints), so
+    robot_state_publisher can place the articulated arm. Read-only, never commands.
+    Calibration is TO-VERIFY - see gripperx_arm/config/arm_calibration.yaml."""
+    gripperx_arm = get_package_share_directory("gripperx_arm")
+    return Node(
+        package="gripperx_arm",
+        executable="arm_joint_state_relay",
+        name="arm_joint_state_relay",
+        output="screen",
+        parameters=[os.path.join(gripperx_arm, "config", "arm_calibration.yaml")],
+    )
+
+
 # ── LiDAR ────────────────────────────────────────────────────────────────────
-def make_lidar_node(use_lidar):
+def make_lidar_node(use_lidar, lidar_stamp_source):
     return Node(
         package='ldlidar_stl_ros2',
         executable='ldlidar_stl_ros2_node',
@@ -90,6 +110,12 @@ def make_lidar_node(use_lidar):
             {'enable_angle_crop_func': True},
             {'angle_crop_min': 160.0},
             {'angle_crop_max': 200.0},
+            # /scan header stamp, from the sweep's per-point stamps (ldlidar_stl_ros2
+            # include/scan_stamp.h). mid_sweep DEVIATES from the LaserScan convention
+            # (stamp = first ray) on purpose: slam_toolbox, rf2o and the costmaps do not
+            # deskew and treat a scan as a snapshot at its stamp. publish = the old
+            # loop-tick stamp, ~0.1 s late (IMU_REPLAY_INJECTION_2P7_REPORT_2026-11-02 2.1).
+            {'stamp_source': lidar_stamp_source},
         ],
     )
 
@@ -119,6 +145,30 @@ def make_scan_range_filter(use_lidar):
             {'output_topic': '/scan'},
             {'min_range': 0.10},
         ],
+    )
+
+
+# ── IMU ──────────────────────────────────────────────────────────────────────
+# BNO085 on the Pi header I2C (documentation/ASBUILT.md §1.5). Publishes on
+# /imu/bno085/data (gripperx_sensors/config/bno085.yaml). localization_input_node
+# (gripperx-mapping.service) removes the standstill gyro bias and republishes it
+# on /imu/data/filtered, whose yaw RATE the EKF fuses as imu0 since 2.4 — yaw
+# rate only, never absolute yaw (gripperx_localization/config/localization.yaml,
+# above imu0). use_imu:=false therefore leaves the EKF on the encoder yaw rate.
+# Read-only sensor: it commands nothing. respawn because a reader thread that
+# dies exits the process with status 1; recovery inside the driver (bus reopen,
+# rate-limited soft resets) handles everything short of that.
+def make_imu_node(use_imu):
+    gripperx_sensors = get_package_share_directory("gripperx_sensors")
+    return Node(
+        package="gripperx_sensors",
+        executable="bno085_imu",
+        name="bno085_imu",
+        output="screen",
+        condition=IfCondition(use_imu),
+        respawn=True,
+        respawn_delay=5.0,
+        parameters=[os.path.join(gripperx_sensors, "config", "bno085.yaml")],
     )
 
 
@@ -170,6 +220,21 @@ def make_teleop_mux_node():
     )
 
 
+# ── Whole-drive fault -> Nav2 cancel (user decision 2026-10-16) ─────────────
+# swerve_controller latches /swerve_controller/drive_fault and holds all four
+# wheels at 0.0 until the stack restarts; this node cancels every Nav2 goal
+# while it is active. Outside the control loop; it never commands motion.
+def make_drive_fault_nav_guard():
+    return Node(
+        package='gripperx_control',
+        executable='drive_fault_nav_guard',
+        name='drive_fault_nav_guard',
+        output='screen',
+        respawn=True,
+        respawn_delay=5.0,
+    )
+
+
 def generate_launch_description():
     gripperx_description = get_package_share_directory("gripperx_description")
     gripperx_control = get_package_share_directory("gripperx_control")
@@ -177,14 +242,17 @@ def generate_launch_description():
     use_sim_time = LaunchConfiguration("use_sim_time")
     use_mock_firmware = LaunchConfiguration("use_mock_firmware")
     use_lidar = LaunchConfiguration("use_lidar")
+    use_imu = LaunchConfiguration("use_imu")
     use_camera = LaunchConfiguration("use_camera")
     use_rviz = LaunchConfiguration("use_rviz")
     arm_home_on_startup = LaunchConfiguration("arm_home_on_startup")
 
     arm_action_server = make_arm_action_server(arm_home_on_startup)
-    lidar_node = make_lidar_node(use_lidar)
+    arm_joint_state_relay = make_arm_joint_state_relay()
+    lidar_node = make_lidar_node(use_lidar, LaunchConfiguration("lidar_stamp_source"))
     scan_range_filter = make_scan_range_filter(use_lidar)
     lidar_power_node = make_lidar_power_node(gripperx_control, use_lidar)
+    imu_node = make_imu_node(use_imu)
     steer_servo_node = make_steer_servo_node(gripperx_control)
     teleop_mux_node = make_teleop_mux_node()
 
@@ -338,12 +406,39 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "use_mock_firmware",
-                default_value="true",
-                description="Run hw_firmware_mock instead of ESP32/micro-ROS.",
+                # false -- user decision 2026-10-16. A bare manual launch on the robot
+                # must never start the mock next to the real ESP32 (a second writer on
+                # /hw/joint_states with simulated-healthy encoders). Desk runs pass
+                # use_mock_firmware:=true explicitly; the mock also refuses to publish
+                # when another /hw/joint_states writer exists.
+                default_value="false",
+                description="Run hw_firmware_mock instead of ESP32/micro-ROS (desk only).",
                 choices=["true", "True", "false", "False"],
             ),
             DeclareLaunchArgument("use_lidar", default_value="true"),
+            DeclareLaunchArgument(
+                "lidar_stamp_source",
+                # mid_sweep -- user decision 2026-11-05. publish reproduces the unfixed
+                # driver (2.8 variant "unfixed").
+                default_value="mid_sweep",
+                description=(
+                    "LD06 /scan stamp: mid_sweep (middle of the sweep, not the LaserScan "
+                    "first-ray convention), first_ray (time of ranges[0]) or publish (old "
+                    "loop-tick stamp). In the first two, a scan with bad per-point stamps or a "
+                    "stamp not later than the last is dropped, not re-stamped."
+                ),
+                choices=["mid_sweep", "first_ray", "publish"],
+            ),
             DeclareLaunchArgument("use_camera", default_value="false"),
+            DeclareLaunchArgument(
+                "use_imu",
+                default_value="true",
+                description=(
+                    "Start the BNO085 driver (/imu/bno085/data; EKF imu0 fuses its yaw rate). "
+                    "false on a bench without the sensor."
+                ),
+                choices=["true", "True", "false", "False"],
+            ),
             DeclareLaunchArgument(
                 "arm_home_on_startup",
                 # PERMANENTLY false — user decision 2026-08-25. Not an interim
@@ -370,9 +465,11 @@ def generate_launch_description():
                 choices=["true", "True", "false", "False"],
             ),
             arm_action_server,
+            arm_joint_state_relay,
             lidar_node,
             scan_range_filter,
             lidar_power_node,
+            imu_node,
             steer_servo_node,
             teleop_mux_node,
             load_urdf,
@@ -391,5 +488,6 @@ def generate_launch_description():
                     on_exit=[swerve_controller],
                 )
             ),
+            make_drive_fault_nav_guard(),
         ]
     )

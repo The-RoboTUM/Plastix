@@ -1,0 +1,29 @@
+<?xml version="1.0"?>
+<?xml-model href="http://download.ros.org/schema/package_format3.xsd" schematypens="http://www.w3.org/2001/XMLSchema"?>
+<package format="3">
+  <name>gripperx_leader</name>
+  <version>0.1.0</version>
+  <description>Laptop-side reader for the SO101 leader arm (Feetech STS3215 servos): publishes leader joint states and records joint limits and poses.</description>
+  <maintainer email="theo.blaesse@itq.de">Theo Blässe (ITQ GmbH)</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>ament_python</buildtool_depend>
+
+  <depend>rclpy</depend>
+  <depend>std_msgs</depend>
+  <depend>sensor_msgs</depend>
+  <!-- follower joint limits (single source) for the self-alignment -->
+  <exec_depend>gripperx_geometry</exec_depend>
+  <!-- the follower's leader-mode activation tolerance (config/arm_safety_filter.yaml),
+       read, never duplicated, for the direct align path and the travel-band clamp -->
+  <exec_depend>gripperx_arm</exec_depend>
+  <exec_depend>gripperx_arm_msgs</exec_depend>
+  <exec_depend>ament_index_python</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <!-- scservo_sdk (pip: feetech-servo-sdk) is not a rosdep key; see README.md. -->
+
+  <test_depend>python3-pytest</test_depend>
+  <export>
+    <build_type>ament_python</build_type>
+  </export>
+</package>

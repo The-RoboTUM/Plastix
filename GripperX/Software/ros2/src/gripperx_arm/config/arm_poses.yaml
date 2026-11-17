@@ -26,15 +26,18 @@ arm_action_server:
     # Record with:  ros2 run gripperx_arm arm_pose_teach -- <pose-name>
     # (torque off, move the arm by hand, the tool prints a block ready to paste here).
     #
-    # home: re-taught 2026-08-25 by hand against the digital twin's reference pose
-    # (dated re-teach record, tracked internally, not in this repository). Verified:
-    # after torque-on and a full bringup restart all six servos hold these values
-    # with ZERO drift.
+    # home: NOT HERE (user decision 2026-10-07). home is the calibration reference,
+    # URDF q = 0: it is arm_calibration.yaml zero_ticks - one source, no copy. A
+    # poses.home key is refused by the node. (Values unchanged: re-taught 2026-08-25
+    # by hand against the digital twin's reference pose, held with zero drift.)
     #
     # grip: the pre-rework recording, carried over unchanged — it belongs to the arm
     # as it was before the current assembly. NOT re-taught, NOT trusted.
+    # grip, gripper.open and gripper.close become ANGLES relative to home
+    # (grip_rad / open_rad / close_rad, URDF radians) once the follower calibration
+    # is verified: `ros2 run gripperx_arm arm_poses_to_rad` prints them for review.
+    # Exactly one variant per pose; the tick variants below stay until then.
     poses:
-      home: [2108, 1003, 3091, 1035, 2148, 1527]
       grip: [2106, 3036, 1513, 2934, 2113, 2652]
 
     # The gripper at 1527 sits 30 ticks ABOVE close (1497) — jaws nearly shut but not
@@ -43,13 +46,7 @@ arm_action_server:
       open: 2656
       close: 1497
 
-    # TODO(#340): real travel limits, once the Front_Lid is printed and the arm is fully
-    # assembled. The range below is the full 12-bit servo span, so the clamp in
-    # _move() currently permits everything — it is a placeholder with a home, not a
-    # safety measure. Two things are still missing for #340:
-    #   1. the measured per-servo end stops here, and
-    #   2. arm joints in the URDF (gripperx_v1.core.xacro has no limb*/gripper joints),
-    #      so the digital twin has no limits either.
-    joint_limits:
-      min: [0, 0, 0, 0, 0, 0]
-      max: [4095, 4095, 4095, 4095, 4095, 4095]
+    # joint_limits: REMOVED 2026-10-08 (SR-17 rule 3). The L2 joint limits are declared
+    # once, in gripperx_geometry/config/geometry.yaml, and reach arm_action_server through
+    # the URDF; the full-range tick block that stood here was inert and is forbidden as
+    # a hand-maintained second copy. L1 (servo EEPROM) values: arm_eeprom_limits.

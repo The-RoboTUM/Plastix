@@ -26,6 +26,8 @@ import pytest
 _HERE = Path(__file__).parent
 
 CHECKS = [
+    "check_aimed_pick_node.py",
+    "check_correlation_hold.py",
     "check_frame_gate.py",
     "check_geodesy.py",
     "check_line_calibration.py",
@@ -33,6 +35,7 @@ CHECKS = [
     "check_reaim.py",
     "check_reaim_node.py",
     "check_rosbridge_client.py",
+    "check_stop_epoch.py",
     "check_transform_status.py",
     "check_validation.py",
 ]

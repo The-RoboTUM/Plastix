@@ -1,0 +1,12 @@
+# EXAMPLE ONLY — placeholder values, not measured. Copy it, edit it, pass it as
+# calibration_file. radians = sign * (ticks - zero_ticks) * 2*pi / ticks_per_rev
+# Tick order = servo_ids order = [limb1..limb5, gripper].
+zero_ticks: [2048, 2048, 2048, 2048, 2048, 2048]   # TO-VERIFY: leader tick at the chosen zero pose
+sign: [1, 1, 1, 1, 1, 1]                            # TO-VERIFY: +1 / -1 per joint
+range_center_rad: [0, 0, 0, 0, 0, 0]   # TO-VERIFY: centre of each joint's travel (rad)
+ticks_per_rev: 4096
+# Set true only once zero_ticks and sign are MEASURED (same procedure as the follower,
+# gripperx_arm/config/arm_calibration.yaml). Published on
+# /arm/leader/calibration_verified; while false the follower refuses leader mode unless
+# its allow_unverified_calibration is set for an approved calibration session.
+calibration_verified: false

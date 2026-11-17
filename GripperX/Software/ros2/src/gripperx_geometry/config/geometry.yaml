@@ -29,7 +29,10 @@
 # FIELDS
 #   value       the number, in `unit`
 #   unit        SI, spelled out
-#   provenance  cad | measured | derived | rounded_from
+#   provenance  cad | measured | derived | rounded_from | placeholder | decision
+#               (placeholder = stands in for a value nobody has determined;
+#               always status TO-VERIFY. decision = a value CHOSEN, e.g. a
+#               safety margin; carries a `decision` block saying by whom)
 #   date        when the value was established (ISO)
 #   status      accepted | TO-VERIFY
 #   rationale   why this number and not another; kept short, pointing at the
@@ -42,7 +45,8 @@
 # NOT YET EXHAUSTIVE
 #   Phase 0 covers the quantities that are duplicated across two or more sites
 #   plus the couplings that have broken before. Steering limits, joint
-#   dynamics, mesh offsets and the arm are not modelled here yet.
+#   dynamics and mesh offsets are not modelled here yet; the arm has its mount
+#   and joint limits here (2026-10-07).
 # =============================================================================
 
 meta:
@@ -457,6 +461,386 @@ quantities:
       radius without changing this is always a bug.
     consumers:
       - gripperx_description/urdf/gripperx_v1.core.xacro::xacro:property[base_footprint_to_base_link_z]
+
+  # ---------------------------------------------------------------------------
+  # ARM (LeRobot SO101) — mount and joint limits. User decision 2026-10-07:
+  # these live here; the xacro, the future arm safety filter and a future
+  # servo-EEPROM limit generator read them from here (the xacro as a checked
+  # consumer, the Python side through the URDF). Joint order everywhere:
+  # arm_limb1_joint .. arm_limb5_joint, arm_gripper_joint (= servo IDs 1..6).
+  # Joint origins inside the arm stay in gripperx_v1.arm.xacro: they are CAD
+  # link geometry with exactly one site, not a mount or a limit.
+  # ---------------------------------------------------------------------------
+
+  arm_mount_xyz:
+    value: [0.171223, -0.000151, 0.115294]
+    decimals: 6
+    unit: metre
+    provenance: cad
+    date: 2026-10-07
+    status: accepted
+    rationale: |
+      Arm_1 (shoulder-pan) axis in chassis_link, from the Onshape assembly
+      (onshape-to-robot export, CAD y/x swapped by the global Rz(+90 deg)).
+      First taken 2026-08-20 for the rigid arm, re-exported 2026-10-07 and
+      unchanged to the micrometre. Root frame of the articulated arm.
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.arm.xacro::xacro:property[arm_mount_xyz]
+
+  arm_mount_rpy:
+    value: [3.141593, 0.000000, 1.570796]
+    decimals: 6
+    unit: radian
+    provenance: cad
+    date: 2026-10-07
+    status: accepted
+    rationale: |
+      Orientation of the arm root frame against chassis_link: roll pi, yaw
+      pi/2 (the CAD arm frame is rolled 180 deg and yawed 90 deg). Written to
+      6 decimals (3e-7 rad off pi, < 0.1 um at the arm's reach).
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.arm.xacro::xacro:property[arm_mount_rpy]
+
+  arm_joint_lower:
+    value: [-1.884956, -3.342715, -0.012217, -3.229200, -2.705260, -0.325204]
+    decimals: 6
+    unit: radian
+    provenance: derived
+    derived_from: arm_joint_stop_lower (follower, 2026-10-08) + 5 deg inward; limb3 and gripper = user decisions 2026-10-08, limb5 = user decision 2026-10-09, limb1 = user decision 2026-10-12 (see rationale)
+    date: 2026-10-12
+    status: TO-VERIFY
+    status_note: |
+      The values are user decisions on FOLLOWER data (2026-10-08) and no longer
+      provisional leader figures. They stay TO-VERIFY only because they are angles
+      relative to the follower calibration (gripperx_arm/config/arm_calibration.yaml),
+      whose calibration_verified is still false (user acceptance on the running
+      system pending).
+    rationale: |
+      Joint limits are ANGLES relative to the CAD q = 0 / home pose, never servo
+      ticks (user 2026-10-07: servo positions vary strongly; ticks are derived via
+      arm_calibration.yaml). Rule (SR-17, safety requirement 17 - arm safety
+      envelope): software limit = mechanical stop moved 5 deg inward; where that
+      would exclude the home pose q = 0, the limit is q = 0 itself.
+      Per joint, against the FOLLOWER stops of arm_joint_stop_lower/upper:
+        limb1   +-108.00 deg (user decision 2026-10-12 "b"): symmetric about the
+                re-measured zero 2068 (arm_calibration.yaml), the largest symmetric
+                value that keeps the SR-17 5 deg margin on the lower side. Stops
+                -113.12 / +124.72 deg: margins 5.12 / 16.72 deg. History: +-110 deg
+                about the zero 2108 (user 2026-10-08). Stops after the limb1
+                mounting screws were removed (as-built change 2026-10-08); with the
+                original, longer screws the chassis would stop the arm before the
+                servo does.
+        limb2   stop + 5 / stop - 5: -191.52 / +9.15 deg.
+        limb3   lower -0.7 deg = the mechanical stop itself, no margin (user
+                2026-10-07, confirmed 2026-10-08 "limb3 option a": home and zero
+                moved to tick 3074 so home sits 0.7 deg inside the stop). Stop
+                sweep: tick 3082 = -0.70 deg; outermost reading of the day 3083 =
+                -0.79 deg. Upper = stop - 5 = +188.71 deg.
+        limb4   stop + 5 / stop - 5: -185.02 / +6.43 deg.
+        limb5   +-155 deg, symmetric (user decision 2026-10-09; replaces the
+                +-160 deg of 2026-10-07/08, whose upper side kept only 3.21 deg
+                to the stop). Stops -169.28 / +163.21 deg: margins 14.28 / 8.21
+                deg, both >= the 5 deg of SR-17.
+        gripper lower = the close stop itself, -18.63 deg, margin 0 (user
+                2026-10-08: soft gripper); upper = open stop - 5 = +104.60 deg.
+      Values outside +-pi are intended: the follower wraps each joint into
+      range_center_rad +- pi.
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.arm.xacro::xacro:property[arm_joint_lower]
+
+  arm_joint_upper:
+    value: [1.884956, 0.159704, 3.293627, 0.112151, 2.705260, 1.825608]
+    decimals: 6
+    unit: radian
+    provenance: derived
+    derived_from: arm_joint_stop_upper (follower, 2026-10-08) - 5 deg inward; limb5 = user decision 2026-10-09, limb1 = user decision 2026-10-12
+    date: 2026-10-12
+    status: TO-VERIFY
+    status_note: See arm_joint_lower.
+    rationale: See arm_joint_lower.
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.arm.xacro::xacro:property[arm_joint_upper]
+
+  arm_joint_stop_lower:
+    value: [-1.974233, -3.429981, -0.013806, -3.316466, -2.954447, -0.325204]
+    decimals: 6
+    unit: radian
+    provenance: measured
+    date: 2026-10-12
+    status: TO-VERIFY
+    status_note: |
+      Measured on the follower; TO-VERIFY only because the angles depend on the
+      follower calibration (calibration_verified still false).
+    rationale: |
+      MECHANICAL stops of the arm joints (URDF angles relative to CAD q = 0),
+      MEASURED ON THE FOLLOWER ARM 2026-10-08: torque off, each joint swept by
+      hand into both stops, raw ticks logged at 10 Hz. Value = the outermost tick
+      reading of the day per joint, converted with the 2026-10-08 calibration
+      (arm_calibration.yaml zero_ticks [2108, 978, 3074, 1035, 2148, 1527], signs
+      [1, -1, -1, -1, 1, 1]); limb1 re-converted 2026-10-12 with its re-measured
+      zero 2068 (raw ticks 781 / 3487 unchanged: -113.12 / +124.72 deg, was
+      -116.63 / +121.20). limb1 from the sweep after its mounting screws were
+      removed. Raw extremes and method:
+      gripperx_arm/calibration/2026-10-08/ (stop_extremes.csv, README.md).
+      Supersedes the leader-arm figures of 2026-10-07. Not a command limit -
+      arm_joint_lower/upper are inside. Consumer: gripperx_arm.stop_protected,
+      which certifies arm self-pairs as stop_protected inside these stops.
+    consumers: []
+
+  arm_joint_stop_upper:
+    value: [2.176719, 0.246971, 3.380894, 0.199418, 2.848602, 1.912874]
+    decimals: 6
+    unit: radian
+    provenance: measured
+    date: 2026-10-12
+    status: TO-VERIFY
+    status_note: See arm_joint_stop_lower.
+    rationale: See arm_joint_stop_lower.
+    consumers: []
+
+  # ---------------------------------------------------------------------------
+  # LIDAR (LD06) — the sensor frame and the collision envelope the arm safety
+  # filter checks against (SR-17). Two DIFFERENT things: lidar_link is the scan
+  # frame (/scan, Nav2, the ride-height anchor); the envelope is the volume the
+  # part never leaves. The envelope is placed in chassis_link and the xacro
+  # converts it into lidar_link, so moving the scan frame never moves the box.
+  # ---------------------------------------------------------------------------
+
+  lidar_mount_xyz:
+    value: [0.2488, 0.0, 0.1034]
+    decimals: 4
+    unit: metre
+    provenance: derived
+    date: 2026-08-19
+    status: TO-VERIFY
+    status_note: |
+      The optical centre inside the housing is unverified (LD06 datasheet or a
+      frame_lidar connector in the CAD); see gripperx_v1.lidar.xacro.
+    coupled_to: base_footprint_to_base_link_z
+    derived_from: x, y CAD housing centre; z = measured scan plane 0.260 - base_footprint_to_base_link_z 0.1566
+    rationale: |
+      lidar_link (the scan frame) in chassis_link. x, y: CAD housing centre
+      (2026-08-18 Onshape import). z: the user's tape-measured scan plane 260 mm
+      above ground minus base_footprint_to_base_link_z (0.260 - 0.1566), which
+      falls inside the CAD housing span z +0.0800..+0.1133. Full argument in
+      gripperx_v1.lidar.xacro. Moved here unchanged 2026-10-13 so the collision
+      envelope below can be placed relative to it.
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.lidar.xacro::xacro:property[lidar_mount_xyz]
+
+  lidar_envelope_size:
+    value: [0.040, 0.040, 0.035]
+    decimals: 3
+    unit: metre
+    provenance: measured
+    date: 2026-10-12
+    status: accepted
+    rationale: |
+      User measurement 2026-10-12: the lidar is 35 mm high on a 40 x 40 mm
+      footprint it never leaves (rotating head included). Full edge lengths
+      x, y, z of the collision box of lidar_link. Replaced the 70 mm x 50 mm
+      cylinder (enclosed by the filter as a 70 x 70 x 50 mm box), which was
+      larger than the part and produced false arm contacts (2026-10-12/13).
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.lidar.xacro::xacro:property[lidar_envelope_size]
+
+  lidar_envelope_center:
+    value: [0.2476, -0.000151, 0.0975]
+    decimals: 6
+    unit: metre
+    provenance: derived
+    date: 2026-10-13
+    status: accepted
+    status_note: |
+      x rests on "flush with the lid at the front" meaning the front edge of the
+      central tongue of the lid in base_link.stl (x 0.2676, 54 mm wide; the rest
+      of the lid ends at x ~0.21). USER-CONFIRMED 2026-10-13, verbatim (German):
+      "Ja, die LiDAR Vorderkante schließt bündig mit der Zunge ab." (the lidar
+      front edge is flush with the tongue). Lid top and tongue edge are still
+      CAD values, not measured on the robot.
+    derived_from: |
+      x = lid front edge 0.2676 - 0.040 / 2   (base_link.stl, central tongue at
+          z 0.0800, |y| < 0.027; the CAD lidar bracket front was 0.2681)
+      y = arm_mount_xyz y                      (user 2026-10-13: exactly centred
+          under the arm)
+      z = lid top 0.0800 + 0.035 / 2           (base_link.stl: largest upward
+          plane, z 0.0800 in chassis_link; equals the CAD housing bottom)
+    rationale: |
+      Centre of the collision box of lidar_link in chassis_link. User
+      2026-10-12/13: the box stands on the lid, front edge flush with the lid's
+      front edge, laterally centred on the arm base. Cross-check: the CAD
+      housing centre x 0.2488 lies 1.2 mm from this x.
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.lidar.xacro::xacro:property[lidar_envelope_center]
+
+  # ---------------------------------------------------------------------------
+  # CHASSIS COLLISION MODEL — four axis-aligned boxes in chassis_link (= base_link,
+  # zero offset), replacing the single bounding box of base_link.stl
+  # (0.493 x 0.330 x 0.202 m, 2026-08 .. 2026-10-13). The arm safety filter
+  # (SR-17 rule 4 (b)) checks the arm against them; the visual stays the mesh.
+  #
+  # Each box is [x_min, y_min, z_min, x_max, y_max, z_max] UNPADDED, i.e. the
+  # mesh itself. base_link.stl is the DECIMATED visual mesh (commit 2fb4202);
+  # it lies within 0.6 mm of the CAD import (68e351c, 47087 triangles), which
+  # sticks out of these boxes by up to 0.58 mm (upper body, y, at z ~0.0264),
+  # 0.31 mm (lower body front, x 0.2481) and 0.023 mm (pedestal, x max) -
+  # inside the 3 mm body padding; the unpadded pedestal is 0.023 mm short. The xacro adds chassis_box_padding (per box) on every side.
+  # Method (all four): the mesh is cut into z-slabs at -0.0040, +0.0264 and
+  # +0.0801; every triangle is CLIPPED to each slab it crosses and the slab box
+  # is the bounding box of the clipped pieces, rounded outward to 0.1 mm. The
+  # clipped pieces partition every triangle, so the union of the four boxes
+  # contains the whole decimated mesh - proven by gripperx_arm
+  # test/test_chassis_collision.py (every vertex, plus dense points on every
+  # triangle).
+  # Slab cuts sit at real steps of the mesh, never through a face:
+  #   -0.0040  between the bottom piece (top vertex -0.0060) and the wide body
+  #            (lowest vertex -0.0020)
+  #   +0.0264  the body is 1.6 mm wider in y below z +0.0263 (highest vertex
+  #            with |y| > 0.1646) and its front reaches x 0.2477 below / 0.2679
+  #            above
+  #   +0.0801  the lid top plane (z +0.08006) - the arm pedestal above it
+  #
+  # PROVENANCE: CAD mesh base_link.stl (decimated, <= 0.6 mm from the CAD
+  # import), CONFIRMED AS BUILT by the user
+  # 2026-10-13, verbatim (German): "Der Roboter entspricht dem CAD. Einzig die
+  # Reifen können weil sie elastisch sind abweichen." (the robot matches the
+  # CAD; only the tyres can deviate because they are elastic). That covers: no
+  # part on the lid other than the lidar and the arm pedestal, lid height and
+  # lower body as in CAD.
+  # ---------------------------------------------------------------------------
+
+  chassis_box_bottom:
+    value: [-0.0960, -0.0850, -0.0800, 0.0960, 0.0880, -0.0040]
+    decimals: 4
+    unit: metre
+    provenance: cad
+    date: 2026-10-13
+    status: accepted
+    rationale: |
+      Bottom piece under the body (z -0.0800 = lowest point of the mesh, up to
+      the -0.0040 cut). [x_min, y_min, z_min, x_max, y_max, z_max] in
+      chassis_link, unpadded. Method and provenance: block comment above.
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.core.xacro::xacro:property[chassis_box_bottom]
+
+  chassis_box_lower_body:
+    value: [-0.2251, -0.1651, -0.0040, 0.2478, 0.1663, 0.0264]
+    decimals: 4
+    unit: metre
+    provenance: cad
+    date: 2026-10-13
+    status: accepted
+    rationale: |
+      Lower part of the body, z -0.0040 .. +0.0264. Its front reaches only
+      x 0.2477 (the full 0.2679 starts above the cut). Unpadded; see the block
+      comment above.
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.core.xacro::xacro:property[chassis_box_lower_body]
+
+  chassis_box_upper_body:
+    value: [-0.2251, -0.1645, 0.0264, 0.2679, 0.1646, 0.0801]
+    decimals: 4
+    unit: metre
+    provenance: cad
+    date: 2026-10-13
+    status: accepted
+    rationale: |
+      Upper part of the body up to the lid top (z +0.08006, cut at +0.0801),
+      including the lid's central front tongue (x 0.2679). Unpadded; see the
+      block comment above.
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.core.xacro::xacro:property[chassis_box_upper_body]
+
+  chassis_box_pedestal:
+    value: [0.0814, -0.0266, 0.0801, 0.1857, 0.0264, 0.1223]
+    decimals: 4
+    unit: metre
+    provenance: cad
+    date: 2026-10-13
+    status: accepted
+    rationale: |
+      The arm pedestal above the lid, up to the highest point of the mesh
+      (z +0.12227). Clipping matters here: the pedestal's sloped faces reach
+      back to x 0.0667 only BELOW the lid (inside the body); above the lid it
+      starts at x 0.0814. Unpadded; see the block comment above.
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.core.xacro::xacro:property[chassis_box_pedestal]
+
+  chassis_box_padding:
+    value: [0.003, 0.003, 0.003, 0.000]
+    decimals: 3
+    unit: metre
+    provenance: decision
+    date: 2026-10-13
+    status: accepted
+    decision:
+      question: |
+        How much margin does each CAD-derived chassis box carry against the
+        built robot? (10 mm on every box, the first proposal, refused the
+        measured arm resting pose: limb2's box rests 3.3 mm above the unpadded
+        pedestal top, so the arm could not return home from rest.)
+      by: user
+      date: 2026-10-13
+      quote: '"Fahrwerk Puffer b mit 3mm halte ich für sinnvoll. Die Reifen können wir so lassen." (I consider the chassis buffer, option with 3 mm, sensible. We can leave the tyres as they are.)'
+      outcome: |
+        Per box: bottom, lower body, upper body 3 mm on every side; pedestal
+        0 mm - it is printed and part of the assembly the arm sits on (the
+        GQ-4 argument), and any margin there above ~3 mm makes the resting
+        pose a chassis contact. Tyres: no deformation margin.
+    rationale: |
+      Padding on every side of each chassis_box_*, in the order bottom,
+      lower_body, upper_body, pedestal. Covers the difference between CAD and
+      the built body, which "the robot matches the CAD" does not quantify. The
+      arm's own boxes and body_clearance_m (arm_safety_filter.yaml) are
+      separate. The tyres are not chassis_link and carry no margin (user
+      2026-10-13, same quote).
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.core.xacro::xacro:property[chassis_box_padding]
+
+  # ---------------------------------------------------------------------------
+  # IMU (BNO085, Adafruit breakout on the middle plate) — imu_link, the frame the
+  # driver stamps on sensor_msgs/Imu. Replaces the placeholder origin
+  # "0 0 0.08", rpy 0 that core.xacro carried until 2026-10-20.
+  # ---------------------------------------------------------------------------
+
+  imu_mount_xyz:
+    value: [0.0, 0.0, 0.0589]
+    decimals: 4
+    unit: metre
+    provenance: derived
+    date: 2026-10-20
+    status: accepted
+    coupled_to: base_footprint_to_base_link_z
+    derived_from: |
+      x, y = 0: IMU centre directly above the base_link origin (user, from the
+      Onshape model, 2026-10-20). z = user-given height of the IMU centre above
+      ground 0.2155 - base_footprint_to_base_link_z 0.1566 = 0.0589.
+    rationale: |
+      imu_link (the BNO085 sensor frame) in chassis_link (= base_link, zero
+      offset). Same derivation pattern as lidar_mount_xyz: a height above ground
+      converted into chassis_link through the ride height, so a ride-height
+      change moves this z and must be re-derived. The lever arm only matters for
+      linear acceleration (centripetal terms); orientation and angular velocity
+      do not depend on it.
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.core.xacro::xacro:property[imu_mount_xyz]
+
+  imu_mount_rpy:
+    value: [3.141593, 0.000000, 0.000000]
+    decimals: 6
+    unit: radian
+    provenance: cad
+    date: 2026-10-20
+    status: accepted
+    rationale: |
+      The breakout is mounted with its y and z axes mirrored against base_link
+      by design (user, from the Onshape model, 2026-10-20): a 180 deg rotation
+      about x, roll pi. The sensor's x points forward, its z points down. Written
+      to 6 decimals like arm_mount_rpy (3e-7 rad off pi). At rest the sensor
+      therefore reads gravity on its own -z; through this joint that becomes
+      +9.81 m/s^2 along base_link +z, which is what the static check verifies.
+    consumers:
+      - gripperx_description/urdf/gripperx_v1.core.xacro::xacro:property[imu_mount_rpy]
 
 # =============================================================================
 # OPEN QUESTIONS — recorded, deliberately NOT resolved here

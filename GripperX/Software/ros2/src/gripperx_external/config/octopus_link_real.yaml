@@ -89,9 +89,10 @@
     # still requires the operator's `u`, still expires by itself, and is
     # still refused over the wire (SR-15 rule 3).
     #
-    # With `auto_pick: true` below, an arrival actuates the arm, so each
-    # arming carries SR-16's assertion that the arm's workspace is clear for
-    # the duration typed.
+    # Whenever an arrival can actuate the arm (`auto_pick: true`, set below
+    # since 2026-11-16 - see there; or grasp.aimed_pick confirm_by_rearm, which does not
+    # depend on it), each arming carries SR-16's assertion that the arm's
+    # workspace is clear for the duration typed.
     #
     # Startup-only (SAFETY.md A-4): the set-parameters callback refuses it at
     # runtime, so changing it means restarting both link nodes.
@@ -101,15 +102,19 @@
     # or the real robot's domain refuses the pick outright and says so
     # (goal_gateway_node, SR-16 condition 9). Unlike the twin (`auto_pick:
     # false`, deliberately, for first runs against live detections whose
-    # acknowledgement is irreversible), true here means an arrival actuates
-    # the arm - so each arming carries SR-16's assertion that the arm's
-    # workspace is clear. The tolerance gates the reached CHECK, never goal
+    # acknowledgement is irreversible), true here would mean an arrival
+    # actuates the arm - so each arming carries SR-16's assertion that the
+    # arm's workspace is clear. The tolerance gates the reached CHECK, never goal
     # resolution; the twin is deliberately unaffected by this gate.
     #
     # This flag moves nothing by itself: the pick still requires an ARMED
     # gate, and SR-16 condition 6 still requires its own explicit SR-1
     # approval for the FIRST exercise of this path on the real robot - per
     # test, not once.
+    # USER DECISION 2026-11-16: enabled for the automatic aimed pick. SR-16 condition 6
+    # (bench measurement of grasp.offset_x_m / grasp.tolerance_m) is WAIVED for the
+    # prototype: the values below are ASSUMPTIONS, TO-VERIFY, not measured.
+    # grasp.aimed_pick confirm_by_rearm does not depend on it.
     auto_pick: true
     # As in the twin: no parameter exists that could make an arrival
     # acknowledge - on the real robot that would mark real litter collected
@@ -141,7 +146,21 @@
 
     # offset_x/y: purely longitudinal. A user SPECIFICATION, not a bench
     # measurement - no document may describe it as measured.
-    grasp.offset_x_m: 0.360
+    # USER DECISION 2026-10-13 ("bei 3a sollten wir einheitlich auf 0.371 setzen"):
+    # 0.371 for EVERY pick - a user-adopted value; on 2026-10-13 it was the model-
+    # derived centre of the aimed P's direct-path region at y = 0 (FR-16 revision
+    # 2026-10-13). Taken knowingly although the fixed P grips at ~0.333 m by model: its
+    # mismatch grows from 27 to 38 mm. Was 0.360 (a user specification). Not a
+    # measurement. USER DECISION 2026-11-05 ("ja übernehme das"): 0.371 adopted again
+    # after the region was re-derived on the ported branch - the re-derived centre is
+    # 0.366 m (model output), within 5 mm of it (FR-16 revision block, 2026-11-05 entry).
+    # USER DECISION 2026-11-11 ("1a", session AIMREL): 0.361 = the centre of the
+    # aimed P's allowed region at y = 0 (0.291-0.431 m, robot tests 2026-11-09), giving
+    # ~7 cm either side. Reason: stage A run 2 on 2026-11-11 arrived at +0.435 m ahead
+    # (OUT_OF_REACH by 4 mm); arrivals so far 0.414-0.435 m with 0.371. Still a
+    # specification, not a measurement.
+    # TO-VERIFY: region centre, computed - prototype assumption (user decision 2026-11-16).
+    grasp.offset_x_m: 0.361
     grasp.offset_y_m: 0.000
     # Gates ONLY the post-arrival reached check, never resolution: without it
     # a goal still resolves and dispatches, and the reached verdict is
@@ -155,19 +174,30 @@
     #
     # OP-33: this window must absorb the arrival span AND the creep floor,
     # and nobody has bounded that sum - the machine cannot creep.
+    # TO-VERIFY: prototype assumption (user decision 2026-11-16), not measured.
     grasp.tolerance_m: 0.10
     # INTERIM workaround: a robot that navigates correctly to litter often
     # occludes it from the camera at the standoff pose, so Octopus drops it
     # from its target list and the arrival gate reads NO_MATCH and refuses
     # to actuate the arm - systematically, since better navigation means
-    # more refusal. The latch covers NO_MATCH only; AMBIGUOUS, a moved id, a
-    # stale list or a failed re-correlation each still refuse and
-    # permanently void it (see goal_gateway_node._occlusion_latch_holds).
+    # more refusal. The latch covers NO_MATCH only; AMBIGUOUS, a moved id or
+    # a failed re-correlation each still refuse and permanently void it (see
+    # goal_gateway_node._occlusion_latch_holds). An empty or stale list voids
+    # it only once correlation_list_loss_hold_sec has run out (2026-11-16).
     #
     # COST: reopens the SAFETY.md F-13 gap for one status value, bounded by
     # the arming window rather than a shorter one. Scaffolding - the durable
     # fix is designed separately.
     occlusion_latch_enabled: true
+    # LIST-LOSS HOLD (goal_gateway_node `_list_loss_hold`, REQUIREMENTS.md
+    # SR-16 DECIDED 2026-11-16). An EMPTY (live but empty) or STALE target list
+    # does not cancel the goal in flight for this long after the mission's last
+    # unique correlation, as long as no grasp was requested for the mission. The
+    # arrival gate picks on an EMPTY list inside the window, never on a STALE
+    # one; the acknowledgement never holds. Startup-only. TO-VERIFY or absent
+    # disables the hold.
+    # User decision 2026-11-16, not measured.
+    correlation_list_loss_hold_sec: 15.0
     grasp.approach_candidates: 12
     # NOT IMPLEMENTED - see the twin config for why. Setting it true logs an
     # ERROR and changes nothing.
@@ -206,10 +236,12 @@
     grasp.reaim_enabled: false
     # USER DECISION 2026-09-29, not a measurement. Aim errors at or below this are picked
     # without rotating. 5.0 deg because the RotationShim's peak command for a
-    # rotation of e rad is sqrt(2 * 2.0 * e) (max_angular_accel 2.0), which is
-    # 0.59 rad/s at 5.0 deg - about the 0.60 rad/s knee below which this plant
-    # does not deliver commanded rate (nav2.yaml min_speed_theta), so a
-    # smaller re-aim may never start. Must stay strictly above nav2.yaml
+    # rotation of e rad is sqrt(2 * 0.5 * e) (max_angular_accel 0.5, lowered from 2.0 on
+    # 2026-10-08), which is 0.30 rad/s at 5.0 deg - BELOW the 0.60 rad/s knee
+    # under which this plant does not deliver commanded rate (nav2.yaml
+    # min_speed_theta). At 2.0 it was 0.59 and 5.0 deg was chosen as "about
+    # the knee"; that derivation no longer holds and the value is NOT
+    # re-derived. TO-VERIFY on the robot: does a 5 deg re-aim start? Must stay strictly above nav2.yaml
     # reaim_goal_checker.yaw_goal_tolerance (0.035 rad = 2.0 deg), or a
     # re-aim can "succeed" without having moved. Startup-only.
     grasp.reaim_min_deg: 5.0
@@ -230,9 +262,71 @@
     grasp.reaim_timeout_sec: 15.0
     grasp.reaim_behavior_tree: "gripperx_planning/config/reaim_in_place.xml"
 
+    # AIMED PICK (FR-16 stage 1; SR-16 extension E1-E13 - DRAFT, safety audit
+    # pending; user decisions 2026-10-13). One mode, startup-only:
+    #   off              - the fixed sequence, exactly as before (default).
+    #   confirm_by_rearm - interim mode (E11): after the arrival gates the arm
+    #                      PREVIEWS the aimed pick (nothing moves); if it passes the
+    #                      gateway DISARMS and records ONE pending pick; your next
+    #                      SetArming approves exactly that pick (the re-arm is the
+    #                      SR-1 per-test approval). Needs the three pending_* bounds.
+    #   automatic        - allowed outside simulation since user decision 2026-11-16
+    #                      (prototype assumptions, TO-VERIFY; startup WARN).
+    # Every existing gate stays in force in mode automatic; in confirm_by_rearm
+    # auto_pick and the measured tolerance do not apply (user decision 2026-10-13).
+    # The aim is the DISPATCHED object position (user decision 2026-10-13, answer 2).
+    # STAGE A - USER DECISION 2026-11-09/11 (session AIMREL): confirm_by_rearm on the
+    # real robot after the gripperx-safety audit 2026-11-09 (F1 fixed, re-audited) and
+    # the STOPPED fix; every failure after the re-arm discards, holds the target off
+    # and disarms (SR-16 blocks 2026-11-09/11). NOT robot-confirmed yet. Back to
+    # "off" restores the fixed sequence - ONLY together with auto_pick: false above,
+    # otherwise every armed arrival runs a blind fixed pick (audit 2026-11-16). Automatic enabled 2026-11-16 (user decision,
+    # TO-VERIFY assumptions; needs aimed.region_margin_m set in the arm config, N7).
+    grasp.aimed_pick: "automatic"
+    # USER DECISION 2026-10-13 ("bei 3a sollten wir einheitlich auf 0.371 setzen"):
+    # grasp.offset_x_m above (0.361 since 2026-11-11) is used for every pick; there is no separate aimed value.
+    # USER DECISION 2026-10-13 (coordinator's proposal, accepted): warn when the latest
+    # unique match of the target lies further than this from the dispatched position
+    # (log only, the aim is not changed).
+    grasp.aim_position_drift_warn_m: 0.10
+    # confirm_by_rearm only (startup refusal while unset).
+    # USER DECISION 2026-10-13 ("Werte sollten bis zu 120s alt sein dürfen").
+    grasp.pending_pick_max_age_sec: 120.0
+    # USER DECISION 2026-10-13 ("Dein Vorschlag passt"), TO-VERIFY until real runs: the
+    # ONE pending-pick bound - the target expressed in the base frame from the
+    # gateway's own pose, at the re-arm and at the send, may differ from the arm's
+    # preview by at most this. Covers a moved robot and a moved estimate alike.
+    grasp.pending_pick_max_target_shift_m: 0.03
+    # Localisation settling before an aimed pick is judged (preview, and the confirmed
+    # pick after the re-arm) - USER DECISION 2026-10-13 ("Wir müssen nur aufpassen,
+    # dass die Lokalisierung vor der Prüfung genug Zeit hatte, sich korrekt
+    # auszurichten"). On top of the settle step (5 mm / 0.5 deg between ticks), the
+    # map -> base pose must stay within those same bounds of the window's first still
+    # sample for localisation_settle_sec; a late slam_toolbox correction restarts the
+    # window. Never held within the timeout: LOCALISATION_NOT_SETTLED, counted, held
+    # off, no re-approach. PROPOSALS, TO-VERIFY on the robot: 1.5 s = three dispatch
+    # ticks, several LD06 scans (~10 Hz) plus slam_toolbox's match time; slam only
+    # matches after 5 cm / 0.05 rad of motion (localization.yaml), so a correction
+    # due to the final approach lands well inside it. 8.0 s timeout = the window plus
+    # the settle step's 3 s and margin. Mode off: unused.
+    grasp.localisation_settle_sec: 1.5
+    grasp.localisation_settle_timeout_sec: 8.0
+
+    # ARM_NOT_HOME (audit AP1 H-pre, user decision 2026-10-13 option a): no
+    # NavigateToPose unless the newest /arm/state (gripperx_arm_msgs/ArmState, latched,
+    # 2 Hz) says idle AND at home and is at most arm_state_max_age_sec old. TO-VERIFY:
+    # 2.0 s = four periods. dispatch_requires_arm_home may be false ONLY in a simulation
+    # domain (startup refusal elsewhere).
+    arm_state_topic: "/arm/state"
+    arm_state_max_age_sec: 2.0
+    # Hysteresis (audit AP3 F2): continuously fresh and ready this long before the
+    # gate opens - no stop/restart churn on a flapping state. TO-VERIFY: 2.0 s.
+    arm_state_ready_hold_sec: 2.0
+    dispatch_requires_arm_home: true
     max_goal_cost: 200
     max_stamp_age_sec: 5.0
-    max_tf_age_sec: 1.0
+    # max_tf_age_sec: in gripperx_arm_msgs/config/tf_freshness.yaml (one bound with
+    # the arm, SR-16 E3; loaded by octopus_link.launch.py).
     max_teleop_mode_age_sec: 2.0
     link_lost_sec: 5.0
     goal_match_tolerance_m: 0.25

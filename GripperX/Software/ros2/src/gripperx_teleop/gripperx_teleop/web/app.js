@@ -29,14 +29,22 @@ const NODE_HOLD_KEYS = new Set(Object.values(HOLD_KEYS));
 /* One-shot actions, by their lowercase key. */
 const ACTION_KEYS = {
   k: 'mode_keyboard', g: 'mode_autonomous', p: 'pick',
-  o: 'open_gripper', i: 'home', u: 'arm_gate', l: 'disarm_gate',
+  o: 'open_gripper', i: 'home', j: 'leader', u: 'arm_gate', l: 'disarm_gate',
 };
 
 const BEAT_ACTIVE_MS = 50;    // while anything is held
 const BEAT_IDLE_MS = 250;     // just keeping the control lease alive
+const POST_TIMEOUT_MS = 1000; // abort a hanging beat (TO-VERIFY)
 
 const held = new Set();       // node key names, e.g. "w", "left"
-const queue = [];             // one-shot events waiting for the next beat
+const queue = [];             // one-shot events {name, id, t} waiting for the next beat
+/* Arm-motion one-shots are NEVER re-sent after a failed beat (audit LA1 H1): the
+ * request may have reached the node with only the response lost, so a resend can
+ * turn a cancel (J) into a fresh start, and a press made while the node was down
+ * would land long after the operator stopped expecting it. Space IS re-sent. */
+const NO_RETRY = new Set(['leader', 'pick', 'home', 'open_gripper']);
+let nextEventId = 1;
+let localNotice = null;       // {text, until}: page-side message, e.g. "J not delivered"
 let hasControl = false;
 let holder = null;
 let wantControl = true;       // false once we have decided to observe
@@ -44,6 +52,10 @@ let inFlight = false;
 let beatTimer = null;
 let lastFrameAt = 0;
 let lastEventId = 0;
+let eventsEpoch = null;      // the node's event-id epoch; a new one = node restarted
+/* How long a refused/aborted/unavailable leader alignment (J) stays in the banner. A display
+ * choice, not a safety value: the text also stays under the keys and in the log. */
+const LEADER_NOTICE_SEC = 10;
 let renderFailures = 0;       // consecutive render() faults, surfaced as a banner
 let pendingKick = false;      // a beat came in while one was already in flight
 let claimForce = false;       // the operator pressed "Take control"
@@ -52,23 +64,46 @@ const $ = (id) => document.getElementById(id);
 
 /* ── Transport ──────────────────────────────────────────────────────────── */
 
+/* A free seat is taken automatically only by the page the operator is looking at.
+ * A stale lease reads as a free seat, so without this any hidden or unfocused tab
+ * (or one on another device) would take the seat from a driver who merely stalled
+ * for a couple of seconds, and keep it. Such a page waits for focus, or for Take
+ * control. The holder is not affected: it renews its lease whatever its focus. */
+function mayAutoClaim() {
+  return document.visibilityState === 'visible' && document.hasFocus();
+}
+
 async function beat(force) {
   if (inFlight) { if (force) pendingKick = true; return; }
   inFlight = true;
-  const events = queue.splice(0, queue.length);
+  const pending = queue.splice(0, queue.length);
+  /* name|id|age_ms: the node drops duplicates (same id) and stale events. Age is the
+   * page's own elapsed time, so no clock has to agree with the node's. */
+  const events = pending.map(
+    (e) => e.name + '|' + e.id + '|' + Math.round(performance.now() - e.t));
   const body = {
     session: SESSION,
     keys: [...held],
     events,
-    claim: wantControl && !hasControl,
+    claim: wantControl && !hasControl && mayAutoClaim(),
   };
   if (claimForce) { body.claim = true; body.force = true; claimForce = false; }
   try {
-    const res = await fetch('/api/input', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(body),
-    });
+    /* A POST must not hang (audit LA2 T4): inFlight would block every later beat,
+     * Space included, and the stuck request could arrive seconds late. 1 s, TO-VERIFY. */
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), POST_TIMEOUT_MS);
+    let res;
+    try {
+      res = await fetch('/api/input', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+        signal: ctl.signal,
+      });
+    } finally {
+      clearTimeout(timer);
+    }
     const data = await res.json();
     hasControl = !!data.control;
     holder = data.holder;
@@ -81,7 +116,16 @@ async function beat(force) {
     // The node is gone or the network dropped. Nothing to do from here — the
     // node stops the robot by itself when the beats stop arriving. Just say so.
     hasControl = false;
-    if (events.length) queue.unshift(...events);   // retry one-shots
+    const retry = pending.filter((e) => !NO_RETRY.has(e.name));
+    const lost = pending.filter((e) => NO_RETRY.has(e.name)).map((e) => e.name);
+    if (retry.length) queue.unshift(...retry);     // retry non-motion one-shots, Space
+    if (lost.length) {
+      /* The request may or may not have reached the node (aborted, or the response
+       * lost): never claim it was not delivered (audit LA3). */
+      localNotice = { text: 'Delivery unknown (request failed or timed out): ' + lost.join(', ')
+                            + ' - check the J / arm state before pressing again',
+                      until: performance.now() + 4000 };
+    }
   } finally {
     inFlight = false;
     if (pendingKick) { pendingKick = false; beat(false); }
@@ -99,6 +143,7 @@ function schedule() {
 function kick() { beat(true); schedule(); }
 
 function press(key) {
+  if (refuseWhileQuit()) return;
   if (held.has(key)) return;
   held.add(key);
   paint();
@@ -119,7 +164,8 @@ function releaseAll() {
 }
 
 function fire(event) {
-  queue.push(event);
+  if (event !== 'estop' && event !== 'quit' && refuseWhileQuit()) return;
+  queue.push({ name: event, id: nextEventId++, t: performance.now() });
   kick();
 }
 
@@ -127,6 +173,24 @@ function fire(event) {
 
 window.addEventListener('keydown', (ev) => {
   if (ev.ctrlKey || ev.metaKey || ev.altKey) return;
+
+  /* While the quit dialog is open nothing may drive or fire: only Space (stop),
+   * Escape (cancel), Tab (kept inside the dialog); Enter goes to the focused
+   * dialog button untouched. */
+  if (quitOpen() || clearOpen()) {
+    const dialog = quitOpen() ? quitDialog : clearDialog;
+    if (ev.key === ' ' || ev.key === 'Spacebar') {
+      ev.preventDefault();
+      if (!ev.repeat) estop();
+    } else if (ev.key === 'Escape') {
+      ev.preventDefault();
+      if (dialog === quitDialog) closeQuit(); else closeClear();
+    } else if (ev.key === 'Tab') {
+      ev.preventDefault();
+      trapQuitFocus(ev.shiftKey, dialog);
+    }
+    return;
+  }
 
   const holdKey = HOLD_KEYS[ev.key] || HOLD_KEYS[ev.key.toLowerCase()];
   if (holdKey) {
@@ -167,9 +231,20 @@ window.addEventListener('keyup', (ev) => {
 for (const evt of ['blur', 'pagehide']) {
   window.addEventListener(evt, releaseAll);
 }
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) releaseAll();
+/* Closing or reloading the tab gives the seat back at once. Without it a reload
+ * mints a new session id while the old one still holds the lease, and the new
+ * page waits out the takeover interval. The server only honours a release from
+ * the holder itself; a missed one (crash, lost link) is covered by that interval. */
+window.addEventListener('pagehide', () => {
+  try {
+    navigator.sendBeacon('/api/input', new Blob(
+      [JSON.stringify({ session: SESSION, release: true })], { type: 'application/json' }));
+  } catch (err) { /* best effort */ }
 });
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) releaseAll(); else kick();
+});
+window.addEventListener('focus', () => kick());
 
 /* ── Pointer / touch on the drawn keys ──────────────────────────────────── */
 
@@ -181,6 +256,7 @@ function wireKeycaps() {
     if (nodeKey) {
       cap.addEventListener('pointerdown', (ev) => {
         ev.preventDefault();
+        if (refuseWhileQuit()) return;
         cap.setPointerCapture(ev.pointerId);
         press(nodeKey);
       });
@@ -190,14 +266,30 @@ function wireKeycaps() {
     } else if (event === 'quit') {
       cap.addEventListener('click', requestQuit);
     } else if (event) {
-      cap.addEventListener('click', () => { flash(cap.dataset.key); fire(event); });
+      cap.addEventListener('click', () => {
+        if (refuseWhileQuit()) return;
+        flash(cap.dataset.key); fire(event);
+      });
     }
   }
 
-  const stop = $('btn-estop');
-  stop.addEventListener('pointerdown', (ev) => { ev.preventDefault(); estop(); });
+  wireEstopButton($('btn-estop'));
   $('btn-takeover').addEventListener('click', () => {
+    if (refuseWhileQuit()) return;
     claimForce = true; wantControl = true; kick();
+  });
+}
+
+/* An emergency-stop button fires on pointerdown (no wait for the release) AND on
+ * keyboard activation. Enter on a focused button arrives as a click with
+ * detail 0; a mouse/touch click has detail >= 1 and was already served by its
+ * pointerdown, so it must not stop a second time. Space is the global handler's;
+ * its key-up would click the button once more, hence the swallow. */
+function wireEstopButton(btn) {
+  btn.addEventListener('pointerdown', (ev) => { ev.preventDefault(); estop(); });
+  btn.addEventListener('click', (ev) => { if (ev.detail === 0) estop(); });
+  btn.addEventListener('keyup', (ev) => {
+    if (ev.key === ' ' || ev.key === 'Spacebar') ev.preventDefault();
   });
 }
 
@@ -209,7 +301,52 @@ function estop() {
   setTimeout(() => btn.classList.remove('on'), 180);
 }
 
+/* In-page confirmation, NOT window.confirm: a native dialog blocks this page's
+ * event loop, the beats stop, the node declares the link lost after
+ * client_timeout_sec and then (correctly) drops the quit that arrives on the
+ * first beat afterwards. A plain <dialog> keeps the loop, and so the beats,
+ * running. It is opened NON-modally (show(), not showModal()) because a modal
+ * dialog makes the rest of the page inert -- including btn-estop; instead the
+ * backdrop div blocks the pointer, the global keydown handler gates the keys,
+ * and the dialog carries its own emergency stop. */
+const quitDialog = $('quit-dialog');
+const quitBackdrop = $('quit-backdrop');
+
+function quitOpen() { return quitDialog.hasAttribute('open'); }
+
+/* While the dialog is open every other child of <body> (top bar, the main
+ * container with all keycaps, btn-estop and btn-takeover) is `inert`: no focus,
+ * no click, no Enter on a keycap reached by Tab. The dialog's own estop and the
+ * window-level Space cover btn-estop. The click handlers are gated as well, in
+ * depth (refuseWhileQuit). */
+function setPageInert(on, keep = quitDialog) {
+  for (const el of document.body.children) {
+    if (el !== keep && el.tagName !== 'SCRIPT') el.inert = on;
+  }
+}
+
+/* Tab ring of the dialog: without this Tab walks out into the browser chrome
+ * (the page behind is inert), and Enter in the URL bar reloads the page and
+ * drops the dialog without quitting. */
+function trapQuitFocus(backwards, dialog = quitDialog) {
+  const ring = [...dialog.querySelectorAll('button')];
+  const at = ring.indexOf(document.activeElement);
+  const next = at < 0 ? (backwards ? ring.length - 1 : 0)
+                      : (at + (backwards ? ring.length - 1 : 1)) % ring.length;
+  ring[next].focus();
+}
+
+function closeQuit() {
+  quitDialog.close();
+  quitBackdrop.hidden = true;
+  setPageInert(false);
+}
+
+/* True (and the caller must return) while the quit or the clear dialog is open. */
+function refuseWhileQuit() { return quitOpen() || clearOpen(); }
+
 function requestQuit() {
+  if (quitOpen()) return;
   releaseAll();
   /* Launched from gripperx_desk.sh (GripperX Desktop launcher), quitting here
    * now tears the WHOLE desk session down -- RViz, the local mapping stack,
@@ -219,18 +356,94 @@ function requestQuit() {
    * "Teardown from the teleop's own Q"). Run standalone (a bare
    * `ros2 launch ... web_teleop.launch.py`), there is no such launcher to
    * signal and only this node stops -- the page cannot tell which case it is
-   * in, so the confirmation names both rather than assuming one. */
-  if (window.confirm('Shut teleop down?\n\nThe robot is stopped and the '
-                     + 'wheels straightened first. Started from '
-                     + 'gripperx_desk.sh, this also stops the whole desk '
-                     + 'session (RViz, the local map, ...), not just this '
-                     + 'page. Run standalone, only this teleop node stops and '
-                     + 'you will need a terminal to start it again.')) {
+   * in, so the dialog text names both rather than assuming one. */
+  quitBackdrop.hidden = false;
+  setPageInert(true);
+  quitDialog.show();
+  $('btn-quit-confirm').focus();         // Enter confirms (user decision 2026-10-22)
+}
+
+function wireQuitDialog() {
+  $('btn-quit-cancel').addEventListener('click', closeQuit);
+  $('btn-quit-confirm').addEventListener('click', () => {
+    if (!quitOpen()) return;             // a repeated Enter must not send a second quit
+    closeQuit();
     fire('quit');
+  });
+  wireEstopButton($('btn-quit-estop'));
+  /* Space is the emergency stop (global handler), but on a focused button its
+   * key-UP would also "click" it: swallow that. */
+  quitDialog.addEventListener('keyup', (ev) => {
+    if (ev.key === ' ' || ev.key === 'Spacebar') ev.preventDefault();
+  });
+}
+
+/* ── Operator clear of the whole-drive fault (SR-18 amendment 2026-11-09) ──
+ * Same in-page, non-modal pattern as the quit dialog (and for the same reasons),
+ * with ONE difference: CANCEL is focused, so Enter does nothing harmful. A clear
+ * RELEASES THE DRIVE: a drive command still held anywhere drives off at once.
+ * The reason shown is sent back as expected_reason, so a dialog that went stale
+ * (the fault changed meanwhile) is refused by the controller, not obeyed. */
+const clearDialog = $('clear-dialog');
+const clearBackdrop = $('clear-backdrop');
+let clearExpected = 0;
+let clearFaultId = 0;
+let lastFrame = null;
+
+function clearOpen() { return clearDialog.hasAttribute('open'); }
+
+function closeClear() {
+  clearDialog.close();
+  clearBackdrop.hidden = true;
+  setPageInert(false, clearDialog);
+}
+
+function requestClear() {
+  const f = lastFrame;
+  if (quitOpen() || clearOpen() || !f || !f.drive_fault_active || !f.drive_fault_clearable
+      || !f.drive_fault_id) return;
+  releaseAll();
+  clearExpected = f.drive_fault_reason_code;
+  clearFaultId = f.drive_fault_id;      // the controller refuses if the fault changed
+  text($('clear-reason'), f.drive_fault_reason || 'reason unknown');
+  text($('clear-where'), f.drive_fault_where || 'wheel not identified');
+  text($('clear-other'), f.drive_fault_other ? ' (other wheel: ' + f.drive_fault_other + ')' : '');
+  text($('clear-detail'), (f.drive_fault_detail || '') + ' (fault #' + f.drive_fault_id + ')');
+  clearBackdrop.hidden = false;
+  setPageInert(true, clearDialog);
+  clearDialog.show();
+  $('btn-clear-cancel').focus();         // Cancel is the default (SR-18 amendment item 7)
+}
+
+function wireClearDialog() {
+  $('btn-drive-fault-clear').addEventListener('click', requestClear);
+  $('btn-clear-cancel').addEventListener('click', closeClear);
+  $('btn-clear-confirm').addEventListener('click', () => {
+    if (!clearOpen()) return;            // a repeated click must not send a second clear
+    closeClear();
+    fire('clear_drive_fault:' + clearExpected + ':' + clearFaultId);
+  });
+  wireEstopButton($('btn-clear-estop'));
+  clearDialog.addEventListener('keyup', (ev) => {
+    if (ev.key === ' ' || ev.key === 'Spacebar') ev.preventDefault();
+  });
+}
+
+function clearNote(f) {
+  const r = f.drive_fault_clear_result;
+  if (r && r.pending) return 'Drive fault clear: requested, waiting for the controller...';
+  if (r && r.message) return 'Drive fault clear ' + (r.success ? 'ACCEPTED: ' : 'REJECTED: ') + r.message;
+  const last = f.drive_fault_last_clear;
+  if (last) {
+    return 'Last drive fault clear: ' + new Date(last.stamp_sec * 1000).toLocaleTimeString()
+         + ', ' + last.reason + ', by ' + last.requester + ' (' + f.drive_fault_clear_count
+         + ' since bringup)';
   }
+  return '';
 }
 
 function flash(key) {
+  if (refuseWhileQuit()) return;
   const cap = document.querySelector(`.keycap[data-key="${CSS.escape(key)}"]`);
   if (!cap) return;
   cap.classList.add('on');
@@ -285,7 +498,8 @@ function render(f) {
   renderState(f);
   renderReadouts(f);
   renderRobot(f);
-  renderLog(f.events || []);
+  renderLog(f.events || [], f.events_epoch);
+  renderCamera(f.camera);
 }
 
 function renderRole(f, stale) {
@@ -326,57 +540,179 @@ function renderRole(f, stale) {
   text($('chip-mode'), 'mode ' + (f.mode || '—'));
   /* And say it on the deck as well: grey keys are keys that do nothing. */
   document.querySelector('.deck').classList.toggle('inert', !stale && !teleopLive);
+  document.querySelector('.deck').classList.toggle('leader-on', !!f.leader_enabled);
+  const lead = $('key-leader');
+  lead.classList.toggle('on', !!f.leader_enabled);
+  text($('leader-state'), f.leader_enabled ? 'ON' : (f.leader_aligning ? 'ALIGNING' : 'OFF'));
+  lead.title = 'Leader alignment: ' + (f.leader_align_state || '—');
+  const align = f.leader_align_state || '';
+  const note = $('leader-align');
+  text(note, align && align !== 'idle' ? 'Leader (J): ' + align : '');
+  note.className = 'leader-align' + (leaderAlignBad(align) ? ' warn' : '');
+  const wall = f.leader_wall_state || '';
+  const wnote = $('leader-wall');
+  text(wnote, leaderWallShown(wall) ? 'Leader wall: ' + wall : '');
+  wnote.className = 'leader-align' + (leaderWallBad(wall) ? ' warn' : '');
+  /* Whole-drive fault (2026-10-16): latched until the stack restarts, so it stays
+   * on the deck for as long as it is true -- not only for a notice period. */
+  const dnote = $('drive-fault');
+  text(dnote, f.drive_fault_active ? driveFaultMessage(f) : '');
+  dnote.className = 'leader-align' + (f.drive_fault_active ? ' warn' : '');
+  /* The clear button exists ONLY for a clearable reason (SR-18 amendment item 7). */
+  lastFrame = f;
+  $('btn-drive-fault-clear').hidden = !(f.drive_fault_active && f.drive_fault_clearable);
+  if (clearOpen() && !(f.drive_fault_active && f.drive_fault_clearable
+                       && f.drive_fault_id === clearFaultId)) closeClear();
+  const cnote = $('drive-fault-clear-note');
+  text(cnote, clearNote(f));
+  const result = f.drive_fault_clear_result;
+  cnote.className = 'leader-align' + (result && result.success === false ? ' warn' : '');
 }
 
-function renderBanner(f) {
-  const el = $('banner');
-  let level = null, message = '';
+/* drive_fault_where is composed by the node: 'wheel <name>', or the feedback link
+ * for FEEDBACK_LOST, whose wheel_index is -1 and names no wheel on purpose. */
+function driveFaultMessage(f) {
+  const until = f.drive_fault_clearable
+    ? 'until the stack restarts, or until cleared with the button below after checking the robot. '
+    : 'until the stack restarts: stack restart required (Mode R). ';
+  return 'DRIVE FAULT (' + (f.drive_fault_reason || 'reason unknown') + ', '
+       + (f.drive_fault_where || 'wheel not identified') + '): all four drive motors held '
+       + 'at zero ' + until + 'Nav2 goals are cancelled. '
+       + (f.drive_fault_detail || '');
+}
+
+/* One line at 1366 px, with one short tag after it (the page test measures the worst
+ * case). Only the first-episode part may be shortened, never the instruction. */
+function yawAlarmMessage(f, compact) {
+  const n = (f.yaw_alarm_episodes === null || f.yaw_alarm_episodes === undefined)
+            ? '?' : f.yaw_alarm_episodes;
+  /* compact (live suffix AND a tag, the longest line): date, seconds and the episode
+   * count are dropped (the instruction and the zone stay). */
+  const when = (f.yaw_alarm_first_utc || 'time unknown');
+  return 'YAW-RATE DIVERGENCE ALARM: first episode '
+       + (compact ? when.replace(/^\d{4}-\d{2}-\d{2} /, '').replace(/^(\d\d:\d\d):\d\d/, '$1') : when)
+       + (compact ? '' : ', ' + n + 'x') + '. Stop. Restart the stack before moving again. '
+       + 'Use hardware switch S1, not the software stop.' + yawLiveSuffix(f);
+}
+
+/* Latched ERROR stage (D17): the page also shows whether the divergence still persists.
+ * 'unknown' (monitor silent or blind) is said so; empty only when the field is absent. */
+function yawLiveSuffix(f) {
+  if (f.yaw_alarm_live === 'persists') return ' Now: persists.';
+  if (f.yaw_alarm_live === 'cleared') return ' Now: cleared.';
+  if (f.yaw_alarm_live === 'unknown') return ' Now: unknown.';
+  return '';
+}
+
+/* Non-latched WARNING stage (D17): yellow banner while it lasts, then gone. */
+function yawWarnMessage(f) {
+  return 'YAW-RATE WARNING: encoder and gyro yaw rate disagree. Stop and wait until it '
+       + 'clears; if it does not clear or comes back, the alarm will latch.';
+}
+
+function yawUnknownLabel(f) {
+  return f.yaw_alarm_state === 'unknown'
+    ? 'YAW MONITOR NOT MONITORING' + (f.yaw_alarm_live_state ? ' (' + f.yaw_alarm_live_state + ')' : '')
+    : 'YAW MONITOR SILENT';
+}
+
+function yawUnknownMessage(f) {
+  return yawUnknownLabel(f) + ': the encoder-vs-gyro cross-check gives no verdict, so a yaw '
+       + 'divergence would go unnoticed. Do not start or continue; do not rely on the pose.';
+}
+
+function leaderAlignBad(state) {
+  return /^(refused|aborted|unavailable)/.test(state || '');
+}
+
+/* Held / outside joints, releases and an unavailable wall are shown; idle, disabled and
+ * a plain 'armed' (nothing touching the wall) are not. */
+function leaderWallShown(state) {
+  return /held:|outside:|^released|^unavailable/.test(state || '');
+}
+
+function leaderWallBad(state) {
+  return /wall fault|NOT confirmed/.test(state || '');
+}
+
+function renderBannerChain(f) {
+  let level = null, message = '', tag = '';
 
   if (f.rivals && f.rivals.length) {
     /* Above the emergency stop on purpose: this is the only state on this page
      * where hitting the stop does not necessarily stop the robot. */
-    level = 'alarm';
+    level = 'alarm'; tag = 'RIVAL TELEOP';
     message = 'ANOTHER TELEOP IS RUNNING (' + f.rivals.join(', ') + '). It '
             + 'publishes the same cmd_vel as this page, so your emergency stop '
             + 'does NOT stop what it commands. Shut one of them down.';
+  } else if (localNotice && performance.now() < localNotice.until) {
+    level = 'alarm'; tag = 'NOTICE';
+    message = localNotice.text;
   } else if (renderFailures >= 3) {
-    level = 'warn';
+    level = 'warn'; tag = 'PAGE STALE';
     message = 'This page is failing to draw the telemetry it is receiving '
             + '(' + renderFailures + ' frames). What you see may be stale — '
             + 'check the browser console and do not drive on it.';
   } else if (f.estop_latched) {
-    level = 'alarm';
+    /* Order (audit LW1 L6): the latched stop first, then a leader wall fault, then a
+     * refused/aborted alignment, then the standing leader-mode / aligning notices - a
+     * fault during leader mode must not hide behind "LEADER MODE". */
+    level = 'alarm'; tag = 'E-STOP';
     message = 'EMERGENCY STOP LATCHED — release every key; input stays ignored '
             + 'until nothing is held.';
+  } else if (f.drive_fault_active) {
+    /* Standing and latched: no age limit. Below the latched stop only because
+     * that one ends as soon as the keys are released; this one does not. */
+    level = 'alarm'; tag = 'DRIVE FAULT';
+    message = driveFaultMessage(f);
+  } else if (leaderWallBad(f.leader_wall_state)
+             && f.leader_wall_age_sec !== null && f.leader_wall_age_sec !== undefined
+             && f.leader_wall_age_sec < LEADER_NOTICE_SEC) {
+    level = 'alarm'; tag = 'LEADER WALL';
+    message = 'LEADER WALL: ' + f.leader_wall_state;
+  } else if (leaderAlignBad(f.leader_align_state)
+             && f.leader_align_age_sec !== null && f.leader_align_age_sec !== undefined
+             && f.leader_align_age_sec < LEADER_NOTICE_SEC) {
+    level = 'alarm'; tag = 'LEADER ALIGN';
+    message = 'LEADER (J) ' + f.leader_align_state.replace(/^(\w+):\s*/, (m, w) =>
+                w.toUpperCase() + ': ');
+  } else if (f.leader_aligning) {
+    level = 'warn'; tag = 'LEADER ALIGNING';
+    message = 'LEADER ALIGNING: the leader arm moves itself to the follower pose, then '
+            + 'leader mode is requested. Hands clear. J or the space bar cancels.';
+  } else if (f.leader_enabled) {
+    level = 'warn'; tag = 'LEADER MODE';
+    message = 'LEADER MODE: drive blocked. The arm follows the leader; drive '
+            + 'keys send a zero twist only. J or the space bar leaves it.';
   } else if (!hasControl && holder && holder !== SESSION) {
-    level = 'info';
+    level = 'info'; tag = 'OBSERVER';
     message = 'Observer mode. You can watch and you can hit the emergency stop, '
             + 'but the drive keys belong to ' + holder + '.';
   } else if (f.psi_jump_ago_sec !== null && f.psi_jump_ago_sec !== undefined
              && f.psi_jump_ago_sec < 2.5) {
     /* A transient warning outranks the standing mode notice below: the mode is
      * still true in three seconds, the dead-band crossing is not. */
-    level = 'warn';
+    level = 'warn'; tag = 'CRAB JUMP';
     message = 'Crab heading jumped a dead band — no pose exists in that 45° '
             + 'gap, so all four modules are swinging across it. Traction is '
             + 'NOT withheld for this: the teleop guard only covers a change of '
             + 'manoeuvre.';
   } else if (f.mode && f.mode !== 'keyboard') {
-    level = 'info';
+    level = 'info'; tag = 'MODE';
     message = 'Mode is ' + f.mode + ': teleop_mux is forwarding Nav2, not this '
             + 'page. W/S, A/D and the manoeuvre keys do nothing until you press '
             + 'K. The space bar still works — it forces keyboard mode and stops.';
   } else if (f.armed_without_feedback) {
-    level = 'warn';
+    level = 'warn'; tag = 'NO STEER FB';
     message = 'No steering feedback — traction was released on the timeout, '
             + 'not on measured wheel angles. The pose is not confirmed.';
   } else if (f.pose_reachable === false) {
-    level = 'warn';
+    level = 'warn'; tag = 'POSE LIMIT';
     message = 'That pose is outside the steering limits — the manoeuvre will '
             + 'not arm.';
   } else if (f.silent_sec !== null && f.silent_sec !== undefined
              && !f.link_fresh && holder === SESSION) {
-    level = 'warn';
+    level = 'warn'; tag = 'INPUT LOST';
     message = 'Your input has not reached the node for '
             + f.silent_sec.toFixed(1) + ' s — the robot has been stopped.';
   }
@@ -391,6 +727,39 @@ function renderBanner(f) {
             + ' · ' + (f.manoeuvre_label || '')
             + (f.drive_allowed ? ' · drive released' : ' · drive withheld');
   }
+  return {level: level, message: message, tag: tag};
+}
+
+/* Priority: latched yaw alarm > (yaw WARNING, not latched, D17: tag on a motion warning, else
+ * its own yellow banner) > every banner that was a safety/motion warning before the
+ * yaw monitor existed (it stays, with a short tag) > yaw monitor silent/unknown > info
+ * banners > calm summary. The monitor runs only in the localization launch, so a desk or
+ * arm session without it must keep its arm-motion warnings. */
+function composeBanner(f, base) {
+  let {level, message} = base;
+  const shown = level === 'alarm' || level === 'warn';
+  if (f.yaw_alarm_state === 'alarm') {
+    /* Latched until the stack restarts (user decision 2026-11-05). Display only. */
+    return {level: 'alarm',
+            message: yawAlarmMessage(f, !!(shown && base.tag && yawLiveSuffix(f)))
+                     + (shown && base.tag ? ' | ' + base.tag : '')};
+  }
+  if (f.yaw_alarm_state === 'warn') {
+    /* Not latched (D17): a motion warning that was already shown keeps its text and gets
+     * a short tag; otherwise this is the yellow banner. It disappears when cleared. */
+    if (shown) return {level: level, message: message + ' | YAW WARNING'};
+    return {level: 'warn', message: yawWarnMessage(f)};
+  }
+  if (f.yaw_alarm_state !== 'ok') {
+    if (shown) return {level: level, message: message + ' | ' + yawUnknownLabel(f)};
+    return {level: 'warn', message: yawUnknownMessage(f)};
+  }
+  return {level: level, message: message};
+}
+
+function renderBanner(f) {
+  const el = $('banner');
+  const {level, message} = composeBanner(f, renderBannerChain(f));
   el.className = 'banner ' + level + (level === 'alarm' ? ' blink' : '');
   text($('banner-icon'), level === 'alarm' ? '\u26a0' :
                          level === 'warn'  ? '\u26a0' :
@@ -715,8 +1084,12 @@ function renderTwist(f) {
 
 /* ── Event log ──────────────────────────────────────────────────────────── */
 
-function renderLog(events) {
+function renderLog(events, epoch) {
   const list = $('log');
+  if (epoch !== eventsEpoch) {          // node restarted: its ids start at 1 again
+    eventsEpoch = epoch;
+    lastEventId = 0;
+  }
   for (const item of events) {
     if (item.id <= lastEventId) continue;
     lastEventId = item.id;
@@ -734,6 +1107,98 @@ function renderLog(events) {
 /* ── Go ─────────────────────────────────────────────────────────────────── */
 
 wireKeycaps();
+wireQuitDialog();
+wireClearDialog();
 connect();
 schedule();
 beat(true);
+
+
+/* ── Camera tile ────────────────────────────────────────────────────────── */
+/* The stream is one HTTP connection held open by the <img>. Off = no src = no
+ * connection = the node drops its ROS subscription. Nothing here is in the
+ * drive path; a failure only changes the tile. */
+
+let camOn = false;
+let camRetry = null;
+
+function camStart() {
+  $('cam-img').src = '/api/camera/stream?t=' + Date.now();
+}
+
+function camStop() {
+  clearTimeout(camRetry);
+  $('cam-img').removeAttribute('src');   // aborts the request
+}
+
+function camSetOn(on) {
+  camOn = on;
+  if (on) camStart(); else camStop();
+  $('cam-power').blur();
+}
+
+async function camProfile(name) {
+  $('cam-' + name).blur();
+  try {
+    const ctl = new AbortController();
+    const timer = setTimeout(() => ctl.abort(), 2000);
+    const res = await fetch('/api/camera/profile', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ profile: name }),
+      signal: ctl.signal,
+    });
+    clearTimeout(timer);
+    const r = await res.json();
+    if (!r.ok) text($('cam-hint'), 'mode change failed: ' + (r.detail || r.error));
+  } catch (e) {
+    text($('cam-hint'), 'mode change failed: no answer');
+  }
+}
+
+$('cam-power').addEventListener('click', () => camSetOn(!camOn));
+$('cam-view').addEventListener('click', () => camProfile('view'));
+$('cam-detail').addEventListener('click', () => camProfile('detail'));
+$('cam-img').addEventListener('error', () => {
+  if (!camOn) return;
+  clearTimeout(camRetry);
+  camRetry = setTimeout(() => { if (camOn) camStart(); }, 2000);   // dropped: try again
+});
+
+function renderCamera(c) {
+  const frame = $('cam-frame');
+  const img = $('cam-img');
+  const msg = $('cam-msg');
+  const power = $('cam-power');
+  text(power, camOn ? 'On' : 'Off');
+  power.classList.toggle('active', camOn);
+  power.setAttribute('aria-pressed', camOn ? 'true' : 'false');
+  const profile = c ? c.profile : null;
+  $('cam-view').classList.toggle('active', profile === 'view');
+  $('cam-detail').classList.toggle('active', profile === 'detail');
+  $('cam-view').disabled = !camOn;
+  $('cam-detail').disabled = !camOn;
+  const state = !camOn ? 'off' : (c && c.on ? c.state : 'connecting');
+  frame.classList.toggle('stale', camOn && state === 'stale');
+  frame.classList.toggle('dead', camOn && (state === 'no camera node' || state === 'connecting'));
+  img.hidden = !(camOn && c && c.bytes);
+  const texts = {
+    'off': 'camera off',
+    'connecting': 'connecting ...',
+    'no camera node': 'no camera node (nothing publishes the image topic)',
+    'waiting for frames': 'waiting for frames ...',
+    'stale': 'STALE: no new frame',
+    'live': '',
+  };
+  text(msg, texts[state] || state);
+  msg.hidden = (state === 'live');
+  if (!camOn) { text($('cam-hint'), 'off'); text($('cam-stats'), ''); return; }
+  if (c && c.note) text($('cam-hint'), c.note); else text($('cam-hint'), state);
+  if (c && c.on && c.bytes) {
+    text($('cam-stats'), c.fps.toFixed(1) + ' fps \u00b7 '
+      + (c.age_sec === null ? '-' : c.age_sec.toFixed(1) + ' s old') + ' \u00b7 '
+      + Math.round(c.bytes / 1000) + ' kB');
+  } else {
+    text($('cam-stats'), '');
+  }
+}

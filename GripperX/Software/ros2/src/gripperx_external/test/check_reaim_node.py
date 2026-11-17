@@ -26,6 +26,7 @@ sys.path.insert(0, os.path.join(_PKG, "src"))
 import rclpy  # noqa: E402
 from action_msgs.msg import GoalStatus  # noqa: E402
 from rclpy.parameter import Parameter  # noqa: E402
+from shared_tf import shared_tf_overrides  # noqa: E402
 
 REAIM_BT = os.path.abspath(
     os.path.join(_PKG, "..", "gripperx_planning", "config", "reaim_in_place.xml")
@@ -110,7 +111,7 @@ def build():
         Parameter("grasp.reaim_enabled", value=True),
         Parameter("grasp.reaim_behavior_tree", value=REAIM_BT),
         Parameter("arming.max_consecutive_aborts", value=3),
-    ]
+    ] + shared_tf_overrides()     # the TF age bound shared with the arm (audit F4 (a))
     node = gw.GoalGatewayNode(parameter_overrides=overrides)
     return gw, node
 
@@ -135,7 +136,7 @@ def reset(gw, node, pose=(0.0, 0.0, 0.0), age=0.05):
     node._robot_pose_stamped = lambda: (
         lambda p, a, e: (p, a, e, None if a is None else CLOCK[0] - a)
     )(*node._robot_pose())
-    node._correlation_holds = lambda _m: (True, "fixture")
+    node._correlation_holds = lambda _m, **_k: (True, "fixture")
     node._recorrelate_mission = lambda _m: gw.corr.CorrelationResult(
         gw.corr.UNIQUE, target_id="7"
     )
@@ -545,6 +546,22 @@ def run(gw, node):
     mission.cancel_requested_at_sec, mission.cancel_reason = 1.0, "disarm:OPERATOR"
     node._on_arrival(mission)
     check("no pick, slot released", picked(node) == 0 and node._mission is None)
+
+    print("19. the PickPlastic carries the arm's stop epoch (Space must abort P, 2026-10-12)")
+    from std_msgs.msg import Int64
+    node._on_arm_stop_epoch(Int64(data=4711))
+    mission = reset(gw, node)
+    mission.object_xy = (0.40, 0.0)
+    node._on_arrival(mission)
+    check("the goal carries the last epoch received",
+          picked(node) == 1 and node._pick_client.goals[0].stop_epoch == 4711,
+          f"goals {[g.stop_epoch for g in node._pick_client.goals]}")
+    node._arm_stop_epoch = None
+    mission = reset(gw, node)
+    mission.object_xy = (0.40, 0.0)
+    node._on_arrival(mission)
+    check("  ... and 0 (refused by the arm) before any epoch arrived",
+          picked(node) == 1 and node._pick_client.goals[0].stop_epoch == 0)
 
 
 if __name__ == "__main__":

@@ -1,0 +1,96 @@
+# BNO085 IMU driver (bno085_imu). Commissioned 2026-10-20: Adafruit breakout,
+# I2C bus 1 (header pins 3/5), address 0x4A as detected by i2cdetect. Wiring:
+# documentation/schematics/WIRING_PLAN.md section 2; mounting pose: imu_mount_*
+# in gripperx_geometry/config/geometry.yaml.
+bno085_imu:
+  ros__parameters:
+    i2c_bus: 1
+    i2c_address: 0x4A
+
+    # The topic localization_input_node reads (gripperx_localization
+    # localization.yaml, imu_input_topic; the twin bridges its Gazebo IMU onto
+    # the same name). It conditions the samples (frame, covariances, gyro bias
+    # at standstill) and republishes them on /imu/data/filtered. Whether the EKF
+    # fuses them is decided THERE, not here: on the robot imu0 fuses nothing
+    # until 2.4 switches on the yaw rate, and absolute yaw stays off (user
+    # decision D2, 2026-10-22). gripperx_localization test/check_imu_wiring.py
+    # fails if this topic or frame_id drift from localization.yaml.
+    imu_topic: /imu/bno085/data
+    frame_id: imu_link
+
+    # game_rotation_vector (accel + gyro, no magnetometer; default) |
+    # rotation_vector (magnetometer included) | none (no orientation).
+    # Default chosen because the sensor sits among the drive motors and the EKF
+    # fuses yaw relatively. PENDING USER CONFIRMATION (2026-10-20).
+    orientation_report: game_rotation_vector
+
+    # 20000 us = 50 Hz for each of accelerometer, gyroscope and orientation.
+    # The bus runs at the Pi default 100 kHz (device tree, RP1 i2c@74000).
+    # Measured 2026-10-20 on the robot: 50.04 Hz published over 60 s, zero
+    # protocol / I/O errors and zero resets in ~70 s. Higher rates untested.
+    report_interval_us: 20000
+
+    # 1-sigma values for the diagonal covariances, from CEVA "BNO08X Data
+    # Sheet" 1000-3927 v1.17, Figure 6-14 (nominal calibration, dynamic): game
+    # rotation vector non-heading error 2.5 deg (heading: drift 0.5 deg/min, no
+    # absolute bound), gyroscope accuracy 3.1 deg/s, accelerometer accuracy
+    # 0.3 m/s^2. The datasheet says these come from simulation over 210
+    # characterised parts. TO-VERIFY: reading an "accuracy" figure as 1 sigma
+    # is an assumption, and using 2.5 deg for yaw as well is a choice.
+    # A value <= 0 publishes the covariance as unknown (all zero).
+    orientation_stddev_rad: 0.0436           # 2.5 deg
+    angular_velocity_stddev_rad_s: 0.0541    # 3.1 deg/s
+    linear_acceleration_stddev_m_s2: 0.3
+
+    # Recovery: reopen the bus and soft-reset the sensor after this many
+    # consecutive bad reads, or after this long without a gyroscope report.
+    max_consecutive_errors: 20
+    stale_timeout_s: 1.0
+
+    # Recovery resets are rate-limited, because every non-power-up reset
+    # writes the dynamic calibration to flash (datasheet 1000-3927 section
+    # 3.4) and the flash endurance is not published (TO-VERIFY). Design
+    # choices, not datasheet values: the wait before a recovery start doubles
+    # from 1 s to at most 300 s (a sensor that is truly gone costs 12 reopens
+    # an hour, and a glitch still recovers within seconds); at most 6 resets
+    # per rolling hour (a few chances for a transient fault, at most ~150 flash
+    # writes a day in the worst case), after which the driver keeps reopening
+    # WITHOUT resetting and logs an error; 60 s of samples resets the back-off.
+    recovery_backoff_initial_s: 1.0
+    recovery_backoff_max_s: 300.0
+    max_recovery_resets_per_hour: 6
+    healthy_period_s: 60.0
+
+    # Hung after a watchdog reset (measured 2026-11-02: reset cause 3, I2C
+    # answers, no gyroscope report for 7 hours of software recoveries; only a
+    # power-off helped). After the product id has reported cause 3, this many
+    # consecutive recoveries without a gyroscope report latch "hung, power
+    # cycle required" (error log, /diagnostics level ERROR); recovery goes on
+    # and the first sample clears it. TO-VERIFY: 3 is a first guess, not
+    # measured.
+    hung_recoveries: 3
+
+    # Optional hardware reset (BNO085 RST, active low), pulsed once per hung
+    # episode before the latch, and on demand via ~/hw_reset (HWR-42).
+    # ENABLED 2026-11-09: RST wired to Pi GPIO27 / header pin 13 (user; OP-H16
+    # Q1), INT not wired (Q3). Needs python3 gpiod (libgpiod v1 or v2) on the Pi.
+    # The line is driven LOW only during the pulse, otherwise released (input);
+    # never driven high. Breakout: 10 k pull-up to VIN on RST, buffered by a
+    # 74AHC4050 to the chip's nRST (Adafruit-BNO08x-PCB schematic, master).
+    # Values chosen by the user 2026-11-09 (OP-H16 Q2) from: CEVA BNO08X
+    # datasheet 1000-3927 v1.17 sec. 6.5.3 (tnrst >= 10 ns; ready after
+    # t1 >= 90 ms + t2 ~4 ms, no max given); 10 ms pulse = CEVA/Adafruit driver
+    # practice; 0.5 s settle ~5x the 94 ms minimum, no INT to wait on.
+    hw_reset_gpio_chip: "/dev/gpiochip4"   # measured 2026-11-06 (pinctrl-rp1)
+    hw_reset_gpio_line: 27                 # GPIO27, header pin 13
+    hw_reset_pulse_s: 0.01
+    hw_reset_settle_s: 0.5
+
+    idle_poll_s: 0.002
+    stats_period_s: 10.0
+
+    # false (user decision 2026-10-20): a normal start does not soft-reset the
+    # sensor, because at every non-power-up reset it writes its RAM dynamic
+    # calibration data to flash (BNO08X datasheet 1000-3927 v1.17 section 3.4).
+    # Recovery (above) always resets.
+    reset_on_start: false

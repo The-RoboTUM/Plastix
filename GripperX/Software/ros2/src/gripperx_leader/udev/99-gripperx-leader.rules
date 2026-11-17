@@ -1,0 +1,8 @@
+# Stable name /dev/gripperx_leader for the SO101 leader arm's USB serial board
+# (laptop). Matched by serial, so another CH34x board cannot take the name.
+# Values read with `udevadm info` on 2026-10-07 (currently /dev/ttyACM0).
+# Install (user runs these, needs sudo):
+#   sudo cp udev/99-gripperx-leader.rules /etc/udev/rules.d/
+#   sudo udevadm control --reload-rules
+#   sudo udevadm trigger
+SUBSYSTEM=="tty", ATTRS{idVendor}=="1a86", ATTRS{idProduct}=="55d3", ATTRS{serial}=="5A68011526", SYMLINK+="gripperx_leader", GROUP="dialout", MODE="0660"

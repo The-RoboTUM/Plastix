@@ -108,6 +108,11 @@ html, body {
 .banner.alarm { background: #4a0f14; color: #ffd9d9; border-bottom-color: var(--alarm); }
 .banner.warn  { background: #45330c; color: #ffe9c2; border-bottom-color: var(--warn); }
 .banner.info  { background: #0e2c3d; color: #d3eeff; border-bottom-color: var(--accent); }
+.leader-align {
+  margin-top: 10px; font-size: 12px; color: var(--dim);
+  overflow-wrap: anywhere; min-height: 1.3em;
+}
+.leader-align.warn { color: var(--alarm); font-weight: 600; }
 .banner.blink { animation: blink 1s steps(2, end) infinite; }
 @keyframes blink { 50% { opacity: .55; } }
 
@@ -119,6 +124,7 @@ main {
   gap: 14px; padding: 14px; align-items: start;
 }
 .logpanel { grid-column: 1 / -1; }
+.side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
 @media (max-width: 900px) {
   main { grid-template-columns: 1fr; }
 }
@@ -371,3 +377,73 @@ main {
 .log li.alarm { border-left-color: var(--alarm); color: #ffc2c2; }
 .log li.manoeuvre { border-left-color: var(--accent); color: #cfeaff; }
 .log:empty::after { content: "no events yet"; color: var(--dimmer); }
+
+/* Leader mode: drive keys do nothing while the arm follows the leader. */
+.deck.leader-on .keycap.hold,
+.deck.leader-on .keycap.spring,
+.deck.leader-on .keycap.latch { opacity: .3; filter: grayscale(1); }
+.keycap.on { box-shadow: 0 0 0 2px var(--warn); }
+
+/* ── Quit confirmation (in-page, so the beats keep flowing) ─────────────── */
+
+.quit-backdrop {
+  position: fixed; inset: 0; z-index: 90;
+  background: rgba(5,8,12,.78);
+}
+.quit-backdrop[hidden] { display: none; }
+.quit-dialog {
+  position: fixed; inset: 0; margin: auto; z-index: 100;
+  width: min(30rem, calc(100vw - 32px)); height: fit-content;
+  padding: 18px 20px;
+  color: var(--text); background: var(--panel);
+  border: 1px solid var(--line); border-radius: 12px;
+  box-shadow: 0 0 40px rgba(0,0,0,.6);
+}
+.quit-dialog h2 { margin: 0 0 8px; font-size: 18px; }
+.quit-dialog p { margin: 0 0 16px; color: var(--dim); font-size: 14px; }
+.quit-actions { display: flex; gap: 10px; justify-content: flex-end; }
+.quit-btn {
+  font: inherit; cursor: pointer; padding: 9px 16px;
+  color: var(--text); background: var(--panel-2);
+  border: 1px solid var(--line); border-radius: 8px;
+}
+.quit-btn:hover { border-color: var(--dim); }
+.quit-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.quit-confirm { border-color: var(--alarm); background: #3a1418; }
+.quit-btn kbd { font: 11px var(--mono); color: var(--dim); margin-left: 6px; }
+.quit-estop {
+  display: block; width: 100%; margin-top: 14px; padding: 10px 16px;
+  font: inherit; font-weight: 800; letter-spacing: .08em; cursor: pointer;
+  color: #fff2f2; background: linear-gradient(180deg, #8c1a1f, #5e1015);
+  border: 1px solid #c33; border-radius: 8px;
+  touch-action: none;
+}
+.quit-estop kbd { font: 11px var(--mono); margin-left: 6px; color: #ffbdbd; }
+
+/* Operator clear of the whole-drive fault (SR-18 amendment 2026-11-09). */
+.fault-clear {
+  margin-top: 6px; padding: 6px 12px; border-radius: 6px;
+  border: 1px solid var(--alarm); background: #3a1418; color: inherit; cursor: pointer;
+}
+.fault-clear[hidden] { display: none; }
+.clear-warning { color: var(--alarm) !important; font-weight: 600; }
+
+/* Camera tile */
+.cam-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 8px; }
+.cam-group { display: inline-flex; gap: 4px; }
+.cam-btn {
+  background: var(--panel-2, #1b2430); color: inherit; border: 1px solid #3a4658;
+  border-radius: 6px; padding: 4px 12px; font: inherit; cursor: pointer;
+}
+.cam-btn.active { color: var(--ok); border-color: rgba(70,209,127,.6); }
+.cam-btn:disabled { opacity: .45; cursor: default; }
+.cam-frame {
+  position: relative; display: flex; justify-content: center; align-items: center;
+  min-height: 120px; background: #000; border: 2px solid transparent; border-radius: 6px;
+}
+.cam-frame img { max-width: 100%; max-height: 60vh; image-rendering: auto; }
+.cam-frame.stale { border-color: var(--warn); }
+.cam-frame.stale img { opacity: .35; }
+.cam-frame.dead { border-color: var(--alarm); }
+.cam-msg { position: absolute; color: var(--warn); font-weight: 600; text-align: center; padding: 8px; }
+.cam-msg[hidden] { display: none; }

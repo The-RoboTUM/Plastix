@@ -59,7 +59,17 @@ def generate_launch_description():
         executable='arm_action_server',
         name='arm_action_server',
         output='screen',
-        parameters=[{'use_sim_time': False}],
+        # Same parameter files as real_robot.launch.py: poses AND the SR-17 safety
+        # filter settings (without the latter the node refuses leader mode).
+        parameters=[
+            os.path.join(get_package_share_directory('gripperx_arm'), 'config', 'arm_poses.yaml'),
+            os.path.join(get_package_share_directory('gripperx_arm'), 'config',
+                         'arm_safety_filter.yaml'),
+            # TF age bound shared with the goal gateway (SR-16 E3): no default.
+            os.path.join(get_package_share_directory('gripperx_arm_msgs'), 'config',
+                         'tf_freshness.yaml'),
+            {'use_sim_time': False},
+        ],
         condition=IfCondition(use_arm),
     )
 

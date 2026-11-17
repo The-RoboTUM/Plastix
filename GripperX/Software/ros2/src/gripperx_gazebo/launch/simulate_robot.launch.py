@@ -91,8 +91,8 @@ def generate_launch_description():
     # alongside control.
     # DT-10: keyboard_pass_angular_z=false (= real-robot behavior). A/D
     # steering now runs via the real servo steering path
-    # (/teleop/direct_steer -> sim_steer_bridge ->
-    # steering_position_controller), NOT via the angular.z workaround steering
+    # (/teleop/direct_steer -> swerve_controller's A2 override; sim_steer_bridge
+    # is no longer launched, see above), NOT via the angular.z workaround steering
     # through the swerve IK anymore. In keyboard mode, teleop_mux therefore
     # only passes through linear.x (W/S drive).
     teleop_mux = Node(

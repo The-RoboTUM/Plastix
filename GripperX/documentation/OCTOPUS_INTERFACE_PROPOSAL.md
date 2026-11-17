@@ -7,6 +7,19 @@ is still a proposal for discussion and has not been changed on the Octopus side.
 From the GripperX team, 2026-08-18. Reviewed against PlastiX branch
 `octopus-dashboard-cleanup` at commit `a7ab8e6278` ("Made raw gps topics beautiful").
 
+> **Robot-side update 2026-11-17 (our own configuration, read from branch `Theo`; nothing here has been
+> changed on the Octopus side).** Statements below dated 2026-08 describe the robot of that date.
+> Since then: (1) `PickPlastic` has an *aimed* mode (grasp at the target's x, y, gripper vertical) and the
+> real-robot link config runs `grasp.aimed_pick: automatic` with `auto_pick: true` (user decisions 2026-11-16,
+> prototype assumptions marked TO-VERIFY in `octopus_link_real.yaml`); each arming still carries the operator's
+> workspace-clear assertion. (2) The Nav2 goal checker `xy_goal_tolerance` is **0.05 m** (was 0.10) and the
+> RotateToGoal window 0.04 m; the planner `tolerance` is 0.05 m (`gripperx_planning/config/nav2.yaml`). The
+> "two tolerances sum" reasoning below used 0.10 + 0.05; what the robot achieves with 0.05 is not measured
+> here (TO-VERIFY). (3) An empty or stale target list no longer voids the occlusion latch at once: it is held for
+> `correlation_list_loss_hold_sec` after the mission's last unique correlation if no grasp was requested
+> (`DEPLOYMENT.md` §7.3). Where the text below says the arm "cannot be aimed" or that `PickPlastic` is a
+> fixed blind sequence, read: that was the case on 2026-08-20; see `DEPLOYMENT.md` §7.2.
+
 Reference document: `Octopus/docs/octopus_to_robot_interface.md`.
 
 > **Corrected 2026-08-20 — five statements about OUR OWN side were inaccurate and are fixed in

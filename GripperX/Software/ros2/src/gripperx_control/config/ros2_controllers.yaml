@@ -236,6 +236,19 @@ swerve_controller:
     # how long a gap may safely be ignored.
     wheel_regulator_max_sample_age_sec: 0.2
 
+    # TO-VERIFY. THE SLOW-END FLOOR (FR-14 item 12, acceptance A17), rad/s:
+    # at or below this commanded magnitude the regulator holds its
+    # correction at 0.0, resets its integrator, and reports
+    # REGULATOR_OFF_BELOW_FLOOR. 2.0 rad/s = 0.14 m/s at r = 0.070, safely
+    # above the ~0.06 m/s below which the plant stops being proportional --
+    # conservative, not a minimal satisfaction of item 12. Extending the
+    # usable slow range is the firmware offset's job (OP-32 G1), not this.
+    # ITS OWN PARAMETER SINCE 2026-10-22: it used to BE
+    # stall_min_command_rad_s (both 2.0 today, as two parameters). THE
+    # REGULATOR MAY ONLY ADD AUTHORITY WHERE HWR-30a IS WATCHING, so a value
+    # below stall_min_command_rad_s is REFUSED at load. Not runtime-settable.
+    wheel_regulator_floor_rad_s: 2.0
+
     # OBSERVABILITY (FR-14 item 7, binding). Per wheel, on
     # /swerve_controller/wheel_velocities: the CORRECTION, a `regulating`
     # flag, and a `regulator_status` code for WHY when it is not regulating.
@@ -299,25 +312,67 @@ swerve_controller:
     # can produce a trip.
     stall_window_sec: 1.0
 
-    # TO-VERIFY, and the value that MOST needs a measurement: the correct
-    # number is the motor's BREAK-AWAY command — the smallest command that
-    # moves a loaded GB37-50 at all — and that has never been measured. Below
-    # it, "not moving" is not a fault.
-    # 2.0 rad/s = 0.14 m/s at wheel_radius 0.070. Ordinary teleop driving is
-    # well inside the armed band; the manoeuvre-slew twists are deliberately
-    # OUTSIDE it. DELIBERATE UNDER-COVERAGE: slow Nav2 approaches below
-    # 0.14 m/s are not protected. Lower it only against a measured break-away
-    # figure.
+    # TO-VERIFY, and the value that MOST needs a measurement: the arming
+    # threshold of the NET-DISPLACEMENT criterion above. Its correct value is
+    # the command at which a loaded GB37-50 reliably turns
+    # stall_min_position_delta_rad within stall_window_sec; below it, "has
+    # not moved 0.05 rad" is not a fault. 2.0 rad/s = 0.14 m/s at
+    # wheel_radius 0.070. 2026-08-25 carpet: net displacement >= 0.05 rad in
+    # 2 s from 0.786-1.429 rad/s (history-dependent), drive-off seen at
+    # 1.714 rad/s (claude/docs/NAV2_VELOCITY_FLOOR_2026-08-25.md) -- arming
+    # lower would latch healthy wheels. Ordinary teleop driving is well
+    # inside the armed band; the manoeuvre-slew twists are deliberately
+    # OUTSIDE it. Below it, LIVE wheels are watched by the ZERO-COUNT
+    # criterion instead (stall_silent_window_sec, below).
     #
-    # ⚠ DOUBLY LOAD-BEARING: it is ALSO the wheel regulator's SLOW-END FLOOR
-    # (FR-14 item 12, acceptance A17) -- at or below this magnitude the
-    # regulator holds its correction at 0.0, resets its integrator, and
-    # reports REGULATOR_OFF_BELOW_FLOOR. Deliberate sharing -- THE REGULATOR
-    # MAY ONLY ADD AUTHORITY WHERE HWR-30a IS WATCHING -- so the two are ONE
-    # number, not two that can drift. Lowering it extends the regulator's
-    # reach into the non-proportional slow end; the slow range itself is
-    # extended by the FIRMWARE OFFSET `a` (OP-32 G1), not by lowering this.
+    # MUST BE >= encoder_confirm_min_command_rad_s (refused at load): that
+    # one is "above this a healthy wheel at least counts", and this
+    # criterion must not judge displacement where a healthy wheel is not even
+    # expected to count.
+    #
+    # NOT the regulator's floor any more (split 2026-10-22, both 2.0 today):
+    # that is wheel_regulator_floor_rad_s (above), refused at load if below
+    # this value -- THE REGULATOR MAY ONLY ADD AUTHORITY WHERE HWR-30a IS
+    # WATCHING. Also the OP-25 rise edge of a displacement latch (below).
     stall_min_command_rad_s: 2.0
+
+    # ZERO-COUNT CRITERION -- user decision 2026-10-22 (option c). A LIVE wheel
+    # whose |requested command| is above encoder_confirm_min_command_rad_s
+    # (0.71, the drive-fault block -- the same number on purpose: "a healthy
+    # wheel commanded above this at least twitches, and a twitch registers a
+    # count") and whose encoder shows NO COUNT CHANGE AT ALL for this
+    # accumulated time trips: the same tier-1 latch, the same escalations,
+    # the same STALL_* reasons (logged as the zero-count criterion).
+    # "Count change" = the position moved by at least half of
+    # wheel_encoder_count_rad from where it was at the last change, in
+    # either direction -- NOT net displacement, so a twitch forward and back
+    # resets it. Accumulates only while LIVE, commanded above the threshold
+    # and not withheld by the alignment gate (or a drive fault); pauses when
+    # the command drops; resets on any count change, on leaving LIVE and on a
+    # latch. No upper bound on the command: above stall_min_command_rad_s the
+    # displacement criterion trips first under a steady command; this one
+    # only adds coverage for a command flickering across that threshold.
+    # A zero-count latch is released (OP-25) by a fall to
+    # stall_release_command_rad_s and a rise above
+    # encoder_confirm_min_command_rad_s -- so it can clear at slow driving.
+    # It does NOT catch a blocked wheel whose live encoder dithers +-1 count;
+    # below stall_min_command_rad_s such a wheel is not judged.
+    # TO-VERIFY: 2.0 s is chosen, not measured (the same as the encoder
+    # trigger's encoder_confirm_window_sec). The premise "a healthy wheel
+    # above 0.71 rad/s counts within this window" is the user's statement of
+    # 2026-10-22. The 2026-08-20 carpet ladder reported a non-zero measured
+    # wheel speed even at 0.57 rad/s (0.0055 rad/s, recorded there as
+    # settling and noise) -- consistent with it, not a test of it.
+    stall_silent_window_sec: 2.0
+
+    # One encoder count in wheel radians: 2*pi/3200 = 0.0019634954 rad.
+    # COUNTS_PER_OUTPUT_REV = 3200 (firmware include/motor_controller.hpp),
+    # confirmed to ~1 % by a rolling measurement; the firmware computes the
+    # position in double from the integer count, so every real change is a
+    # whole multiple of this. Not TO-VERIFY. Change it only with the firmware:
+    # gripperx_swerve_controller test_encoder_count_firmware reads the firmware
+    # sources and fails when the two differ.
+    wheel_encoder_count_rad: 0.0019634954084936
 
     # TO-VERIFY. How far the accumulated wheel position must move inside the
     # window to count as turning. 0.05 rad is ~2.9 deg of wheel rotation,
@@ -330,12 +385,19 @@ swerve_controller:
     # window.
     stall_min_position_delta_rad: 0.05
 
-    # OP-25 — WHAT COUNTS AS A "FRESH COMMAND". PROPOSAL, PENDING USER
-    # CONFIRMATION; OP-25 is recorded `open`.
+    # OP-25 — WHAT COUNTS AS A "FRESH COMMAND".
     # A tripped wheel stays latched off until its command has FALLEN to or
-    # below stall_release_command_rad_s and then RISEN back above
-    # stall_min_command_rad_s -- two edges, in that order, on the REQUESTED
-    # command. THE SAME HELD NON-ZERO COMMAND CAN NEVER RELEASE THE LATCH:
+    # below stall_release_command_rad_s and then RISEN back above the arming
+    # threshold of the criterion that set the latch -- two edges, in that
+    # order, on the REQUESTED command. PER-CRITERION RISE EDGE, DECIDED by the
+    # user 2026-10-29 (option a): a displacement latch rises above
+    # stall_min_command_rad_s, a zero-count latch above
+    # encoder_confirm_min_command_rad_s. A uniform 0.71 edge was tried and
+    # rejected the same day (audit M3): a displacement-latched wheel whose
+    # encoder dithers +-1 count, released by a slow command, was watched by
+    # nothing; kept latched, it escalates via stall_escalation_latched_sec.
+    # Must be < encoder_confirm_min_command_rad_s (refused at load).
+    # THE SAME HELD NON-ZERO COMMAND CAN NEVER RELEASE THE LATCH:
     # /cmd_vel streams at 30 Hz whether or not anything changed, so "clear on
     # the next command received" would re-energise, re-stall and chatter
     # with inrush current every cycle, worse for the thin lead than either
@@ -376,6 +438,132 @@ swerve_controller:
     # already makes them once-per-blockage; this only bounds a pathological
     # trip/release oscillation.
     stall_log_period_sec: 5.0
+
+    # --- WHOLE-DRIVE FAULT (user decision 2026-10-16) -----------------------
+    # A missing wheel encoder or a PERSISTENT stall stops the WHOLE drive:
+    # all four wheel velocity commands -> exactly 0.0 (steering untouched),
+    # LATCHED UNTIL THE STACK RESTARTS. No zero command, new command,
+    # controller deactivate/activate, re-configure or controller re-load
+    # clears it. Published latched on drive_fault_topic; Nav2 goals are
+    # cancelled by gripperx_control/drive_fault_nav_guard.
+    # Why: 2026-10-13 the BR encoder stayed LIVE_UNCONFIRMED (never counted)
+    # all day; HWR-30a above only watches LIVE wheels, so BR drove unwatched.
+    # Regulating on the other three was explicitly rejected by the user.
+    #
+    # EVERY THRESHOLD BELOW IS `TO-VERIFY`: conservative running defaults,
+    # chosen, NOT derived from any measurement. The controller's activation
+    # log line says the same.
+    drive_fault_enabled: true
+
+    # TO-VERIFY. TRIGGER 1 (encoder missing): a wheel whose provenance on
+    # wheel_feedback_valid_topic is NOT LIVE (LIVE_UNCONFIRMED, NO_ENCODER,
+    # INIT_FAILED or UNKNOWN) and whose |requested command| is above this.
+    # 0.71 rad/s = 0.05 m/s at r = 0.070: the TOP of the break-away range
+    # measured on carpet (0.57-0.71 rad/s, 2026-08-20), so a healthy wheel
+    # commanded above it turns and counts (user decision 2026-10-22; a
+    # twitch was usually visible below 0.57 already). THE SAME NUMBER arms
+    # HWR-30a's zero-count criterion for LIVE wheels (stall_silent_window_sec):
+    # this trigger watches the wheels that are NOT LIVE, that criterion the
+    # ones that are, from the same command upwards, so no wheel class has an
+    # unwatched band above it. Also the OP-25 rise edge of a zero-count stall
+    # latch. Must be <= stall_min_command_rad_s and above
+    # stall_release_command_rad_s (refused at load otherwise).
+    # LIVE_UNCONFIRMED AT STANDSTILL never trips: it is the boot state until
+    # the first count.
+    # A healthy encoder goes LIVE on its FIRST count change (one count =
+    # 0.00196 rad), so a wheel that actually turns confirms almost at once.
+    # Break-away on other ground (grass, gravel) is not measured.
+    encoder_confirm_min_command_rad_s: 0.71
+
+    # TO-VERIFY. ACCUMULATED driven-without-LIVE time before the fault
+    # latches, seconds. Accumulates only while the wheel is driven above
+    # the threshold and the alignment gate is not withholding the drive;
+    # pauses (does not reset) when the command drops; resets only when that
+    # wheel's provenance reaches LIVE. 2.0 s = 60 controller cycles.
+    # DESK: hw_firmware_mock simulates encoders (default all four 'ok',
+    # LIVE after the first simulated count). Its `simulated_encoders`
+    # parameter reproduces a missing encoder, e.g. the 2026-10-13 shape
+    # ['ok', 'ok', 'ok', 'unconfirmed'], which trips this on the desk.
+    encoder_confirm_window_sec: 2.0
+
+    # TRIGGER 2 (persistent stall) -- escalation of the tier-1 latch above.
+    # The tier-1 single-wheel latch is UNCHANGED and still handles a
+    # TEMPORARY stall. "Persistent" is, by USER DECISION 2026-10-16, any of
+    # these THREE:
+    #  (a) the same wheel trips again within this many seconds of its latch
+    #      clearing (0 = criterion off). TO-VERIFY.
+    stall_escalation_window_sec: 10.0
+    #  (b) a wheel stays latched for this many seconds, CONTINUOUSLY, while
+    #      its requested command is held above stall_release_command_rad_s
+    #      -- the OP-25 deadlock: such a latch can never clear, so the robot
+    #      would otherwise keep driving on three wheels indefinitely
+    #      (0 = criterion off). "Held" reuses stall_release_command_rad_s
+    #      rather than a second number: a command at or below it arms the
+    #      latch's release, i.e. it is exactly "not held". TO-VERIFY.
+    stall_escalation_latched_sec: 5.0
+    #  (c) a second wheel satisfies the stall criterion while one is latched
+    #      -- HWR-30 tier-2 territory (HWR-30b itself is still blocked).
+    #      NOTE: a frozen /hw/joint_states makes every wheel position freeze
+    #      at once, which satisfies (c) within one stall window while
+    #      driving -- with (c) on, a >= 1 s feedback dropout while driving
+    #      latches the drive fault until restart. Deliberate (no feedback =
+    #      unwatched drive), but TO-VERIFY with the user.
+    stall_escalate_on_multi_wheel: true
+    # NOT part of the user's definition: N tier-1 trips on one wheel since
+    # activation. The user did not choose "N trips"; the criterion stays
+    # available but is OFF (0).
+    stall_escalation_trips: 0
+
+    # Latched (KeepLast(1), RELIABLE, TRANSIENT_LOCAL), message
+    # gripperx_control_msgs/msg/DriveFault. Published on configure, on
+    # activate and on the trip cycle -- never per cycle.
+    drive_fault_topic: /swerve_controller/drive_fault
+
+    # Period of the repeated ERROR line while non-zero commands keep arriving
+    # into a latched fault. A LOGGING cadence, not a safety threshold, not
+    # TO-VERIFY.
+    drive_fault_log_period_sec: 2.0
+
+    # CRASH-SURVIVING MARKER (user decision 2026-10-16): on the trip the
+    # controller writes the fault here, and every (re)load of the controller
+    # re-adopts it -- so a crash-respawn of ros2_control_node does NOT clear
+    # the fault. tmpfs, so a reboot clears it. The ONLY other thing that
+    # removes it is the deliberate stack start, gripperx-bringup.sh, and that
+    # only on an explicit start (not on systemd's automatic Restart=on-failure)
+    # -- and an ACCEPTED operator clear (below), which deletes it before it
+    # releases the latch; if it cannot delete it, the clear fails.
+    # /run/gripperx is created for the ubuntu user by the unit's
+    # RuntimeDirectory=. A MANUAL `ros2 launch` does not remove it: a
+    # hand-started stack adopts a standing fault; clear it deliberately with
+    # `rm /run/gripperx/drive_fault`. "" disables the marker (the twin).
+    # SHARED BY EVERY STACK ON THE MACHINE, DELIBERATELY: a hand-started
+    # controller on the Pi (real firmware OR use_mock_firmware:=true) reads
+    # and writes this same file. Both directions only ever err towards
+    # "stopped": a hand-started stack adopts the service's fault, and a
+    # marker it writes is adopted by the service until the next explicit
+    # start clears it. A desk/mock run that should not touch the robot's
+    # fault state sets drive_fault_marker_path to "" (or another path) in the
+    # parameters it loads the controller with -- no launch argument does it.
+    # On the laptop /run/gripperx does not exist: the write fails with an
+    # ERROR and nothing is adopted.
+    drive_fault_marker_path: /run/gripperx/drive_fault
+
+    # OPERATOR CLEAR (SR-18 amendment 2026-11-09). Service type
+    # gripperx_control_msgs/srv/ClearDriveFault. Accepted ONLY for the reasons
+    # STALL_RETRIP, STALL_TRIP_COUNT, STALL_MULTI_WHEEL, STALL_LATCHED_HELD (a
+    # fixed list in drive_fault_monitor.hpp, deliberately NOT a parameter);
+    # ENCODER_MISSING and FEEDBACK_LOST stay restart-only. NO precondition: a
+    # drive command still held at the clear DRIVES OFF AT ONCE. No auth (lab
+    # network only, OP-51 (a)). CLI:
+    #   ros2 service call /swerve_controller/clear_drive_fault \
+    #     gripperx_control_msgs/srv/ClearDriveFault "{requester: 'cli', expected_reason: 0}"
+    drive_fault_clear_service: /swerve_controller/clear_drive_fault
+    # TO-VERIFY -- PROVISIONAL PLACEHOLDER, NOT A MEASUREMENT (OP-50 (a)).
+    # How long the service waits for the control loop to apply the clear
+    # before it reports failure (nothing changed). To be derived from the
+    # MEASURED controller update period; 0.5 s is 15 nominal periods at
+    # update_rate 30 and was chosen only to be clearly longer than one cycle.
+    drive_fault_clear_timeout_sec: 0.5
 
     # ── Steering alignment gate ─────────────────────────────────────────────
     # Withholds drive while the four steering modules are still travelling

@@ -37,7 +37,7 @@ def generate_launch_description():
 
     `odom_source:=ekf` (M4/DT-9, wired 2026-08-21): the realistic chain — wheel
     forward kinematics (`localization_input_node` -> /wheel/odom),
-    laser_scan_matcher (/laser/odom) and the IMU (/imu/data -> /imu/data/filtered)
+    laser_scan_matcher (/laser/odom) and the IMU (/imu/bno085/data -> /imu/data/filtered)
     fused by robot_localization, which then owns the odom->base_footprint TF and
     publishes /odometry/filtered itself. Nav2 needs no change either way.
 
@@ -45,18 +45,23 @@ def generate_launch_description():
     laptop" until 2026-08-21; the package is built and present in `install/`, so
     the reason had lapsed. Two things to know before reading results from it:
 
-    - **Gazebo's IMU carries no noise model** (`gripperx_v1.gazebo.xacro`: no
-      `<noise>` on the sensor), so this exercises the wiring and the kinematics,
-      NOT robustness against IMU bias or drift.
+    - **Gazebo's IMU noise is white only** (`gripperx_v1.gazebo.xacro`: gaussian,
+      per-axis sigma measured on the real BNO085 at standstill, no bias, no drift,
+      not quantised), so this exercises the wiring and the kinematics, NOT
+      robustness against IMU bias or drift.
     - `/ground_truth/odom` keeps publishing in EKF mode — the gz OdometryPublisher
       plugin is unconditional. It is the REFERENCE the fused estimate can be
       measured against, which is the point of the mode: the wheel-odometry scale
       moved +35 % (0.052 -> 0.070) and no drive test has validated it
       (internal `NAV2_HANDOVER` §3).
 
-    Note that `imu0` is the filter's ONLY absolute yaw source — `odom0` (wheel)
-    contributes rates only and `odom1` (laser) does not take yaw. On hardware,
-    where the IMU does not exist yet, that is a decision to make, not a setting.
+    The EKF has NO absolute yaw source: since 2.4 the twin runs the robot's
+    filter (localization.yaml), where `imu0` fuses the gyro yaw RATE only
+    (absolute IMU yaw stays off for good, user decision D2, 2026-10-22),
+    `odom0` (wheel) contributes rates and `odom1` (laser) does not take yaw.
+    Heading in the map frame is corrected by slam_toolbox/AMCL alone. Results
+    recorded before 2.4 (internal `NAV2_HANDOVER` §9) were made with IMU yaw
+    fused as an absolute source and are not directly comparable.
 
     Map -> odom: default `localization:=slam` runs slam_toolbox online (proven
     M2 chain), building the map as the robot drives — required for full-arena M3

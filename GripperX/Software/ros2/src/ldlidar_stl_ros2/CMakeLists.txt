@@ -24,7 +24,9 @@ if(BUILD_TESTING)
   find_package(ament_lint_auto REQUIRED)
   # the following line skips the linter which checks for copyrights
   # uncomment the line when a copyright and license is not present in all source files
-  #set(ament_cmake_copyright_FOUND TRUE)
+  # Skipped as in the other GripperX packages: the code is open source and the new files
+  # (scan_stamp.*, test_scan_stamp.cpp) carry no copyright line by user decision 2026-11-05.
+  set(ament_cmake_copyright_FOUND TRUE)
   # the following line skips cpplint (only works in a git repo)
   # uncomment the line when this package is not in a git repo
   #set(ament_cmake_cpplint_FOUND TRUE)
@@ -41,6 +43,9 @@ include_directories(
   ${CMAKE_CURRENT_SOURCE_DIR}/ldlidar_driver/include/networkcom/
   ${CMAKE_CURRENT_SOURCE_DIR}/ldlidar_driver/include/serialcom/
 )
+
+# GripperX: /scan stamp computation, separate so it is unit-testable without ROS.
+add_library(scan_stamp STATIC ${CMAKE_CURRENT_SOURCE_DIR}/src/scan_stamp.cpp)
 
 file(GLOB  LDLIDAR_DRI_CORE ${CMAKE_CURRENT_SOURCE_DIR}/ldlidar_driver/src/core/*.cpp)
 file(GLOB  LDLIDAR_DRI_DATARPC ${CMAKE_CURRENT_SOURCE_DIR}/ldlidar_driver/src/dataprocess/*.cpp)
@@ -59,7 +64,7 @@ add_executable(${PROJECT_NAME}_node
   ${LDLIDAR_DRI_SERIAL}
 )
 ament_target_dependencies(${PROJECT_NAME}_node rclcpp sensor_msgs)
-target_link_libraries(${PROJECT_NAME}_node pthread)
+target_link_libraries(${PROJECT_NAME}_node pthread scan_stamp)
 
 # Install
 install(TARGETS ${PROJECT_NAME}_node
@@ -70,5 +75,12 @@ install(DIRECTORY launch rviz2
   DESTINATION share/${PROJECT_NAME}/
 )
 
+if(BUILD_TESTING)
+  find_package(ament_cmake_gtest REQUIRED)
+  ament_add_gtest(test_scan_stamp test/test_scan_stamp.cpp)
+  target_link_libraries(test_scan_stamp scan_stamp)
+  # Clock check: per-point stamps (system_clock) vs node->now() (rclcpp ROS time).
+  ament_target_dependencies(test_scan_stamp rclcpp)
+endif()
 
 ament_package()

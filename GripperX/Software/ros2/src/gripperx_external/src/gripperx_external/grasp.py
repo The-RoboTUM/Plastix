@@ -32,7 +32,7 @@ gates the **reached check** and nothing else. They are separate:
 :attr:`GraspOffset.tolerance_configured` covers the reached check, and
 :func:`check_reached` returns ``known=False`` while the tolerance is TO-VERIFY.
 An unknown reached check must be reported loudly by the caller; it must never
-fall back to a number. ``offset_x_m: 0.360`` remains a user specification and
+fall back to a number. ``offset_x_m: 0.371`` (user decision 2026-10-13, model-derived) remains a decision, not a measurement, and
 ``tolerance_m`` remains TO-VERIFY.
 
 Pure module: no rclpy, no costmap, no TF. The acceptance test for a candidate

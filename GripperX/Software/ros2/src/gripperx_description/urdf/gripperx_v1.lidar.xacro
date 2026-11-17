@@ -46,11 +46,18 @@
 
        sample_count 640 keeps the angular resolution at 0.5 deg/sample that the
        previous 720-over-360-deg setting had. -->
+  <!-- Mount, collision envelope: gripperx_geometry/config/geometry.yaml
+       (lidar_mount_xyz, lidar_envelope_size, lidar_envelope_center), checked
+       consumers - edit them there, not here. -->
+  <xacro:property name="lidar_mount_xyz" value="0.2488 0.0000 0.1034" />
+  <xacro:property name="lidar_envelope_size" value="0.040 0.040 0.035" />
+  <xacro:property name="lidar_envelope_center" value="0.247600 -0.000151 0.097500" />
+
   <xacro:macro
     name="gripperx_lidar"
     params="
       parent:=chassis_link
-      xyz:='0.2488 0 0.1034'
+      xyz:=${lidar_mount_xyz}
       rpy:='0 0 0'
       add_gazebo:=false
       topic:=/scan
@@ -78,10 +85,19 @@
         </material>
       </visual>
 
+      <!-- COLLISION = the envelope the part never leaves (user-measured 40 x 40 x
+           35 mm, 2026-10-12, rotating head included), standing on the lid, front
+           edge flush with the lid, laterally centred under the arm. Placed in
+           chassis_link by geometry.yaml and converted into this frame here, so the
+           scan frame (xyz) can move without moving the box. Until 2026-10-13 this
+           was the visual cylinder above (70 mm x 50 mm), which the arm safety
+           filter (SR-17) encloses as a 70 x 70 x 50 mm box: larger than the part,
+           and the source of false arm contacts with lidar_link. Assumes
+           rpy = 0 0 0 (the only mount used). -->
       <collision>
-        <origin xyz="0 0 0" rpy="0 0 0" />
+        <origin xyz="${round(float(lidar_envelope_center.split()[0]) - float(xyz.split()[0]), 6)} ${round(float(lidar_envelope_center.split()[1]) - float(xyz.split()[1]), 6)} ${round(float(lidar_envelope_center.split()[2]) - float(xyz.split()[2]), 6)}" rpy="0 0 0" />
         <geometry>
-          <cylinder radius="0.035" length="0.05" />
+          <box size="${lidar_envelope_size}" />
         </geometry>
       </collision>
     </link>

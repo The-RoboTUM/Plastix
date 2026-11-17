@@ -42,6 +42,25 @@ bool WheelRegulator::validate(const WheelRegulatorConfig & config, std::string &
     error = "wheel regulator output limit (max_wheel_angular_speed) must be > 0";
     return false;
   }
+  if (!std::isfinite(config.floor_rad_s) || config.floor_rad_s <= 0.0) {
+    error = "wheel_regulator_floor_rad_s must be finite and > 0";
+    return false;
+  }
+  return true;
+}
+
+bool WheelRegulator::validate_floor(
+  const WheelRegulatorConfig & config, const StallDetectorConfig & stall, std::string & error)
+{
+  // `!(a >= b)` rather than `a < b` so that a NaN on either side is refused too.
+  if (!(config.floor_rad_s >= stall.min_command_rad_s)) {
+    error =
+      "wheel_regulator_floor_rad_s (" + std::to_string(config.floor_rad_s) +
+      ") must be >= stall_min_command_rad_s (" + std::to_string(stall.min_command_rad_s) +
+      "): THE REGULATOR MAY ONLY ADD AUTHORITY WHERE HWR-30a IS WATCHING. Below the stall "
+      "arming threshold nothing would catch a wheel the regulator drives harder into a blockage.";
+    return false;
+  }
   return true;
 }
 
@@ -162,17 +181,17 @@ WheelRegulatorResult WheelRegulator::update(const WheelRegulatorInput & input)
     // ------------------------------------------------- THE SLOW-END FLOOR
     // FR-14 item 12, acceptance A17.
     //
-    // The floor IS HWR-30a's arming threshold, and the coupling is the point:
-    // the regulator may only add authority where HWR-30a is watching. Above the
-    // threshold a stalled wheel is caught and latched off within
-    // stall_window_sec; below it nothing is watching, so a regulator that kept
-    // working there would push effort into a machine with no detector behind
-    // it. The comparison is character-for-character the detector's own arming
-    // test (`command_magnitude > config_.min_command_rad_s` in
-    // stall_detector.cpp), on the same quantity — the requested command, before
-    // any correction — and the value is passed in per cycle from the detector's
-    // own config rather than copied, so the two provably cannot disagree, not
-    // even at the boundary. Decoupling them removes this safety property.
+    // The floor is config_.floor_rad_s, the regulator's own number since
+    // 2026-10-22 (until then it WAS HWR-30a's arming threshold). The safety
+    // property it carries is unchanged: the regulator may only add authority
+    // where HWR-30a is watching. Above the detector's threshold a stalled wheel
+    // is caught and latched off within stall_window_sec; below it nothing is
+    // watching, so a regulator working there would push effort into a machine
+    // with no detector behind it. The comparison is the same strict `>` on the
+    // same quantity as the detector's arming test (`command_magnitude >
+    // config_.min_command_rad_s` in stall_detector.cpp) — the requested
+    // command, before any correction — so floor >= threshold is exactly the
+    // property, and validate_floor() refuses any configuration that breaks it.
     //
     // 2.0 rad/s is ~0.14 m/s at the measured rolling radius (0.070 m), safely
     // above the ~0.06 m/s below which the plant stops being proportional
@@ -183,12 +202,13 @@ WheelRegulatorResult WheelRegulator::update(const WheelRegulatorInput & input)
     // NO HYSTERESIS, deliberately. A command chattering across the floor resets
     // that wheel's integrator on every crossing, which is bounded and safe: the
     // correction can only ever restart at kp*error. A release band would mean
-    // regulating below the floor — i.e. adding authority where HWR-30a is not
-    // watching, the one thing this gate exists to prevent — for a width nobody
-    // has measured. (stall_release_command_rad_s is not reusable here: it sits
-    // far below this floor.)
+    // regulating below the floor — in the slow end item 12 keeps the regulator
+    // out of, and with the floor at its minimum (equal to the stall threshold)
+    // where HWR-30a is not watching — for a width nobody has measured.
+    // (stall_release_command_rad_s is not reusable here: it sits far below
+    // this floor.)
     const bool above_floor =
-      setpoint_usable && std::fabs(input.setpoint[i]) > input.stall_min_command_rad_s;
+      setpoint_usable && std::fabs(input.setpoint[i]) > config_.floor_rad_s;
 
     const bool regulate = provenance_live && measurement_usable && setpoint_usable && above_floor &&
                           feed_fresh && !input.stall_latched[i];

@@ -1,0 +1,119 @@
+leader_arm_node:
+  ros__parameters:
+    # Serial port of the leader's USB board. Empty = auto-detect: used only if
+    # exactly ONE entry exists under /dev/serial/by-id/ (or /dev/gripperx_leader
+    # from udev/99-gripperx-leader.rules). Otherwise the node refuses to start.
+    port: ""
+    baud: 1000000
+    # Same order as the follower (arm_poses.yaml): limb1..limb5, gripper.
+    servo_ids: [1, 2, 3, 4, 5, 6]
+    # Default taken over from LeRobot's teleop rate; NOT a requirement.
+    rate_hz: 30.0
+    # Optional. See leader_calibration.example.yaml. Empty = no radians published.
+    calibration_file: ""
+    # Consecutive failed reads before streaming is disarmed and a disarm is
+    # published on /arm/leader/enable.
+    max_consecutive_read_errors: 5
+
+    # --- Self-alignment (user decision 2026-10-13, FR-17): on J the leader drives
+    # ITSELF to the follower's present pose, goes limp, then requests leader mode.
+    # This MOVES THE LEADER: every run is a test under the per-test motion approval
+    # (SR-1). false = J requests leader mode directly, as before 2026-10-13.
+    align_enabled: true
+    align_max_joint_velocity_rad_s: 0.3      # given 2026-10-13; all joints arrive together
+    # Torque_Limit register 48 (SRAM, LeRobot STS_SMS_SERIES_CONTROL_TABLE), 0..1000;
+    # LeRobot so_follower.py writes 500 as "50% of max torque". 300 for the first test.
+    # Never raised above the servo's present value; restored after torque-off. TO-VERIFY.
+    align_torque_limit: 300
+    # Present vs commanded ramp setpoint; above it = held/pushed/obstructed -> abort.
+    align_deviation_tolerance_rad: 0.1       # TO-VERIFY
+    # Arrival on every joint; keep well below the follower's 10 deg activation match.
+    align_arrival_tolerance_rad: 0.035       # TO-VERIFY
+    align_settle_timeout_sec: 3.0            # after the ramp's end, TO-VERIFY
+    # Before torque-on the leader must be still for this long (else: being handled),
+    # and must not move on torque-on by more than align_torque_on_tolerance_rad.
+    align_still_check_sec: 0.1               # TO-VERIFY
+    align_still_tolerance_rad: 0.02          # TO-VERIFY
+    align_torque_on_tolerance_rad: 0.02      # TO-VERIFY
+    # Keep-out from the recorded leader stops (travel_min/max_rad, leader_calibration.yaml).
+    # Allowed band per joint: [travel_min + margin, travel_max - margin]. A follower angle
+    # outside it is clamped to the band edge when edge distance + arrival tolerance stays
+    # within the activation tolerance below; farther outside it is refused. Only joints
+    # that actually move are checked against the band (user decision 2026-10-15).
+    align_travel_margin_rad: 0.05            # TO-VERIFY
+    # The follower's leader-mode activation tolerance is NOT repeated here: it is read
+    # from arm_action_server's leader.activation_match_tolerance_rad in this file
+    # ("" = gripperx_arm share config/arm_safety_filter.yaml). Every leader joint within
+    # it of the follower -> J enables leader mode directly, nothing moves (user decision
+    # 2026-10-15). File or key missing -> every align request refused.
+    follower_safety_filter_file: ""
+    # MANDATORY band on Present_Voltage, checked before and (one servo per tick) during
+    # the ramp; unset (0) refuses every alignment. Supply: 7.4 V since 2026-10-13 (user;
+    # servo labels read 7.4 V models; servos report 7.6-7.7 V). The servos' own
+    # Max_Voltage_Limit registers read 12.0 V on IDs 1,3,4,5 and 8.0 V on ID 2, so they
+    # do not protect a 7.4 V part: this band does. Volts assume 0.1 V/LSB: raw 122-123
+    # on the earlier 12 V supply, 76-77 on 7.4 V (two points, consistent); TO-VERIFY
+    # against a multimeter.
+    align_voltage_min_v: 6.5                 # TO-VERIFY (7.4 V servos)
+    align_voltage_max_v: 8.4                 # TO-VERIFY (2S full charge)
+    # The follower's CALIBRATED URDF angles (arm_joint_state_relay); /arm/joint_states
+    # is raw ticks as radians and must not be used. By servo id 1..6.
+    follower_joint_states_topic: /joint_states
+    follower_joint_names: [arm_limb1_joint, arm_limb2_joint, arm_limb3_joint,
+                           arm_limb4_joint, arm_limb5_joint, arm_gripper_joint]
+    # The relay republishes /arm/joint_states, which arm_action_server publishes at
+    # 2 Hz (JOINT_STATE_RATE_HZ): 1.5 s = three periods. TO-VERIFY.
+    follower_pose_timeout_sec: 1.5
+    follower_motion_tolerance_rad: 0.05      # follower moved during alignment -> abort, TO-VERIFY
+
+    # --- Virtual wall (user decisions 2026-10-15/16, progressive wall 2026-10-20). While leader
+    # mode is active (follower /arm/leader/state 'active...' and the enable request on), a
+    # leader joint beyond the follower's command edge - its joint limit minus
+    # leader.limit_command_margin_ticks, both read from follower_safety_filter_file and
+    # computed by gripperx_arm.leader_band, never repeated here - gets torque on ITS servo
+    # only, its goal 2 ticks beyond the wall and a Torque_Limit that grows with the depth beyond:
+    # a spring, no push-back ramp. It engages beyond the wall by more than
+    # wall_engage_depth_rad and lets go as soon as the joint is back inside. A joint beyond
+    # at arming gets it from the next tick. Released on Space, J, enable withdrawn, follower
+    # leaving leader mode, read error, node shutdown (torque off on every leader servo,
+    # confirmed, retried while not). This puts TORQUE ON THE LEADER: every first run is a test under the
+    # per-test motion approval (SR-1). false = no wall, the leader stays limp in leader mode.
+    wall_enabled: true
+    # Torque_Limit register 48 (SRAM, never the EEPROM) at and beyond full depth, 0..1000
+    # (500 = 50 %); never raised above the servo's present value, restored after torque-off.
+    wall_torque_limit: 500                   # TO-VERIFY (user decision 2026-10-20, a test value)
+    # Depth beyond the wall at which wall_torque_limit is reached; linear in between.
+    wall_full_force_depth_rad: 0.1           # TO-VERIFY (user decision 2026-10-20, a test value)
+    # The spring's floor (Torque_Limit at depth 0, linear to wall_torque_limit), so the wall
+    # is felt early; 1..wall_torque_limit (0 would brake the servo). It applies from the
+    # engage depth on. It also caps the 2-tick detent between the wall and the hold tick,
+    # where the servo pulls OUTWARD toward the hold tick (README "Inside: released at
+    # once"). Implementation start value 2026-10-20, not a user value.
+    wall_min_torque_limit: 100               # TO-VERIFY
+    # Present_Voltage band: align_voltage_min_v / align_voltage_max_v above (checked before
+    # engaging and, one held servo per tick, while holding).
+    # Engage deadband (user decision 2026-10-20): a joint engages only once beyond the wall
+    # by MORE than this; back inside (depth <= 0) its torque goes off at once and its
+    # Torque_Limit is restored - torque is never left on with Torque_Limit 0 (the STS3215
+    # brakes then: the leader stuck in the wall, robot 2026-10-20). Engage and release lie
+    # more than this apart, so at >= 2 ticks a reading jittering by +-1 tick never toggles
+    # torque. Also the re-arm of a joint limp after an overload release: back inside ->
+    # free, engaging again beyond by more than this. Start value 2 ticks = 2 * 2 pi / 4096
+    # = 0.003068 rad, rounded up so a reading exactly 2 ticks beyond stays in the deadband.
+    wall_engage_depth_rad: 0.00307           # TO-VERIFY (user decision 2026-10-20: 2 ticks)
+    # Overload release, thermal protection (no position breakaway - mechanical stops sit
+    # close behind several walls): a joint beyond the wall with |Present_Load| >=
+    # wall_overload_load and not moving inward by wall_overload_progress_rad for
+    # wall_overload_time_s -> torque off, limp until back inside the wall. Load is
+    # capped by the Torque_Limit (most likely), so it can only fire where the spring has
+    # reached wall_overload_load: must be <= wall_torque_limit (validated).
+    wall_overload_time_s: 2.0                # TO-VERIFY (user decision 2026-10-16)
+    # Present_Load (reg 60) magnitude, bits 0-9, raw 0..1000 - most likely per mille of the
+    # maximum PWM duty, not a calibrated torque; unit and direction bit 10 TO-VERIFY on the
+    # leader. Raw, not scaled. User decision 2026-10-16: a parameter; the value is an
+    # implementation start value, not a user value.
+    wall_overload_load: 300                  # TO-VERIFY
+    # Same: start value chosen with the 2026-10-16 redesign, not a user value.
+    wall_overload_progress_rad: 0.01         # TO-VERIFY
+    # The follower's leader-mode state (arm_action_server, transient_local).
+    follower_leader_state_topic: /arm/leader/state

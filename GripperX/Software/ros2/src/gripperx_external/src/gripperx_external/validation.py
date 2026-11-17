@@ -141,6 +141,10 @@ NO_LINE_CALIBRATION = "NO_LINE_CALIBRATION"
 #: DATUM_CHANGED - the pose no longer means what it did - and LOCAL for the
 #: reason above.
 LINE_CALIBRATION_CHANGED = "LINE_CALIBRATION_CHANGED"
+#: The arm is not known to be idle at home (/arm/state stale, unknown, busy or away
+#: from home): no NavigateToPose - never drive with the arm out (audit AP1 finding
+#: H-pre, user decision 2026-10-13 option a).
+ARM_NOT_HOME = "ARM_NOT_HOME"
 INTERNAL_ERROR = "INTERNAL_ERROR"
 
 #: Our-side failures. Everything else is the peer's or the world's.
@@ -155,6 +159,7 @@ _LOCAL_REASONS = frozenset(
         GEOFENCE_NOT_CONFIGURED,
         NO_LINE_CALIBRATION,
         LINE_CALIBRATION_CHANGED,
+        ARM_NOT_HOME,
     }
 )
 
@@ -543,6 +548,10 @@ class DispatchContext:
     line_calibration_unchanged: bool
     #: ``(x, y, yaw)`` of the resolved goal, re-checked against the costmap.
     pose: Tuple[float, float, float]
+    #: The arm is known idle and at home (fresh /arm/state). No default: a caller
+    #: that forgets it must not get a pass.
+    arm_ready: bool
+    arm_detail: str = ""
     max_teleop_mode_age_sec: float = 2.0
     required_teleop_mode: str = "autonomous"
 
@@ -580,6 +589,11 @@ def validate_dispatch(
             LINE_CALIBRATION_CHANGED,
             "the Octopus line calibration was replaced, reset or lost with its map "
             "session since validation; the pose no longer means what it did",
+        )
+    if not dctx.arm_ready:
+        return _reject(
+            ARM_NOT_HOME,
+            dctx.arm_detail or "the arm is not known to be idle at home",
         )
 
     verdict = check_pose(ctx, dctx.pose[0], dctx.pose[1], dctx.pose[2])

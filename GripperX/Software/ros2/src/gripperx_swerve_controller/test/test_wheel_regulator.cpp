@@ -15,6 +15,7 @@
 
 #include <array>
 #include <cmath>
+#include <limits>
 #include <string>
 
 #include "gripperx_swerve_controller/wheel_regulator.hpp"
@@ -49,6 +50,7 @@ WheelRegulatorConfig test_config()
   config.max_sample_age_sec = 0.2;
   config.output_limit_rad_s = 12.0;
   config.assume_live_provenance = false;
+  config.floor_rad_s = 2.0;
   return config;
 }
 
@@ -72,11 +74,6 @@ struct Rig
   std::array<double, kNumWheels> position{};
   std::array<int, kNumWheels> provenance{all_live()};
   std::array<bool, kNumWheels> latched{};
-  /// THE SLOW-END FLOOR, exactly as the controller supplies it: HWR-30a's own
-  /// arming threshold, read from the detector's config and handed in per cycle.
-  /// Mutable here so a test can MOVE the threshold and watch the floor follow —
-  /// the property that distinguishes a coupling from a snapshot.
-  double stall_min_command_rad_s{StallDetectorConfig{}.min_command_rad_s};
 
   explicit Rig(const WheelRegulatorConfig & config) : regulator(config) {}
 
@@ -102,7 +99,6 @@ struct Rig
     input.position_valid = all_true();
     input.provenance = provenance;
     input.stall_latched = latched;
-    input.stall_min_command_rad_s = stall_min_command_rad_s;
     return regulator.update(input);
   }
 
@@ -799,11 +795,13 @@ TEST(WheelRegulatorStatus, EachGateReportsItsOwnReason)
 // ---------------------------------------------------------------------------
 // THE SLOW-END FLOOR — FR-14 item 12, acceptance A17.
 //
-// THE FLOOR IS NOT A NUMBER OF ITS OWN: it is HWR-30a's arming threshold
-// stall_min_command_rad_s, handed in per cycle from the detector's own config.
-// The coupling IS the safety property — the regulator may only add authority
-// where the stall detector is watching — so the last test in this block checks
-// that it is a coupling and not a copy.
+// THE FLOOR IS ITS OWN NUMBER since 2026-10-22 (WheelRegulatorConfig::floor_rad_s,
+// wheel_regulator_floor_rad_s); until then it WAS HWR-30a's arming threshold.
+// The safety property that coupling carried — the regulator may only add
+// authority where the stall detector is watching — is now the inequality
+// floor >= stall threshold, refused at configure by validate_floor(); the last
+// tests in this block check that rule. test_config() pins the floor at 2.0, the
+// value the A17 scenarios below are written against.
 // ---------------------------------------------------------------------------
 TEST(WheelRegulatorFloor, BelowTheFloorThereIsNoCorrectionAndTheIntegratorIsHeldReset)
 {
@@ -839,7 +837,6 @@ TEST(WheelRegulatorFloor, TheReasonIsItsOwnCodeAndNotTheMissingMeasurementOne)
   // machine cannot be regulated here" from "the feedback is missing". Same
   // cycle, same wheel count, two different findings.
   Rig rig(test_config());
-  rig.stall_min_command_rad_s = 2.0;
 
   WheelRegulatorInput input;
   input.now_sec = kDt;
@@ -849,7 +846,6 @@ TEST(WheelRegulatorFloor, TheReasonIsItsOwnCodeAndNotTheMissingMeasurementOne)
   input.position = uniform(0.0);
   input.position_valid = all_true();
   input.provenance = all_live();
-  input.stall_min_command_rad_s = rig.stall_min_command_rad_s;
 
   const auto result = rig.regulator.update(input);
   EXPECT_EQ(result.status[0], gripperx_swerve_controller::kRegulatorOffBelowFloor);
@@ -860,11 +856,12 @@ TEST(WheelRegulatorFloor, TheReasonIsItsOwnCodeAndNotTheMissingMeasurementOne)
   EXPECT_EQ(result.status[3], gripperx_swerve_controller::kRegulatorOffNoMeasurement);
 }
 
-TEST(WheelRegulatorFloor, ExactlyAtTheFloorIsOffBecauseTheDetectorIsNotArmedThere)
+TEST(WheelRegulatorFloor, ExactlyAtTheFloorIsOffSameStrictComparisonAsTheDetector)
 {
-  // THE BOUNDARY IS THE DETECTOR'S BOUNDARY. stall_detector.cpp arms on
-  // `command_magnitude > min_command_rad_s`, so AT the threshold nothing is
-  // watching — and the regulator must be off in exactly that band, not one
+  // THE SAME STRICT `>` AS THE DETECTOR. stall_detector.cpp arms on
+  // `command_magnitude > min_command_rad_s`; the floor gate compares the same
+  // way, so with floor == threshold (the smallest validate_floor() accepts)
+  // the regulator is off exactly where nothing is watching, not one
   // comparison wider.
   Rig rig(test_config());
   const auto result = rig.run(1.0, uniform(2.0), uniform(1.0));
@@ -970,25 +967,21 @@ TEST(WheelRegulatorFloor, ChatterAcrossTheFloorCannotWindUp)
   EXPECT_EQ(floored, 300);
 }
 
-TEST(WheelRegulatorFloor, TheFloorFOLLOWSTheStallThresholdAndIsNotASnapshotOfIt)
+TEST(WheelRegulatorFloor, TheFloorIsTheConfiguredValueAndMovesWithAReconfigure)
 {
-  // THE SAFETY PROPERTY OF THE WHOLE DESIGN. If someone moves HWR-30a's arming
-  // threshold, the regulator's floor must move with it, so that "the regulator
-  // only adds authority where the detector is watching" survives the edit. A
-  // value copied once into the regulator's own config would pass every other
-  // test in this file and fail this one.
-  Rig rig(test_config());
+  // The floor is read from the regulator's own config on every cycle: a
+  // configuration that moves it moves the regulator's coverage with it.
+  WheelRegulatorConfig config = test_config();
+  Rig rig(config);
   const auto setpoint = uniform(2.5);
   const auto measured = uniform(1.0);
 
-  rig.stall_min_command_rad_s = 2.0;
   auto result = rig.run(1.0, setpoint, measured);
   ASSERT_EQ(result.status[0], gripperx_swerve_controller::kRegulatorActive);
   ASSERT_GT(result.correction[0], 0.0);
 
-  // The detector is told to arm only above 3.0 rad/s. The regulator's coverage
-  // must retreat with it on the very next cycle, with no reconfigure.
-  rig.stall_min_command_rad_s = 3.0;
+  config.floor_rad_s = 3.0;
+  rig.regulator.configure(config);
   result = rig.step(setpoint, measured);
   for (std::size_t i = 0; i < kNumWheels; ++i) {
     EXPECT_EQ(result.status[i], gripperx_swerve_controller::kRegulatorOffBelowFloor)
@@ -997,21 +990,63 @@ TEST(WheelRegulatorFloor, TheFloorFOLLOWSTheStallThresholdAndIsNotASnapshotOfIt)
     EXPECT_EQ(rig.regulator.integrator(i), 0.0) << "wheel " << i;
   }
 
-  // And back down again: the same command is inside the watched band once more.
-  rig.stall_min_command_rad_s = 2.0;
-  result = rig.step(setpoint, measured);
+  config.floor_rad_s = 2.0;
+  rig.regulator.configure(config);
+  result = rig.run(1.0, setpoint, measured);
   for (std::size_t i = 0; i < kNumWheels; ++i) {
     EXPECT_EQ(result.status[i], gripperx_swerve_controller::kRegulatorActive) << "wheel " << i;
     EXPECT_GT(result.correction[i], 0.0) << "wheel " << i;
   }
 }
 
-TEST(WheelRegulatorFloor, TheDefaultFloorIsTheStallDetectorsOwnDefault)
+TEST(WheelRegulatorFloor, AFloorBelowTheStallThresholdIsRefused)
 {
-  // ONE DECLARATION, NOT TWO. The input's default is taken from
-  // StallDetectorConfig rather than written out as a literal, so a caller that
-  // forgets to set the floor still gets HWR-30a's threshold — and gets a floor
-  // rather than none, which is the safe direction.
-  WheelRegulatorInput input;
-  EXPECT_EQ(input.stall_min_command_rad_s, StallDetectorConfig{}.min_command_rad_s);
+  // THE SAFETY PROPERTY OF THE WHOLE DESIGN, as a configure-time rule: the
+  // regulator may only add authority where HWR-30a is watching. Both gates are
+  // a strict `>` on the same requested magnitude, so floor == threshold is the
+  // lowest acceptable floor and anything below it is refused.
+  StallDetectorConfig stall;
+  stall.min_command_rad_s = 0.71;
+  WheelRegulatorConfig config = test_config();
+  std::string error;
+
+  config.floor_rad_s = 2.0;
+  EXPECT_TRUE(WheelRegulator::validate_floor(config, stall, error)) << error;
+  config.floor_rad_s = stall.min_command_rad_s;
+  EXPECT_TRUE(WheelRegulator::validate_floor(config, stall, error)) << error;
+
+  config.floor_rad_s = std::nextafter(stall.min_command_rad_s, 0.0);
+  error.clear();
+  EXPECT_FALSE(WheelRegulator::validate_floor(config, stall, error));
+  EXPECT_NE(error.find("wheel_regulator_floor_rad_s"), std::string::npos) << error;
+  EXPECT_NE(error.find("stall_min_command_rad_s"), std::string::npos) << error;
+
+  config.floor_rad_s = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(WheelRegulator::validate_floor(config, stall, error));
+  config.floor_rad_s = 2.0;
+  stall.min_command_rad_s = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_FALSE(WheelRegulator::validate_floor(config, stall, error));
+}
+
+TEST(WheelRegulatorFloor, ANonPositiveFloorIsRefused)
+{
+  WheelRegulatorConfig config = test_config();
+  std::string error;
+  config.floor_rad_s = 0.0;
+  EXPECT_FALSE(WheelRegulator::validate(config, error));
+  config.floor_rad_s = -1.0;
+  EXPECT_FALSE(WheelRegulator::validate(config, error));
+  config.floor_rad_s = std::numeric_limits<double>::infinity();
+  EXPECT_FALSE(WheelRegulator::validate(config, error));
+}
+
+TEST(WheelRegulatorFloor, TheDefaultsSatisfyTheRule)
+{
+  // A caller that sets nothing gets a floor, and a floor that is not below the
+  // detector's default threshold.
+  std::string error;
+  EXPECT_TRUE(WheelRegulator::validate(WheelRegulatorConfig{}, error)) << error;
+  EXPECT_TRUE(
+    WheelRegulator::validate_floor(WheelRegulatorConfig{}, StallDetectorConfig{}, error))
+    << error;
 }

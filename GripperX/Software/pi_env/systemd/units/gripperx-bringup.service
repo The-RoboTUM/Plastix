@@ -21,6 +21,13 @@ User=ubuntu
 Group=ubuntu
 Environment=HOME=/home/ubuntu
 ExecStart=/usr/local/bin/gripperx-bringup.sh
+# /run/gripperx (tmpfs, owned by User=) for the whole-drive-fault marker that
+# swerve_controller writes. PRESERVED across stop/restart so that only
+# gripperx-bringup.sh's deliberate-start check removes the marker; a reboot
+# clears it with the rest of /run.
+RuntimeDirectory=gripperx
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
 
 # --- STOP CONTRACT (SR-12 / OP-20 option E) ---------------------------------
 # Until 2026-08-19 this unit had no KillMode, no KillSignal, no ExecStop and no

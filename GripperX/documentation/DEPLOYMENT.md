@@ -53,7 +53,7 @@
 > discovering.
 
 
-**Status:** binding operational runbook for the real robot; see the banner below for current state.
+**What / for whom / status:** binding operational runbook for the deployer and operator of the real robot; see the banner below for current state. Content last updated 2026-11-17 (unit list §0.1, features added since 2026-09-30 in §7); sections not named there are as dated in their own text.
 
 > ## Applies to the REAL robot — LIVE and in use
 > **This runbook is current and binding.** The robot is reassembled and in daily use: firmware is
@@ -71,9 +71,9 @@
 >
 > - **Do not assume the systemd unit is what is running — verify it, don't inherit the last entry
 >   in this document.** Bringup was hand-launched in 2026-08 (`setsid --fork gripperx-bringup.sh`),
->   which is the origin of this caution, but that state is gone: `journal/archive/2026-09-21_28b109e6.md:99`
->   records a session verifying on the machine that bringup is **systemd-owned**, `MainPID 832`,
->   single instance inside the unit cgroup. Re-measured by the coordinator on **2026-09-23 19:36
+>   which is the origin of this caution, but that state is gone: an on-machine check on 2026-09-21 verified
+>   that bringup is **systemd-owned**, `MainPID 832`,
+>   single instance inside the unit cgroup. Re-measured on **2026-09-23 19:36
 >   CEST**, over read-only SSH (`systemctl show gripperx-bringup.service`): `ActiveState=active`,
 >   `SubState=running`, `MainPID=842`, `ExecMainStartTimestamp=Wed 2026-09-23 10:37:51 CEST`, and
 >   every node (`steer_servo_node`, `teleop_mux_node`, `robot_state_publisher`,
@@ -106,7 +106,7 @@ repository, commit, and `git pull` onto the Pi, and defines a finished deploy as
 status`. For anything under `systemd/` that procedure produces a spotless working tree and an
 unchanged robot, and the completion check cannot tell the difference: a repointed script still
 `git pull`s clean, still starts, still reports `active`, and still runs the OLD code, silently
-(`CLAUDE.md` §11).
+(this is the reason for the check in §0).
 
 **After changing anything under `Software/pi_env/systemd/`, on the Pi:**
 
@@ -165,6 +165,44 @@ resident process (`gripperx-button.service`), so it keeps executing the OLD copy
 restarted. Restarting `gripperx-button.service` is not a motion event — the daemon only reads a GPIO line —
 but it does mean the button is briefly dead, so do it deliberately rather than as a side effect.
 
+### 0.1 The units in `Software/pi_env/systemd/units/` (as of 2026-11-17)
+
+| Unit | What it runs | Relation to the motion stack |
+|---|---|---|
+| `gripperx-agent.service` | micro-ROS agent for the ESP32 (Docker) | independent; first in Mode R (shutdown-button short press: restart of the ROS stack) start order |
+| `gripperx-bringup.service` | URDF, ros2_control, swerve controller, steering/arm nodes, LiDAR, BNO085 IMU (§7.5) | the motion stack: **restart is an SR-1 event** |
+| `gripperx-mapping.service` | EKF, laser odometry, `slam_toolbox` | `Requires=` bringup, 20 s delay |
+| `gripperx-navigation.service` | Nav2 | `Requires=` mapping, 15 s delay |
+| `gripperx-external.service` | Octopus link (§3.3) | `Wants=` navigation, 15 s delay |
+| `gripperx-camera.service` | front camera driver `jpeg_camera` (§7.6) | **outside** the motion stack: no `Requires=`/`PartOf=`; a stack stop or Mode R does not touch it; restarting it needs no SR-1 approval |
+| `gripperx-button.service` | clean-shutdown button daemon (GPIO17: short = stack restart, long = halt) | resident process, see the trap in §0 |
+| `gripperx-wifi.service` + `.timer` | WiFi reconnect every 30 s | independent |
+| `gripperx.target` | proposal, installed but disabled, inert | none |
+
+`gripperx-stack-stop`'s `STOP_ORDER`/`START_ORDER` cover agent, bringup, mapping, navigation and
+external — not the camera. The camera unit's own header (`gripperx-camera.sh`, `gripperx-camera.service`)
+gives the reasoning.
+
+**Install steps when the unit set changes** (units and scripts are new or changed files, so
+`deploy_check.sh` reports them `MISSING` or DRIFT until this has run): the §0 commands cover
+`gripperx-*.sh`; add the camera unit explicitly and enable it once:
+
+```bash
+sudo install -m 0644 -o root -g root \
+  ~/ws/Software/pi_env/systemd/units/gripperx-camera.service /etc/systemd/system/gripperx-camera.service
+sudo systemctl daemon-reload
+sudo systemctl enable gripperx-camera.service   # starts nothing; it comes up at the next boot or by hand
+```
+
+`gripperx-bringup.service` changed since the last team export (it now declares `RuntimeDirectory=gripperx`
+for the drive-fault marker, §7.1): a changed unit file takes effect only after `daemon-reload` **and** a
+restart of that unit, and the bringup restart is an SR-1 event (§1).
+
+**Not in this repository (TO-VERIFY):** a CPU-governor unit `gripperx-cpu-performance.service` was
+installed on the Pi on 2026-11-16 (performance governor). Its unit file is
+not in `Software/pi_env/systemd/units/` of branch `Theo`, so this document does not describe it and
+`deploy_check.sh` has no copy to compare. Whether and when it is merged is open.
+
 ---
 
 ## 1. Clean-teardown bringup restart procedure (binding)
@@ -204,7 +242,7 @@ every future bringup restart**.
      W/S drive command with no timeout; an orphaned instance left running on the laptop was one of
      the two stacked root causes of the 2026-07-06 unwanted-motor-run incident (the other being the
      controller_manager hang itself — the full incident is recorded in the internal safety audit and
-     the internal journal, neither in this repository). Check
+     the internal session records, neither in this repository). Check
      with `ps aux | grep keyboard_teleop` on the laptop before touching the robot.
    - `ros2 daemon stop` — clears any stale ROS 2 daemon discovery state left over from the previous
      session, independent of the process-level zombie check above.
@@ -212,7 +250,7 @@ every future bringup restart**.
    `agent` → `bringup` → `mapping` → `navigation` → `external`.
 
    *`external` last: it is the only consumer of the whole stack (`/navigate_to_pose`, the
-   `map` → `base_footprint` TF, `/odometry/filtered`, `/teleop/active_mode`) and nothing consumes it.
+   `map` → `base_footprint` TF (coordinate transform), `/odometry/filtered`, `/teleop/active_mode`) and nothing consumes it.
    It is the one stage you do **not** have to wait for — the gateway treats a missing Nav2 as the
    `NAV2_UNAVAILABLE` state, reports it and repairs itself when discovery matches, so starting it early
    degrades to telemetry-only instead of failing (§3.3).*
@@ -642,7 +680,176 @@ tolerances, recoveries) are deliberately **not** restated here — see `document
 
 ---
 
-## 5. Cross-references
+## 5. Arm servo EEPROM (non-volatile servo memory) limits — writing SR-17 layer L1 (maintenance procedure)
+
+**What:** the one-off (and after every calibration, joint-limit or margin change, repeated) write of
+the min/max angle limits into the six arm servos' EEPROM (non-volatile servo memory) — SR-17 (arm
+safety envelope) rule 1 = layer L1, checked by rule 2 (`eeprom_check`). **Status 2026-10-13:
+prepared, never run on the robot.** Tool: `arm_eeprom_limits` (`gripperx_arm/eeprom_limits.py`; its
+docstring lists every refusal). **The torque-off (step 4), the write (step 6) and every restart are
+SR-1 (motor-enable process rule) events: each needs its own user approval.**
+
+**Facts the steps rely on** (code and sources, 2026-10-13):
+- Stopping the stack does **not** switch arm torque off: `arm_action_server` only closes the port on
+  shutdown, the servos keep holding their last goal (TO-VERIFY on the robot; the dry run prints
+  `torque` per servo).
+- The EEPROM is written with **torque off only** — LeRobot's practice (`disable_torque` writes
+  `Torque_Enable 0`, then `Lock 0`, before any EEPROM write; `SOFollower.calibrate/configure`,
+  `feetech.py`, fetched 2026-10-13). A write under torque is untested, so `--write` refuses unless
+  `Torque_Enable` is 0 on every servo.
+- Torque off with the stack stopped needs the tool: `--torque-off` (all six servos, nothing else).
+  Why not Space: on a stationary arm Space does not reliably cut torque (with the Theo-arm-holdgoal
+  change only while a servo pushes), so it needs a deliberate gripper motion first (`O`, then Space
+  while it runs) — an extra motion plus a timing race, only to reach a
+  state the tool sets deterministically, once the node is off the bus.
+- A goal outside the new limits is most likely **clamped** by the servo (TO-VERIFY; consistent with
+  limb1 stopping at ~+102 deg = its current max register 3232). At torque-on the node writes goal :=
+  present, so a servo lying outside its limits **jumps to the limit at full speed** (the speed
+  registers are ignored). `--write` therefore refuses unless every present position — measured with
+  the arm limp in its rest pose — lies inside the new range.
+- Worst-case clamp jumps at a torque-on with the decided margins (servo lying on its mechanical stop):
+  limb1 high side 145 ticks (~12.7 deg), limb5 low side 117 (~10.3 deg), limb5 high side 48
+  (~4.2 deg), every other side ≤ 13 ticks (~1.1 deg).
+
+**Preconditions.** (a) Branch with the hardened tool deployed and built on the Pi. (b) Margins:
+`eeprom_margin_min_ticks` / `eeprom_margin_max_ticks` in `gripperx_arm/config/arm_safety_filter.yaml`,
+user decision 2026-10-13 (rule and expected EEPROM ticks in the comment there; TO-VERIFY until this
+session). (c) `calibration_verified: true`. (d) Drive not commanded; nobody touches the stop button.
+(e) One person at the arm from step 3 until step 8 has passed.
+
+All Pi commands run in one shell on the Pi (`until ssh gripperx; do sleep 5; done`), after:
+
+```bash
+source /opt/ros/jazzy/setup.bash
+source ~/ws/Software/ros2/install/setup.bash
+```
+
+1. **Enforce first, in the repository (laptop):** set `eeprom_check: enforce` in
+   `Software/ros2/src/gripperx_arm/config/arm_safety_filter.yaml` and note the planned session in the
+   comment above it (date, margins); commit; the user pushes to the deploy remote (`git push pi Theo`).
+   On the Pi, with the stack still running (a build replaces installed files only, the running node
+   is unaffected):
+   ```bash
+   cd ~/ws && git pull
+   cd ~/ws/Software/ros2 && colcon build --packages-select gripperx_arm
+   grep -n "eeprom_check" ~/ws/Software/ros2/install/gripperx_arm/share/gripperx_arm/config/arm_safety_filter.yaml
+   ```
+   The last line must show `eeprom_check: enforce`. **Start the session right after this step:** from
+   here any node start before a successful write — a respawn included — refuses torque-on.
+
+   **Session aborted** before a successful write and power cycle (step 8 not passed): revert this
+   step before the next start of the stack. Laptop: set `eeprom_check: log` again in
+   `Software/ros2/src/gripperx_arm/config/arm_safety_filter.yaml`, commit, then
+   `git push pi Theo` (the user). On the Pi:
+   ```bash
+   cd ~/ws && git pull
+   cd ~/ws/Software/ros2 && colcon build --packages-select gripperx_arm
+   grep -n "eeprom_check" ~/ws/Software/ros2/install/gripperx_arm/share/gripperx_arm/config/arm_safety_filter.yaml
+   ```
+   The last line must show `eeprom_check: log`.
+2. **Computed values, no bus access:** `ros2 run gripperx_arm arm_eeprom_limits`. Every row without a
+   `NOT EXPRESSIBLE`/`negative margin` note; the printed ranges equal the comment in the yaml.
+3. **Stop the stack** (approved step; the arm keeps holding; the person stands at the arm):
+   ```bash
+   sudo /usr/local/bin/gripperx-stack-stop --mode=stop
+   systemctl is-active gripperx-bringup.service    # must print: inactive
+   pgrep -a -f arm_action_server                   # must print nothing
+   ```
+4. **Torque off** (separately approved step — **the arm goes limp at once**): the person holds the
+   forearm, then:
+   ```bash
+   ros2 run gripperx_arm arm_eeprom_limits --port /dev/arm_servo --torque-off
+   ```
+   Expected `torque off: OK on all servos - the arm is limp`. On `TORQUE-OFF FAILED` or
+   `Torque_Enable != 0`: keep holding the arm (forearm, near the wrist) and run the same command once
+   more; if it still fails, cut main power with the arm held, lower it, and restart from step 3 after
+   power-on. The person lowers the arm into its rest
+   pose, with **limb1 and limb5 near their centre** and **limb2 not pressed onto its stop**. The arm
+   stays like this until step 8.
+5. **Dry run** (reads only; refuses while the unit is active, a node runs or the port is held):
+   ```bash
+   ros2 run gripperx_arm arm_eeprom_limits --port /dev/arm_servo | tee ~/arm_eeprom_dryrun_$(date -u +%Y%m%dT%H%M%SZ).txt
+   ```
+   Do the stop cross-check of the decision point below first. Compare per servo: `offset` = the
+   value recorded in `homing_offsets_raw` (otherwise the decision point below); `torque 0`; `present` inside
+   `computed` — this **is** the measurement of the rest pose the next boot starts from; if a value is
+   outside, move that joint inward by hand and repeat; `servo` column equal to the rollback set below
+   (if not, the printed values are the new rollback set — keep the file).
+6. **Write** (approved step):
+   ```bash
+   ros2 run gripperx_arm arm_eeprom_limits --port /dev/arm_servo --write | tee ~/arm_eeprom_write_$(date -u +%Y%m%dT%H%M%SZ).txt
+   ```
+   Expected: `previous registers saved to …` then `written; read-back OK`, exit 0. `WRITE REFUSED`
+   wrote nothing — fix the listed cause. `WRITE FAILED` / `MISMATCH` / `Lock != 1`: do not restart;
+   repeat the dry run to see the state, then repeat the write or roll back. The read-back shows what
+   the servo holds now, not yet that it survives a power cycle (step 7). Record the written values in
+   the yaml comment of step 1 (next commit).
+7. **Power cycle the servos** (approved restart): Mode H (long press: stack down, Pi halts; from the
+   shell: `sudo /usr/local/bin/gripperx-stack-stop --mode=halt`), wait for the Pi to halt, main power
+   off for 10 s, power on. The arm stays in its measured rest pose — limb1 and limb5 near centre,
+   limb2 off its stop — and **the person keeps a hand on the arm through the boot's torque-on** (the
+   worst-case clamp jumps above apply to any servo lying outside its range). Mode R (short press)
+   keeps servo power and does not prove the EEPROM kept the values (RAM vs EEPROM, TO-VERIFY); whether
+   the main switch cuts the arm servo supply is TO-VERIFY.
+8. **Acceptance** (laptop):
+   ```bash
+   until ssh gripperx 'journalctl -u gripperx-bringup -b --no-pager | grep -E "SR-17 L1 EEPROM|SR-17 rule 2|Torque ON|Torque NOT|torque-on|TORQUE|not acknowledged|unreadable"'; do sleep 5; done
+   ```
+   Expected, in order: `SR-17 L1 EEPROM angle limits (min, max) per servo: {…}` with the step-6 values,
+   `factory range on none`, `eeprom_check: enforce`, the `Homing_Offset` and `Lock` per servo;
+   `Torque NOT enabled at start: … EEPROM limits not verified yet` (normal: the check waits for the
+   robot description); then `SR-17 rule 2: EEPROM limits match the computed L1 values … torque-on
+   allowed` and **no** later `torque-on refused`, `torque-on not acknowledged`, `TORQUE OFF` or
+   `unreadable` line. A `SR-17 rule 2: EEPROM limits mismatch` line names the servo and the remedy
+   (re-write, or — for unreadable registers — the bus). The fix is done when the user has confirmed
+   it on the robot.
+
+**Decision point — `Homing_Offset`.** The follower carries non-zero offsets, logged at boot
+2026-10-13 17:13:34 CEST: raw `[3624, 3353, 1323, 1748, 3325, 4055]` (sign-magnitude, sign bit 11:
+raw 3624 = -1576) — ids 1-5 identical to the leader arm, so one LeRobot calibration was written to
+both. They are recorded as calibration data (`homing_offsets_raw` in `arm_calibration.yaml`);
+`--write` and `eeprom_check: enforce` accept exactly these values and refuse any other. Why they must
+never change: the node reads only `Present_Position` (sign-decoded) and never applies an offset
+itself; per LeRobot `Present_Position = Actual_Position - Homing_Offset` (`servo_bus.py`
+docstring), and the 2026-10-08 `zero_ticks` and stop sweeps were measured with these offsets in
+place. **Frame:** limb1 stalled at present ~3232 = its `Max_Position_Limit` register, so the servo
+compares the limits in the present (post-offset) frame — the frame the tool computes in.
+
+**Stop cross-check (first part of step 5; TO-VERIFY until done):** with the arm limp (after step 4),
+move **one** limb by hand onto **one** mechanical stop and run the step-5 dry run: that servo's
+`present` must lie within a few ticks of `gripperx_arm/calibration/2026-10-08/stop_extremes.csv`
+(e.g. limb3 lower stop: 3082-3083). If it matches, lower the arm back into its rest pose and continue
+with step 5. If it does not, or if the dry run shows offsets other than the recorded ones: **stop,
+write nothing, change no offset, report** — the calibration no longer matches the servos.
+
+**Follow-up (user decision 2026-10-13, after the Theo-arm-holdgoal branch merges):** the node refuses
+torque-on for a servo whose present position lies outside its EEPROM registers, instead of letting
+the servo clamp. Not built yet.
+
+**Rollback.** Read from the servos at node start 2026-10-12 17:43 and, unchanged across a boot,
+2026-10-13 10:14 (likely left by the original LeRobot setup; id 5 = factory full range):
+
+```bash
+cat > ~/arm_eeprom_rollback_2026-10-12.yaml <<'EOF'
+eeprom_limits:
+  1: [760, 3232]
+  2: [823, 3199]
+  3: [873, 3076]
+  4: [865, 3188]
+  5: [0, 4095]
+  6: [1293, 2810]
+EOF
+ros2 run gripperx_arm arm_eeprom_limits --port /dev/arm_servo --write --restore ~/arm_eeprom_rollback_2026-10-12.yaml
+```
+
+Same preconditions as step 6 (stack stopped, torque off, person at the arm, present inside the
+restored ranges). Every `--write` also saves the registers it found (`previous registers saved to
+…`), which `--restore` takes the same way. After a rollback set `eeprom_check: log` again (step 1 in
+reverse) before the restart, or enforce keeps the arm without torque.
+
+---
+
+## 6. Cross-references
 
 - The internal watchdog-deploy runbook (tracked internally, not in this repository) — command-watchdog
   deployment runbook; assumes this document's clean-teardown procedure for the actual restart step.
@@ -667,3 +874,90 @@ tolerances, recoveries) are deliberately **not** restated here — see `document
 - The Nav2 integration track and `documentation/ASBUILT.md` — the source for §4 above and for the
   geometry/tuning changes (wheel radius, lever arm, meshes, footprint, tolerances, recoveries) this
   document deliberately does not restate. The code merged into `Theo` on 2026-08-21.
+
+---
+
+## 7. Features added since 2026-09-30 — what the operator and deployer must know
+
+One short entry per feature; behaviour, parameters and test records live in the linked package README or
+config, not here. Dates are the dates in the source; "deployed" is not "user-accepted" — the acceptance
+state is in the internal requirements document (tracked internally, not in this repository).
+
+### 7.1 Whole-drive fault, operator clear (SR-18 — safety requirement 18, drive fault on a missing encoder or persistent stall)
+- A drive fault forces all four wheel commands to 0.0 and is kept in the marker file
+  `/run/gripperx/drive_fault` (tmpfs; `RuntimeDirectory=gripperx` with `RuntimeDirectoryPreserve=yes` in
+  `gripperx-bringup.service`). A crash-respawn of `ros2_control_node` re-adopts it, so the robot stays stopped.
+- **Deliberate start clears it:** `gripperx-bringup.sh` removes the marker on an explicit start
+  (`systemctl start`/`restart`, the Mode R button, `gripperx-stack-stop --mode=restart`), but **keeps** it on
+  systemd's automatic `Restart=on-failure` (decided by `NRestarts`; if the counter cannot be read the marker is
+  kept). Manual clear: `rm /run/gripperx/drive_fault`.
+- **Operator clear without a restart:** service `/swerve_controller/clear_drive_fault`
+  (`gripperx_control_msgs/srv/ClearDriveFault`) and the web teleop's clear button (with a confirm dialog).
+  Only the `STALL_*` reasons are clearable; `ENCODER_MISSING` and `FEEDBACK_LOST` need a stack restart.
+  **A clear is a motion release** — a drive command that is still held drives off at once — so it needs the
+  same approval as any drive test (SR-1). Details: `Software/ros2/src/gripperx_swerve_controller/README.md`.
+- A bench run (mock firmware) shares the marker path with the service; override `drive_fault_marker_path`
+  with `""` to keep them apart (`Software/ros2/src/gripperx_hardware_interface/INTERFACE.md`).
+
+### 7.2 Aimed pick (FR-16 — adaptive grasp; SR-16 — armed automatic `/pick_plastic`)
+- `PickPlastic` with `aimed: true` grasps at the target's (x, y) at the taught grip height, gripper vertical,
+  wrist roll searched; the fixed P sequence stays the default of the action
+  (`Software/ros2/src/gripperx_arm_msgs/action/PickPlastic.action`).
+- Gateway mode `grasp.aimed_pick` (startup-only, in `octopus_link_*.yaml`): `off`, `confirm_by_rearm`
+  (manual: the arm previews, the gateway disarms, the operator's next `SetArming` approves exactly that pick)
+  or `automatic`. In `octopus_link_real.yaml` the mode is `automatic` and `auto_pick` is `true`
+  (user decisions 2026-11-16, assumptions marked TO-VERIFY in the file); the twin keeps `auto_pick: false`.
+  Every arming still carries SR-16's assertion that the arm workspace is clear, and a person watches
+  automatic picks.
+- Standoff: `grasp.offset_x_m` (one value for every pick, there is no separate aimed value; current value in
+  the two config files). Arm side: `aimed.region_margin_m`, `aimed.pregrasp_height_m` (steep approach from
+  above, then a vertical descent) and related keys in
+  `Software/ros2/src/gripperx_arm/config/arm_safety_filter.yaml`; the values there are marked TO-VERIFY
+  where they are not measured.
+- Nav2 arrival: `goal_checker.xy_goal_tolerance` is 0.05 m and the RotateToGoal window
+  `FollowPath.xy_goal_tolerance` 0.04 (`Software/ros2/src/gripperx_planning/config/nav2.yaml`; invariant: the
+  window stays at or below the goal checker). Whether the base settles inside 0.05 is open per the file's
+  own comment.
+- Space aborts a running P; `PickPlastic` refuses a goal whose stop epoch is not the current one.
+
+### 7.3 Octopus list-loss hold (OCCHOLD — occlusion/list-loss hold)
+`octopus_link_real.yaml` (and the twin file) carry `correlation_list_loss_hold_sec` (startup-only): an
+empty or stale target list does not cancel the goal in flight for that many seconds after the mission's last
+unique correlation, as long as no grasp was requested. The arrival gate may pick on an empty list inside the
+window, never on a stale one; the acknowledgement never holds. Absent or TO-VERIFY disables the hold. Current
+value: the config files.
+
+### 7.4 Leader arm (FR-17 — leader-arm teleoperation)
+The laptop-side leader reader and the follower's leader mode are in `Software/ros2/src/gripperx_leader/README.md`
+(servo ids 1-6, the gripper id 6 included since 2026-11-13; leader EEPROM handling in its README). Leader mode ends on a second `J`, Space, `O`, `I` or `P`. Known open item: returning home after leaving leader
+mode while the follower grips an object squeezes the object, so open the leader gripper before pressing `J`
+(open item noted 2026-11-17, not yet in the README).
+
+### 7.5 IMU, LiDAR stamp and yaw alarm
+- `real_robot.launch.py` starts the BNO085 driver (`use_imu`, default `true`; `false` on a bench without the
+  sensor). The EKF fuses only its yaw rate (`imu0`, via `localization_input_node`
+  `/imu/bno085/data` → `/imu/data/filtered`); wheel odometry yaw rate is the fallback
+  (`Software/ros2/src/gripperx_localization/config/localization.yaml`). Hardware: `ASBUILT.md` §1.5.
+- Launch argument `lidar_stamp_source`: `mid_sweep` (default), `first_ray` or `publish` (old loop-tick stamp).
+  On 2026-11-17 the stack on the Pi was still running `publish`, to change at its next Mode R (shutdown-button
+  short press: restart of the ROS stack); not re-measured since, so verify the running value before relying on it.
+- `odom_divergence_monitor` reports a two-stage yaw alarm (encoder yaw rate vs. gyro; decision D17 — values in
+  `localization.yaml`, marked TO-VERIFY there) on `/diagnostics` and on the latched topic `/localization/yaw_alarm` (TRANSIENT_LOCAL, so a late
+  subscriber still gets it; the web teleop shows it): WARNING does not latch, ERROR latches
+  until the stack restarts. It commands nothing.
+
+### 7.6 Front camera and web teleop camera tile
+- `gripperx-camera.service` runs `ros2 launch gripperx_sensors camera.launch.py` (script
+  `gripperx-camera.sh` sources ROS itself, domain 20, FastRTPS UDP-only profile). Lazy capture: the camera
+  device is open only while `/camera/front/image_raw/compressed` or `camera_info` has a subscriber.
+  Profiles `view`/`detail` are runtime-switchable (`Software/ros2/src/gripperx_sensors/README.md`).
+- Web teleop: camera tile in the right column, default OFF (`Software/ros2/src/gripperx_teleop/docs/TELEOP_WEB_UI.md`,
+  "Camera tile"). The camera stream and profile route have no authentication, like the drive controls.
+- On the laptop, `ros2` CLI queries for the Pi's nodes may need `--spin-time 10` (reported 2026-11-17;
+  cause not analysed).
+
+### 7.7 End state after a stack stop (`gripperx-stack-stop`)
+Steering is left limp at its last angle (no parking or centring move). The **arm is not limp**: the stop
+only closes the serial port, so the servos keep torque and hold their last goal until their supply is cut
+(from the code, corrected in the script 2026-10-13; reading `Torque_Enable` after a stop to confirm is
+TO-VERIFY on the robot). Do not assume a centred geometry or a known arm pose at the next start.

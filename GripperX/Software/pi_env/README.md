@@ -19,14 +19,17 @@ as of". Corrected 2026-08-24.
 
 - `systemd/units/` — content of all `gripperx-*` systemd units (via
   `systemctl cat`, so any drop-ins would also be captured).
-  Start order via `After=`/`Requires=`:
-  `gripperx-bringup` → (20s delay) `gripperx-mapping` → (15s delay)
-  `gripperx-navigation`. `gripperx-agent` is independent (Docker).
+  Ten files: eight services (agent, bringup, mapping, navigation, external, camera, button,
+  wifi), `gripperx-wifi.timer` and `gripperx.target`. What each unit runs and how it relates to the
+  motion stack, with the start order, is the table in `documentation/DEPLOYMENT.md` §0.1 (one home,
+  not copied here).
   `gripperx-wifi.timer` triggers `gripperx-wifi.service` every **30 s**
   (`OnBootSec=45`, `OnUnitInactiveSec=30`). Corrected 2026-08-24 against
   `systemd/units/gripperx-wifi.timer` — the 15 s figure was the pre-Fix-8 value
   that Fix 8 (#12) raised precisely because 15 s made the timer flap.
-- `systemd/scripts/` — the scripts referenced by the units. **These are not a
+- `systemd/scripts/` — the nine scripts the units and the button daemon use: `gripperx-agent.sh`,
+  `-bringup.sh`, `-mapping.sh`, `-navigation.sh`, `-external.sh`, `-camera.sh`, `-wifi.sh`,
+  `gripperx-stack-stop` (no extension) and `gripperx-button-daemon.py`. **These are not a
   backup, they are the source. See "A `git pull` does not update what systemd
   runs" below before deploying any change to them.**
 - `udev/` — content of `/etc/udev/rules.d/99-gripperx.rules` (ESP32,
@@ -86,10 +89,10 @@ repository on the Pi updates `~/ws/Software/pi_env/systemd/scripts/`, which no
 unit ever reads. The running script is whatever was last copied into
 `/usr/local/bin/`, and it changes only when somebody copies it there.
 
-This is not a corner case. Verified 2026-08-24 by reading all five service units
-in `systemd/units/` (the sixth file is `gripperx-wifi.timer`, which has no
-`ExecStart`): every `ExecStart` points into `/usr/local/bin/`, and no unit, script
-or document in this repository contains a copy step.
+This is not a corner case. Verified 2026-08-24 by reading the service units
+in `systemd/units/`, rechecked against the eight service units now in the repository
+(`gripperx-wifi.timer` and `gripperx.target` have no `ExecStart`): every `ExecStart`
+points into `/usr/local/bin/`, and no unit or script contains a copy step.
 
 **Why it bites right now.** `gripperx-mapping.sh` was repointed on 2026-08-24
 from `gripperx_bringup/mapping.launch.py` to
@@ -107,9 +110,12 @@ stale satisfies that check exactly. Clean tree, wrong robot.
 **After changing anything under `systemd/`, on the Pi:**
 
 ```bash
-# scripts — the units read only these copies
+# scripts — the units read only these copies. The glob has no ".sh": it must also
+# cover gripperx-stack-stop and gripperx-button-daemon.py (every file in that folder
+# starts with "gripperx-"). The camera unit and the button daemon's restart rules
+# are in documentation/DEPLOYMENT.md §0 and §0.1.
 sudo install -m 0755 -o root -g root \
-  ~/ws/Software/pi_env/systemd/scripts/gripperx-*.sh /usr/local/bin/
+  ~/ws/Software/pi_env/systemd/scripts/gripperx-* /usr/local/bin/
 
 # units — only if a .service/.timer changed
 sudo install -m 0644 -o root -g root \

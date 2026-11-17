@@ -1,9 +1,11 @@
 # One external goal as received from the Octopus, plus its resolution into a
 # robot standing pose.
 #
-# The incoming position is the OBJECT, not a robot pose: the arm cannot be
-# aimed (PickPlastic takes only `bool execute`, and there is no arm link in the
-# URDF), so the standing pose is the only aiming mechanism.
+# The incoming position is the OBJECT, not a robot pose. By default the arm is not
+# aimed (the fixed pick of the taught pose), so the standing pose is then the only
+# aiming mechanism. An aimed pick exists (PickPlastic `aimed`/`target`, enabled by the
+# gateway parameter grasp.aimed_pick, see the gateway configs); it aims at the
+# dispatched object position.
 
 std_msgs/Header header
 

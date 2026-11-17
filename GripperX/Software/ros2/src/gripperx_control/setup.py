@@ -44,6 +44,7 @@ setup(
             "steer_servo_node = gripperx_control.steer_servo_node:main",
             "steer_servo_calibrate = gripperx_control.steer_servo_calibrate:main",
             "lidar_power_node = gripperx_control.lidar_power_node:main",
+            "drive_fault_nav_guard = gripperx_control.drive_fault_nav_guard:main",
         ],
     },
 )

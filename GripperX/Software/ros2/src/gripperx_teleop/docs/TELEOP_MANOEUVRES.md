@@ -1,9 +1,10 @@
 # Crab walk and in-place spin on the arrow keys (FR-7)
 
-> Status 2026-08-13. Implemented in the working tree, **not yet deployed to the
-> Pi and not yet driven**. FR-7 in the internal `REQUIREMENTS` is still `draft` /
-> P4-nice-to-have and explicitly says "not a task for now" — the status needs to
-> catch up with the user's request before this is accepted.
+> Written 2026-08-13, brought in line with the code 2026-11-17. The manoeuvres are
+> implemented in `gripperx_teleop` (FR-7, the crab-walk and spin requirement). The
+> description of the guard below has not been re-driven on the robot since the
+> drive stack moved to `swerve_controller`; treat timings and behaviour as
+> derived from the code, not freshly measured.
 
 ## Keys
 
@@ -13,8 +14,14 @@
 | `A` / `D` | steer, cumulative (unchanged) | pattern on `/teleop/direct_steer` |
 | `←` | crab left | `linear.y = +0.25 m/s` |
 | `→` | crab right | `linear.y = -0.25 m/s` |
-| `↑` | spin clockwise | `angular.z = -0.60 rad/s` |
-| `↓` | spin counter-clockwise | `angular.z = +0.60 rad/s` |
+| `↑` / `↓` | while crabbing: steer the crab's direction of travel | modifier of an active crab, does nothing otherwise |
+| `0` | spin clockwise | `angular.z = -spin_speed_rad_s` |
+| `9` | spin counter-clockwise | `angular.z = +spin_speed_rad_s` |
+
+`spin_speed_rad_s` is a node parameter: its default in `keyboard_teleop_node.py` is
+0.55 rad/s, but `launch/laptop_teleop.launch.py` and `launch/web_teleop.launch.py`
+both pass 1.4 rad/s (the reasoning, a stiction bound, is in the comment of
+`laptop_teleop.launch.py`), so a normally launched teleop spins at the launch value.
 | `Space` | emergency stop, every manoeuvre (SR-2) | zero + straighten + keyboard mode |
 
 The arrows are **dead-man keys** exactly like `W`/`S` (SR-3): they act only while
@@ -23,8 +30,8 @@ returns the wheels to straight ahead. Pressing `W`/`S`/`A`/`D` cancels an active
 manoeuvre; pressing another arrow switches to it. Only one manoeuvre can ever be
 active — the most recent press wins.
 
-`↑ = clockwise` is the mapping the user specified. It is deliberately not the
-"up = forward" reading; the banner says so.
+Spin was first put on `↑`/`↓` (2026-08); it is on `0`/`9` now, because the up/down
+arrows steer a crab's direction of travel.
 
 ## Two routes out of one node
 
@@ -32,20 +39,24 @@ active — the most recent press wins.
 A/D  ──► /teleop/direct_steer ─────────────────────────► steer_servo_node
              (fixed pattern, overrides /hw/joint_commands for 0.5 s)
 
-arrows ─► /teleop/keyboard/cmd_vel ─► teleop_mux ─► /cmd_vel ─► swerve_cmd_node
-             (linear.y / angular.z)                              │ per-wheel windows
-                                                                 ▼
-                                             joint_command_bridge ─► ros2_control
-                                                     ─► /hw/joint_commands ─► servos
+arrows, 0/9 ─► /teleop/keyboard/cmd_vel ─► teleop_mux ─► /cmd_vel
+                 (linear.x/y, angular.z)                 │
+                                                          ▼
+                              swerve_controller (ros2_control controller, package
+                              gripperx_swerve_controller): inverse kinematics
+                              and the per-wheel steering windows
 ```
 
-Crab and spin need wheel poses a fixed per-wheel pattern cannot express — all
-four at ∓90° and ∓50.8° respectively — and they need the calibrated per-wheel
-steering windows (see `gripperx_control/config/steer_servo.yaml`, the source
-of truth, for the current per-wheel limits) so no wheel is silently clamped
-out of the pose. The direct-steer route has none of that. So the arrows take
-the IK route, where the limits, the ±180° module flip and the per-wheel speed
-split all come for free.
+(`swerve_cmd_node` and `joint_command_bridge`, which this page described in
+2026-08, no longer exist; `swerve_controller` replaced them.)
+
+Crab and spin need wheel poses a fixed per-wheel pattern cannot express, and
+they need the calibrated per-wheel steering windows (the live values are in
+`gripperx_control/config/ros2_controllers.yaml`; spin pose angle follows from
+`gripperx_geometry/config/geometry.yaml`) so no wheel is silently clamped out
+of the pose. The direct-steer route has none of that. So the arrows and `0`/`9`
+take the inverse-kinematics route, where the limits, the ±180° module flip and
+the per-wheel speed split all come for free.
 
 The legacy direct-steer route is **bypassed, not removed**: `A`/`D` still use
 it unchanged, and the `/hw/joint_commands` double-publisher question is
@@ -78,7 +89,7 @@ for and scrubs the tyres. `manoeuvre.TransitionGuard` prevents it:
 
 * **Feedback, not a fixed delay.** The node subscribes to `/hw/steer_states`
   (`BEST_EFFORT`, depth 1 — it crosses the unstable hotspot link, NFR-8) and
-  compares against the pose it predicts `swerve_cmd_node` will command. That
+  compares against the pose it predicts the drive controller will command. That
   prediction is not a second formula: it calls the same `inverse_kinematics()`
   + `resolve_wheel_targets()` with the same calibrated windows, which is why
   `gripperx_teleop` now depends on `gripperx_control`.
@@ -95,9 +106,8 @@ for and scrubs the tyres. `manoeuvre.TransitionGuard` prevents it:
   `delta_i = atan2(vy_i, vx_i)` is *invariant* under positive scaling of the
   whole twist, so a twist scaled to 2 % commands **exactly** the target pose at
   2 % of the wheel speed (5 mm/s for crab, vs 250 mm/s armed). The clean fix
-  would be a real steer-only path — either `steer_alignment_min_scale: 0.0` in
-  `swerve_cmd.yaml` (affects cornering too) or an explicit flag through the
-  chain. Both are bigger decisions than this change.
+  would be a real steer-only path in the drive controller. That is a bigger
+  decision than this change.
 * **Known cosmetic artifact in `releasing`.** `direct_release_sec` (0.7 s) is
   longer than `steer_servo_node`'s `direct_timeout_sec` (0.5 s) on purpose, so
   the override is definitely gone before the pose is commanded. In the 0.2 s
@@ -130,35 +140,32 @@ first swinging all four wheels 90° is alarming unannounced. So:
 The status line deliberately carries no live angle error — it changes every
 tick during a slew and would scroll the terminal at the publish rate.
 
-## Twist table (verified, `test/check_manoeuvres.py`)
+## Wheel poses
 
-Model order FL, BL, BR, FR. All angles inside their window; the limiter passes
-every one through unchanged (`status: ok`).
+The poses (all angles inside their steering windows, the limiter passes them
+unchanged) are computed by `gripperx_teleop/manoeuvre.py` from the same inverse
+kinematics as the controller; `test/check_manoeuvres.py` checks them. The
+numbers are not repeated here: the spin pose follows from the robot geometry
+(`Software/ros2/src/gripperx_geometry/config/geometry.yaml`), the windows are
+in `gripperx_control/config/ros2_controllers.yaml`.
 
-| Manoeuvre | twist | FL | BL | BR | FR | max wheel speed |
-|---|---|---|---|---|---|---|
-| crab left | `vy=+0.25` | −90.00 | +90.00 | −90.00 | +90.00 | 4.81 rad/s |
-| crab right | `vy=−0.25` | −90.00 | +90.00 | −90.00 | +90.00 | 4.81 rad/s |
-| spin CW | `ω=−0.60` | −50.80 | +50.80 | −50.80 | +50.80 | 3.02 rad/s |
-| spin CCW | `ω=+0.60` | −50.80 | +50.80 | −50.80 | +50.80 | 3.02 rad/s |
+Crab left and crab right (without crab steering) share **one** pose and differ
+only in the sign of the wheel speeds, so switching between them needs no slew at
+all. The crab pose is reached through the ±180° flip that `resolve_wheel_targets`
+takes on the wheels whose windows exclude the naive angle; those wheels then
+drive backwards. Spin needs the same outward angle on all four wheels.
 
-Note that crab left and crab right share **one** pose and differ only in the
-sign of the wheel speeds, so switching between them needs no slew at all. Crab
-reaches ∓90° because `resolve_wheel_targets` takes the ±180° flip on FL and BR,
-whose windows exclude the naive +90°; those two wheels then drive backwards.
-Spin needs 50.80° **outward** on all four, comfortably inside the outward
-limit (`gripperx_control/config/steer_servo.yaml`).
+## Dependency: point turn must stay off
 
-## Dependency: `enable_point_turn` must stay `false`
-
-`swerve_cmd.yaml` sets `enable_point_turn: false`, so pure rotation goes through
-the **swerve** spin (wheels on the rotation tangent at ∓50.8°, zero scrub) — the
-pose this guard waits for. Setting it back to `true` would route any
-`|ω| ≥ point_turn_omega_threshold` (0.35 rad/s; arrow spin publishes 0.60) into
-`_compute_point_turn`, which holds the wheels **straight** and skid-turns
-instead. The guard would then wait for a 50.8° pose that is never commanded,
-arm on the timeout, and the robot would tank-turn. If point turn is ever
-re-enabled, `spin_speed_rad_s` and this guard need revisiting together.
+The active drive configuration has pure rotation go through the **swerve**
+spin (wheels on the rotation tangent, zero scrub) — the pose this guard waits
+for. `enable_point_turn` is not ported to `swerve_controller` and is false in the
+legacy `gripperx_control/config/swerve_cmd.yaml`
+(`gripperx_control/config/ros2_controllers.yaml` states this, section "NOT
+PORTED"). A skid turn with the wheels held straight would make the guard wait for
+a pose that is never commanded, arm on the timeout, and the robot would
+tank-turn. If a point-turn mode is ever re-enabled, `spin_speed_rad_s` and this
+guard need revisiting together.
 
 ## Verification
 
@@ -172,10 +179,12 @@ source install/setup.bash
 python3 src/gripperx_teleop/test/check_teleop_manoeuvre_path.py
 ```
 
-## Deployment (pending)
+## Deployment
 
-`teleop_mux` runs on the Pi as part of bringup. Until the new
-`gripperx_teleop` is deployed and `teleop_mux` restarted, the arrow keys do
-nothing on the real robot — the mux still zeroes the axes. Restarting
-`gripperx-bringup.service` is itself movement (arm home + steering centering)
-and needs explicit user approval per SR-1.
+`teleop_mux` runs on the Pi as part of bringup; the keyboard node runs on the
+laptop. A change to `gripperx_teleop` reaches the robot only through the deploy
+procedure in `documentation/DEPLOYMENT.md` §0. Restarting `gripperx-bringup.service`
+is still motion-relevant and needs explicit user approval per SR-1 (the
+motor-enable process rule): it makes the drive path commandable again and leaves
+the steering limp at an unknown angle. It does **not** home the arm
+(`arm_home_on_startup` is permanently false) and does **not** centre the steering.

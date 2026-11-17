@@ -20,6 +20,10 @@
   <depend>std_msgs</depend>
 
   <test_depend>gripperx_geometry</test_depend>
+  <!-- The drive-fault tests read the ACTIVE ros2_controllers.yaml it installs. -->
+  <test_depend>gripperx_control</test_depend>
+  <test_depend>ament_index_cpp</test_depend>
+  <test_depend>yaml_cpp_vendor</test_depend>
   <test_depend>ament_cmake_gtest</test_depend>
   <test_depend>ament_lint_auto</test_depend>
   <test_depend>ament_lint_common</test_depend>

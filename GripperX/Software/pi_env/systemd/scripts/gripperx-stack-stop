@@ -120,9 +120,10 @@
 #         power-cycle cycles with no filesystem-repair or journal-recovery event
 #         in the following boot logs. THE SERIES RESTARTS FROM ZERO ON ANY
 #         FAILURE. Acceptance test only -- not a blocker for this script.
-#  Q-SD5  Steering (and arm) end state = LEAVE IT LIMP AT ITS LAST ANGLE / LAST
-#         POSE (v1). No parking move, no stowing move and no centring anywhere in
-#         the shutdown path. See the operator note in phase 3.
+#  Q-SD5  Steering end state = LEAVE IT LIMP AT ITS LAST ANGLE (v1). No parking
+#         move, no stowing move and no centring anywhere in the shutdown path. The
+#         ARM is not limp after a stop: it keeps torque and holds its last goal
+#         until its supply is cut (corrected 2026-10-13). See phase 3.
 #  OP-20 B  Mode restart has a HARD PRECONDITION: center_on_startup must default
 #         to false, otherwise every restart centres four steering servos.
 #         IMPLEMENTED and HARDWARE-VERIFIED 2026-08-19 (cfaabe5; it adopted a
@@ -714,7 +715,11 @@ AGENT_STOPPED_AT=""
 #     themselves. This is the DECIDED end state, not a side effect: there is no
 #     parking move and no centring anywhere in the shutdown path -- a centring
 #     move here would be precisely the unrequested movement SR-12 (1) forbids.
-#     The same holds for the ARM: limp in its last pose, no stowing move.
+#     The ARM differs (corrected 2026-10-13, from the code): no stowing move
+#     either, but it is NOT limp - arm_action_server.destroy_node() only
+#     closes the serial port, so the servos keep torque and hold their last
+#     goal until their supply is cut (TO-VERIFY on the robot: read
+#     Torque_Enable with arm_eeprom_limits --port after a stop).
 #     If the wheels are wanted straight, that is a separate operator-requested
 #     action BEFORE the shutdown, never part of this sequence. The operator-
 #     facing output says so, so it is expected rather than discovered.
@@ -919,7 +924,7 @@ main() {
                  log "      per node before treating this restart as successful."
                  log "steering was left LIMP at its last angle -- the next start must NOT"
                  log "assume a centred geometry, nor a known arm pose (Q-SD5)" ;;
-        halt)    log "steering LIMP at its last angle, arm limp in its last pose (Q-SD5); halting"
+        halt)    log "steering LIMP at its last angle, arm HOLDING its last pose until power is cut (Q-SD5); halting"
                  systemctl poweroff ;;
     esac
     # Exit 0 whenever the sequence COMPLETED, including the "commanded stop could

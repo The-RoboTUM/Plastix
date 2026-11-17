@@ -129,13 +129,29 @@
       <div class="cell gap"><button class="keycap action" data-key="p" data-event="pick"><b>P</b></button><span class="cap">grip sequence</span></div>
       <div class="cell"><button class="keycap action" data-key="o" data-event="open_gripper"><b>O</b></button><span class="cap">open gripper</span></div>
       <div class="cell"><button class="keycap action" data-key="i" data-event="home"><b>I</b></button><span class="cap">arm home</span></div>
+      <div class="cell gap"><button class="keycap action" id="key-leader" data-key="j" data-event="leader"><b>J</b></button><span class="cap">Leader mode <b id="leader-state">OFF</b></span></div>
       <div class="cell gap"><button class="keycap action" data-key="u" data-event="arm_gate"><b>U</b></button><span class="cap">arm gate 120 s</span></div>
       <div class="cell"><button class="keycap action" data-key="l" data-event="disarm_gate"><b>L</b></button><span class="cap">disarm gate</span></div>
       <div class="cell gap"><button class="keycap danger" data-key="Q" data-event="quit" data-confirm="1"><b>&#8679;Q</b></button><span class="cap">shut down teleop</span></div>
     </div>
+    <!-- Last /arm/leader/align_state text: a J that is refused must say so where J is. -->
+    <div class="leader-align" id="leader-align" aria-live="polite"></div>
+    <!-- /arm/leader/wall_state: which leader joints the virtual wall holds, which are
+         beyond it (limp) and the last release. -->
+    <div class="leader-align" id="leader-wall" aria-live="polite"></div>
+    <!-- /swerve_controller/drive_fault: whole-drive fault, latched until the stack
+         restarts (missing wheel encoder / persistent stall, 2026-10-16). -->
+    <div class="leader-align" id="drive-fault" role="alert"></div>
+    <!-- Operator clear (SR-18 amendment 2026-11-09): shown ONLY for a clearable
+         (STALL_*) reason; opens the confirmation dialog below. -->
+    <button type="button" class="fault-clear" id="btn-drive-fault-clear" hidden>Clear drive fault&hellip;</button>
+    <!-- The service's answer to the last clear, and the last accepted clear. -->
+    <div class="leader-align" id="drive-fault-clear-note" aria-live="polite"></div>
   </section>
 
-  <!-- ─────────────── Right: what the robot is doing ─────────────── -->
+  <!-- ─────────────── Right column: robot view, camera below it ─────────────── -->
+  <div class="side">
+
   <section class="panel scope">
     <h2>Robot <span class="hint" id="scope-hint">top view &middot; joint order FL FR BL BR</span></h2>
 
@@ -195,6 +211,27 @@
     </div>
   </section>
 
+  <!-- ─────────────── Camera tile (right column, under the robot view) ───────────────
+       OFF (default) = no stream connection, so the node holds no camera
+       subscription and nothing is sent over the network. -->
+  <section class="panel camera">
+    <h2>Camera <span class="hint" id="cam-hint">off</span></h2>
+    <div class="cam-bar">
+      <button type="button" id="cam-power" class="cam-btn" tabindex="-1" aria-pressed="false">Off</button>
+      <span class="cam-group" role="group" aria-label="Camera mode">
+        <button type="button" id="cam-view" class="cam-btn" tabindex="-1" data-profile="view">View</button>
+        <button type="button" id="cam-detail" class="cam-btn" tabindex="-1" data-profile="detail">Detail</button>
+      </span>
+      <span class="dim" id="cam-stats"></span>
+    </div>
+    <div class="cam-frame" id="cam-frame">
+      <img id="cam-img" alt="Front camera, live" hidden>
+      <div class="cam-msg" id="cam-msg">camera off</div>
+    </div>
+  </section>
+
+  </div>
+
   <!-- ─────────────── Full width: log ─────────────── -->
   <section class="panel logpanel">
     <h2>Events</h2>
@@ -202,6 +239,33 @@
   </section>
 
 </main>
+
+<div id="quit-backdrop" class="quit-backdrop" hidden></div>
+<dialog id="quit-dialog" class="quit-dialog" aria-labelledby="quit-title">
+  <h2 id="quit-title">Shut teleop down?</h2>
+  <p>The robot is stopped and the wheels straightened first. Started from
+    gripperx_desk.sh, this also stops the whole desk session (RViz, the local
+    map, ...), not just this page. Run standalone, only this teleop node stops
+    and you will need a terminal to start it again.</p>
+  <div class="quit-actions">
+    <button type="button" id="btn-quit-cancel" class="quit-btn">Cancel <kbd>Esc</kbd></button>
+    <button type="button" id="btn-quit-confirm" class="quit-btn quit-confirm">Shut down <kbd>Enter</kbd></button>
+  </div>
+  <button type="button" id="btn-quit-estop" class="quit-estop">EMERGENCY STOP <kbd>Space</kbd></button>
+</dialog>
+
+<div id="clear-backdrop" class="quit-backdrop" hidden></div>
+<dialog id="clear-dialog" class="quit-dialog" aria-labelledby="clear-title">
+  <h2 id="clear-title">Clear the drive fault?</h2>
+  <p>Reason: <b id="clear-reason"></b><br>Where: <b id="clear-where"></b><span id="clear-other"></span></p>
+  <p id="clear-detail"></p>
+  <p class="clear-warning">A drive command that is still held will make the robot drive off immediately.</p>
+  <div class="quit-actions">
+    <button type="button" id="btn-clear-cancel" class="quit-btn">Cancel <kbd>Esc</kbd></button>
+    <button type="button" id="btn-clear-confirm" class="quit-btn quit-confirm">Clear fault, release the drive</button>
+  </div>
+  <button type="button" id="btn-clear-estop" class="quit-estop">EMERGENCY STOP <kbd>Space</kbd></button>
+</dialog>
 
 <script src="app.js"></script>
 </body>

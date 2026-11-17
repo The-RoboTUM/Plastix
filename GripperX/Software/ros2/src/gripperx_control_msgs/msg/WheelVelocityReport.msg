@@ -97,10 +97,11 @@ bool[] regulating
 # an encoder — and FR-14 acceptance A17 requires the status to report THE
 # reason.
 #
-# THE FLOOR IS NOT ITS OWN PARAMETER: it IS HWR-30a's arming threshold
-# `stall_min_command_rad_s`, and the coupling is deliberate — the regulator may
-# only add authority where the stall detector is watching. See the floor gate in
-# wheel_regulator.cpp.
+# THE FLOOR IS ITS OWN PARAMETER since 2026-10-22, `wheel_regulator_floor_rad_s`
+# (until then it was HWR-30a's arming threshold `stall_min_command_rad_s`). The
+# constraint is kept and enforced at configure: the floor may not lie below the
+# stall arming threshold, so the regulator only adds authority where the stall
+# detector is watching. See the floor gate in wheel_regulator.cpp.
 #
 # REGULATOR_OFF_STALE_FEEDBACK IS A STATEMENT ABOUT INFORMATION, NOT ABOUT THE
 # LINK, and it surprises on first reading: a machine standing perfectly still

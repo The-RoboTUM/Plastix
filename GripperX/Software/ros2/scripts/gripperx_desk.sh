@@ -240,6 +240,36 @@
 # --force-local-map (or GRIPPERX_DESK_LOCAL_MAP=force) is the deliberate override
 # for the case where the operator KNOWS the Pi is not mapping; like
 # --no-steer-gate it asserts, it does not verify.
+# AND IT WAITS WHILE THE Pi STACK IS IN TRANSITION. "inactive" is only a
+# steady-state answer if nothing is about to change it. Incident 2026-10-16: the
+# run started 27 s into a Mode R restart (short press of the Pi's shutdown button
+# = gripperx-button-daemon runs gripperx-stack-stop --mode=restart, the stack goes
+# down and comes back, the Pi stays up). bringup and mapping read `inactive`, the
+# laptop started its own rf2o + slam_toolbox, and 20 s later the Pi's mapping came
+# back beside it: two /slam_toolbox, two odom->base_footprint sources. The health
+# check therefore asks for transition evidence from systemd and the process table
+# - never from journal text - and waits (bounded, GRIPPERX_DESK_PI_SETTLE_SEC,
+# with progress output) while any of it is present, then asks again. Ctrl-C ends
+# the run at once, with nothing started (see on_fatal_signal):
+#   * a gripperx-stack-stop process (any mode). It is the ONLY signal that covers
+#     the whole sequence: during its dwell every unit reads plain `inactive` and
+#     no job is queued, but the process is alive from the press until the last
+#     `systemctl start` has returned (those block through the ExecStartPre sleeps
+#     of mapping and navigation). The same pattern matches the operator names
+#     gripperx-stop/-restart/-shutdown that gripperx-stack-stop documents as
+#     symlinks to itself (not installed on GripperX-1 as of 2026-10-16). A
+#     sequence whose every mode is stop or halt (Mode H, long press: the Pi
+#     powers off) brings nothing back, so it is announced and NOT waited for.
+#   * a queued systemd job for a gripperx unit (a start job waiting behind
+#     After= ordering leaves its unit reading `inactive`, e.g. at boot).
+#   * a gripperx unit in activating/deactivating/reloading - which includes a
+#     Restart=on-failure unit waiting out its RestartSec.
+#   * gripperx-mapping active for less than PI_MAPPING_GRACE_SEC with its node
+#     set not yet complete.
+# If the wait times out with any of that still present, or mapping is active with
+# an incomplete node set past the grace time, the evidence is "unsettled" and the
+# local stack is refused exactly like "unknown" (--force-local-map overrides). A
+# restart that begins AFTER this check is the collision watch's job, not this one.
 #
 # gz-transport partition (twin): ROS_DOMAIN_ID isolates DDS, but gz-transport
 # IGNORES it entirely - it namespaces by GZ_PARTITION, which defaults to
@@ -250,6 +280,28 @@
 # sim_env.sh. Any explicit non-empty name is disjoint from that default, so
 # gripperx_desk_twin_220 cannot collide with a track that sources sim_env.sh
 # unchanged. Override with GZ_PARTITION_TWIN.
+#
+# Leader arm (real mode only, 2026-10-16): the hand-held SO101 leader's node,
+# gripperx_leader/leader_arm_node, is started on domain 20 when /dev/gripperx_leader
+# exists - before this, it was started by hand, and a J in the UI without it went
+# nowhere. It gets the installed leader_calibration.yaml as calibration_file and is
+# NOT started without it (the node's default '' means no angles, no wall, J refused);
+# a reused node started without one is warned about. It is PASSIVE until an align request (J) arrives: on start it writes
+# only torque-off. Missing device: a WARN, J will not work, everything else starts.
+# Already running (a leader_arm_node on domain 20, or any process of this user
+# holding the port): not started again, reused, and NOT stopped by teardown - it
+# is not ours. The executable is exec'd directly, not via "ros2 run": ros2 run
+# does not forward a SIGINT sent to its PID alone, so teardown would hit the
+# wrapper and leave the node running. Teardown sends SIGINT and waits up to
+# LEADER_STOP_WAIT_SEC: the node's shutdown() aborts an alignment and releases
+# the virtual wall with a confirmed torque-off on every leader servo. SIGTERM runs
+# the same path (rclpy shuts the context down, the finally block still runs), and
+# so does SIGHUP - closing the desk terminal sends it to the whole foreground
+# group, and leader_arm_node handles it like SIGINT since 2026-10-16 (a node
+# built before that dies on it WITHOUT the torque-off). Of the signals this setup
+# sends, only SIGKILL skips it, and then a servo held by the wall can stay
+# torqued - teardown says so if it had to escalate. Opt out with --no-leader or
+# GRIPPERX_DESK_LEADER=off.
 #
 # Domain ownership: 20 = real GripperX-1, 220 = its twin (SR-8 makes that
 # mandatory, not conventional), 221 = the "second parallel twin session" the
@@ -290,6 +342,18 @@ STEER_GATE="${GRIPPERX_DESK_STEER_GATE:-on}"
 # (see start_local_mapping - "on" deliberately does NOT).
 LOCAL_MAP="${GRIPPERX_DESK_LOCAL_MAP:-on}"
 
+# Leader arm node in real mode. "off"/"0"/"no"/"skip" or --no-leader. See the header.
+LEADER="${GRIPPERX_DESK_LEADER:-on}"
+LEADER_DEV="/dev/gripperx_leader"
+# All six since 2026-11-13: the follower drives its gripper from leader id 6 (FR-17) and
+# refuses leader mode while the stream lacks a joint.
+LEADER_SERVO_IDS="[1,2,3,4,5,6]"
+# calibration_file defaults to '' in the node and in leader_arm.yaml; without it the
+# leader angles are unknown: no radians, no virtual wall, every J refused.
+LEADER_CALIBRATION="$WS/install/gripperx_leader/share/gripperx_leader/config/leader_calibration.yaml"
+# Bounded wait for the node's own torque-off on SIGINT before escalating.
+LEADER_STOP_WAIT_SEC=10
+
 # Which teleop front-end drives - "web" (default) or "keyboard". Applies to real
 # and twin alike; it selects the input device, it never starts a second one.
 # --input <device> overrides, --keyboard is the shorthand back.
@@ -324,9 +388,27 @@ WEB_OPEN_BROWSER="false"          # --open-browser
 # for that run, with a warning printed.
 WEB_HOST="127.0.0.1"
 
-# Set by pi_health_check: active | inactive | unknown. "unknown" means the Pi
-# could not be asked at all (ssh down) - then the DDS graph is the only evidence.
+# Set by pi_health_check: active | inactive | unsettled | unknown. "unknown" means
+# the Pi could not be asked at all (ssh down) - then the DDS graph is the only
+# evidence. "unsettled" means it could be asked, but its stack was still in (or
+# stuck in) a transition from which its own mapping can come back - see "AND IT
+# WAITS WHILE THE Pi STACK IS IN TRANSITION" in the header. Only "inactive" lets
+# the local mapping stack start without --force-local-map.
 PI_MAPPING_EVIDENCE="unknown"
+# The transition reasons still present when the settle wait gave up; empty when
+# the Pi settled (or was never in transition).
+PI_TRANSITION_LEFT=""
+PI_SETTLE_MAX_SEC="${GRIPPERX_DESK_PI_SETTLE_SEC:-180}"
+PI_SETTLE_POLL_SEC="${GRIPPERX_DESK_PI_SETTLE_POLL_SEC:-5}"
+# A non-number would make the bound test fail on every pass, i.e. wait for ever.
+case "$PI_SETTLE_MAX_SEC" in ''|*[!0-9]*) PI_SETTLE_MAX_SEC=180 ;; esac
+case "$PI_SETTLE_POLL_SEC" in ''|*[!0-9]*) PI_SETTLE_POLL_SEC=5 ;; esac
+# Measured 2026-10-16: the Mode R sequence ran from the press (09:43:58) to the
+# last unit start (09:45:08), ~70 s, which the 180 s default covers with margin.
+# The grace below is how long an `active` mapping unit may still be missing
+# nodes before that stops counting as "coming up" and counts as "stuck" (still
+# refused, but no longer waited for).
+PI_MAPPING_GRACE_SEC=60
 
 RVIZ_CONFIG_REAL="${RVIZ_CONFIG_REAL:-$WS/install/gripperx_localization/share/gripperx_localization/rviz/localization.rviz}"
 RVIZ_CONFIG_TWIN="${RVIZ_CONFIG_TWIN:-$WS/install/gripperx_localization/share/gripperx_localization/rviz/localization.rviz}"
@@ -385,13 +467,17 @@ fi
 declare -a TRACKED_PIDS=()
 declare -a TRACKED_LABELS=()
 declare -a TRACKED_PATTERNS=()   # substring expected in /proc/<pid>/cmdline at kill time
+declare -a TRACKED_INT_WAITS=()  # seconds to wait after SIGINT before SIGTERM
+declare -a TRACKED_KILL_NOTES=() # warned if the process needed SIGTERM/SIGKILL
+declare -a TRACKED_STAGES=()     # teardown pass: node (teleop NODES) < launch (their wrappers) < command (leader) < "" (passive)
 
 usage() {
     cat <<'EOF'
 Usage: gripperx_desk.sh [real|twin|-h|--help] [flags]
 
   real   (default) Pi health check (read-only) + local mapping stack + RViz +
-         teleop against the REAL robot, ROS_DOMAIN_ID=20.
+         teleop against the REAL robot, ROS_DOMAIN_ID=20, plus the leader arm
+         node when /dev/gripperx_leader exists (see --no-leader).
   twin   Digital twin: Gazebo (GUI) + slam_toolbox + Nav2 + standalone RViz +
          teleop, ROS_DOMAIN_ID=220, in its own gz-transport partition.
          teleop_mux starts in keyboard mode, like the real robot: press G in
@@ -434,13 +520,21 @@ Flags:
                           this robot. Only on a network you control.
   --no-steer-gate   skip the MOVE confirmation (only if actuator power is OFF)
   --no-local-map    do not start rf2o+slam_toolbox locally in real mode
+  --no-leader       do not start the leader arm node (real mode). Without this
+                    flag it is started when /dev/gripperx_leader exists; a missing
+                    device is a WARN (J in the teleop will not work), and an
+                    already running leader_arm_node is reused, never stopped.
   --force-local-map start it even if the Pi could not be asked whether it is
-                    already mapping (asserts, does not verify)
+                    already mapping, or its stack had not settled (asserts,
+                    does not verify)
 
 Env overrides: RVIZ_CONFIG_REAL=<path>, RVIZ_CONFIG_TWIN=<path>,
                GRIPPERX_DESK_STEER_GATE=off, GRIPPERX_DESK_LOCAL_MAP=off,
+               GRIPPERX_DESK_LEADER=off,
                GRIPPERX_DESK_INPUT=web, GRIPPERX_DESK_WEB_PORT=<n>,
                GRIPPERX_DESK_MAP_WATCH_INTERVAL=<s>|off, GZ_PARTITION_TWIN=<name>
+               GRIPPERX_DESK_PI_SETTLE_SEC=<s> (real mode: how long to wait for a
+                 Pi stack in transition, e.g. a Mode R restart; default 180)
                (there is no environment variable for the bind address on
                 purpose - see --web-expose)
 EOF
@@ -474,10 +568,13 @@ pid_cmdline_matches() {
     tr '\0' ' ' < "/proc/$pid/cmdline" 2>/dev/null | grep -qF -- "$pattern"
 }
 
-track() { # label pid pattern
+track() { # label pid pattern [sigint_wait_sec [escalation_note [stage]]]
     TRACKED_LABELS+=("$1")
     TRACKED_PIDS+=("$2")
     TRACKED_PATTERNS+=("$3")
+    TRACKED_INT_WAITS+=("${4:-3}")
+    TRACKED_KILL_NOTES+=("${5:-}")
+    TRACKED_STAGES+=("${6:-}")
 }
 
 # Is the teleop NODE (TELEOP_NODE_PID, set by whichever start_teleop_* branch
@@ -627,13 +724,125 @@ refuse_if_conflicting_input() { # domain input
 
 # --- teardown ---------------------------------------------------------------
 
+# Is SIGINT ignored by $1 (bit 2 of SigIgn in /proc/<pid>/status)?
+sigint_ignored() {
+    local mask
+    mask=$(sed -n 's/^SigIgn:[[:space:]]*//p' "/proc/$1/status" 2>/dev/null)
+    [ -n "$mask" ] && [ $(( 0x$mask & 2 )) -ne 0 ]
+}
+
+# SIGINT one tracked process, wait, escalate. A process that is already gone, or
+# whose PID now belongs to something else, is reported and skipped - teardown
+# must complete whatever state the nodes are in.
+stop_tracked() { # index
+    local i="$1" pid label pattern int_wait note n
+    pid="${TRACKED_PIDS[$i]}"
+    label="${TRACKED_LABELS[$i]}"
+    pattern="${TRACKED_PATTERNS[$i]}"
+    int_wait="${TRACKED_INT_WAITS[$i]}"
+    note="${TRACKED_KILL_NOTES[$i]}"
+    if ! kill -0 "$pid" 2>/dev/null; then
+        log "  $label (PID $pid) already gone."
+        return 0
+    fi
+    if ! pid_cmdline_matches "$pid" "$pattern"; then
+        warn "  $label (PID $pid) no longer matches its expected command " \
+             "(PID reused?) - NOT touching it."
+        return 0
+    fi
+    # A launch wrapper started as "bash -c ...; exec ros2 launch" & from a
+    # non-interactive shell has SIGINT IGNORED (bash does that to async jobs
+    # without job control; ros2 launch keeps it - measured 2026-10-22). SIGINT is
+    # then a no-op and its grace period dead time, so such a LAUNCH (never the
+    # node or leader: those install their own handler once running) goes straight
+    # to SIGTERM. Also covers a wrapper signalled before its exec (third audit of
+    # 4dd8cad, finding 1): it used to lose the SIGINT and wait the grace out.
+    if [ "${TRACKED_STAGES[$i]:-}" = launch ] && sigint_ignored "$pid"; then
+        log "  $label (PID $pid) ignores SIGINT - SIGTERM at once."
+        int_wait=0
+    else
+        kill -INT "$pid" 2>/dev/null
+    fi
+    for ((n = 0; n < int_wait * 2; n++)); do
+        kill -0 "$pid" 2>/dev/null || break
+        teardown_sleep 0.5
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        [ -n "$note" ] && [ "$int_wait" -gt 0 ] && warn "  $label (PID $pid) still running ${int_wait} s after SIGINT - SIGTERM."
+        kill -TERM "$pid" 2>/dev/null
+        for ((n = 0; n < 4; n++)); do   # same 2 s bound, but leave as soon as it is gone
+            kill -0 "$pid" 2>/dev/null || break
+            teardown_sleep 0.5
+        done
+    fi
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -KILL "$pid" 2>/dev/null
+        log "  $label (PID $pid): SIGKILL."
+        [ -n "$note" ] && warn "  $label: $note"
+    else
+        log "  $label (PID $pid): stopped."
+    fi
+}
+
+# The waits inside teardown, with SIGINT/SIGTERM ignored in the sleep itself: a
+# Ctrl-C at the terminal reaches every process of the foreground group, and a
+# sleep killed by it would shorten a SIGINT grace period (the leader's torque-off)
+# into an early SIGTERM/SIGKILL.
+teardown_sleep() { # seconds
+    ( trap '' INT TERM; exec sleep "$1" )
+}
+
+# Keyboard teleop whose launch is out but whose node has not been seen yet (it
+# comes up in its own terminal window, so there is no PID to track at launch).
+# teardown() resolves it before stopping anything - see there.
+TELEOP_KBD_PENDING_DOMAIN=""
+TELEOP_KBD_PENDING_SINCE=0
+TELEOP_KBD_PENDING_LABEL=""
+TELEOP_KBD_BASELINE=""
+TELEOP_KBD_WAIT_SEC=15
+
+# Track the keyboard teleop node (and its launch) if it has appeared on its domain
+# since the launch. Returns 0 (and sets TELEOP_NODE_PID) when the node was found.
+# Must run in the caller's shell, not in $(...): track() appends to arrays. PIDs that already existed
+# before the launch (TELEOP_KBD_BASELINE) are never claimed.
+resolve_kbd_teleop() {
+    local domain="$TELEOP_KBD_PENDING_DOMAIN" label="$TELEOP_KBD_PENDING_LABEL" pid node_pid="" launch_pid=""
+    for pid in $(pids_for_pattern_on_domain "keyboard_teleop_node" "$domain"); do
+        [[ " $TELEOP_KBD_BASELINE " == *" $pid "* ]] && continue
+        node_pid="$pid"; break
+    done
+    [ -n "$node_pid" ] || return 1
+    for pid in $(pids_for_pattern_on_domain "ros2 launch gripperx_teleop laptop_teleop.launch.py" "$domain"); do
+        [[ " $TELEOP_KBD_BASELINE " == *" $pid "* ]] && continue
+        launch_pid="$pid"; break
+    done
+    track "$label teleop node" "$node_pid" "keyboard_teleop_node" "" "" node
+    [ -n "$launch_pid" ] && track "$label teleop launch" "$launch_pid" "gripperx_teleop laptop_teleop.launch.py" "" "" launch
+    TELEOP_NODE_PID="$node_pid"
+    TELEOP_KBD_PENDING_DOMAIN=""
+}
+
 TEARDOWN_DONE=0
+# Set by teardown's own traps when INT/TERM/PIPE arrives WHILE it runs.
+TEARDOWN_SIGNAL=""
 teardown() {
     [ "$TEARDOWN_DONE" = 1 ] && return
-    TEARDOWN_DONE=1
-    if [ "${#TRACKED_PIDS[@]}" -eq 0 ] && [ "${TWIN_LAUNCHED:-0}" = 0 ]; then
+    # Not "spent" on an empty run: a call with nothing tracked yet must not leave
+    # whatever is tracked LATER without an owner for the EXIT trap.
+    if [ "${#TRACKED_PIDS[@]}" -eq 0 ] && [ "${TWIN_LAUNCHED:-0}" = 0 ] \
+       && [ -z "$TELEOP_KBD_PENDING_DOMAIN" ]; then
         return   # nothing was ever started (e.g. -h/--help, or all steps skipped) - stay quiet
     fi
+    # ONE TEARDOWN RUNS TO THE END. From here on INT/TERM/PIPE only record that
+    # they arrived; the run exits with that status AFTER the last process is
+    # handled. Before 2026-10-16 (b3958a7) a Ctrl-C during the ordinary teardown
+    # (Enter / Q / EOF) reached on_fatal_signal, whose teardown call returned at
+    # once (already running) and whose exit then abandoned the processes not yet
+    # stopped - the leader mid its torque-off grace, mapping and RViz untouched.
+    trap 'TEARDOWN_SIGNAL=130' INT
+    trap 'TEARDOWN_SIGNAL=143' TERM
+    trap 'TEARDOWN_SIGNAL=141' PIPE
+    TEARDOWN_DONE=1   # after the traps: no window in which a signal finds it "done"
     echo
     # The watch goes first: it must not comment on processes that are on their way
     # out, and everything it could still say is said once more at the end of teardown.
@@ -641,35 +850,59 @@ teardown() {
         kill -TERM "$MAP_WATCH_PID" 2>/dev/null
     fi
     log "Tearing down everything this script started..."
-    local i pid label pattern
-    for i in "${!TRACKED_PIDS[@]}"; do
-        pid="${TRACKED_PIDS[$i]}"
-        label="${TRACKED_LABELS[$i]}"
-        pattern="${TRACKED_PATTERNS[$i]}"
-        if ! kill -0 "$pid" 2>/dev/null; then
-            log "  $label (PID $pid) already gone."
-            continue
-        fi
-        if ! pid_cmdline_matches "$pid" "$pattern"; then
-            warn "  $label (PID $pid) no longer matches its expected command " \
-                 "(PID reused?) - NOT touching it."
-            continue
-        fi
-        kill -INT "$pid" 2>/dev/null
-        for _ in 1 2 3 4 5 6; do
-            kill -0 "$pid" 2>/dev/null || break
-            sleep 0.5
+    [ -n "$TELEOP_NODE_PID" ] || [ -n "$TELEOP_KBD_PENDING_DOMAIN" ] \
+        && log "  Stopping the teleop may straighten the steering (a teleop that publishes its stop on a signal sends straight-ahead)."
+    # COMMAND SOURCES FIRST, everything passive (local mapping, RViz) after them.
+    # Until 2026-10-16 the order was start order, so the teleop - the one process
+    # here that can drive the real robot - stayed alive and publishing through the
+    # SIGINT waits of the whole mapping stack and RViz. Within the command sources:
+    #   1. the teleop NODES (stage node: web and keyboard, incl. the pending-claim
+    #      one) - they are what publishes, so they get their signal first;
+    #   2. their launch wrappers (stage launch);
+    #   3. the leader arm node (stage command).
+    # Node before launch since 2026-10-22: a launch started as "bash -c ...; exec
+    # ros2 launch" & ignores SIGINT and, on SIGTERM, dies WITHOUT forwarding it, so
+    # signalling the launch first left the node orphaned and publishing for the
+    # whole wait, until this loop reached the node's own entry. Within each pass
+    # the start order is kept. NO stop command is published from here, on purpose:
+    #   * before the SIGINT it would be pointless - the live teleop republishes its
+    #     own twist every tick and teleop_mux forwards whichever arrived last;
+    #   * after it, a ros2 CLI publisher needs longer to come up than teleop_mux's
+    #     cmd_timeout_sec (0.5 s), which already sends zero on silence.
+    # STEERING: the teleop nodes are expected to publish their own full stop when
+    # signalled (/arm/stop, leader disarm, keyboard mode, zero twist AND straight
+    # steering [0,0,0,0]) - branch Theo-teleop-signal-stop, c5dff3f, NOT yet in
+    # the default branch and still under audit when this was written; before it a
+    # signalled teleop never sent the centring (rclpy took the context down before
+    # main() could). Straightening is a STEERING MOVE, up to 90 deg out of a
+    # crab/spin pose. The user accepted on 2026-10-22 that teardown may therefore
+    # move the steering; this script still sends no centring itself, so on a robot
+    # whose teleop lacks that change nothing is straightened.
+    # A keyboard teleop launched but not yet seen (Ctrl-C inside its startup
+    # poll) would otherwise come up AFTER this teardown in its own window, a live
+    # command source nobody owns. Bounded by what is left of its startup window.
+    if [ -n "$TELEOP_KBD_PENDING_DOMAIN" ]; then
+        local left=$(( TELEOP_KBD_WAIT_SEC - (SECONDS - TELEOP_KBD_PENDING_SINCE) )) found=0
+        [ "$left" -lt 1 ] && left=1
+        log "  keyboard teleop launch still pending - waiting up to ${left} s for its node, so it is not left running."
+        while [ "$left" -gt 0 ]; do
+            resolve_kbd_teleop && { found=1; break; }
+            teardown_sleep 1
+            left=$((left - 1))
         done
-        if kill -0 "$pid" 2>/dev/null; then
-            kill -TERM "$pid" 2>/dev/null
-            sleep 2
+        if [ "$found" = 0 ]; then
+            warn "  keyboard teleop node never appeared on domain $TELEOP_KBD_PENDING_DOMAIN - check its terminal window."
         fi
-        if kill -0 "$pid" 2>/dev/null; then
-            kill -KILL "$pid" 2>/dev/null
-            log "  $label (PID $pid): SIGKILL."
-        else
-            log "  $label (PID $pid): stopped."
-        fi
+    fi
+    local i
+    local stage
+    for stage in node launch command; do
+        for i in "${!TRACKED_PIDS[@]}"; do
+            [ "${TRACKED_STAGES[$i]:-}" = "$stage" ] && stop_tracked "$i"
+        done
+    done
+    for i in "${!TRACKED_PIDS[@]}"; do
+        case "${TRACKED_STAGES[$i]:-}" in node|launch|command) ;; *) stop_tracked "$i" ;; esac
     done
 
     # Known orphan-prone twin nodes (see gripperx_gazebo/README.md): only
@@ -719,18 +952,66 @@ teardown() {
     # cleanliness, not a safety measure.
     rm -f "$QUIT_FLAG" 2>/dev/null
     log "Teardown complete. Terminal windows (if any) may remain open (idle shell) - close them manually."
+    if [ -n "$TEARDOWN_SIGNAL" ]; then
+        trap - EXIT
+        exit "$TEARDOWN_SIGNAL"
+    fi
 }
 # PIPE is in the list deliberately. A shell killed by an UNTRAPPED fatal signal
 # does not run its EXIT trap, and SIGPIPE is exactly that case: piping this
 # script into something that exits early ("gripperx_desk.sh real | head") kills
 # it the moment it writes to the closed pipe, leaving every process it started
 # (RViz, the local mapping stack, Gazebo) running.
-trap teardown INT TERM PIPE EXIT
+# INT, TERM and PIPE END THE RUN after the teardown. Until 2026-10-16 the trap was
+# a bare "teardown", which returns: a Ctrl-C before anything was tracked (the Pi
+# health check, e.g. its settle wait) tore down nothing and the script carried on
+# starting RViz, the teleop and the leader - which then nothing tore down. The
+# three are ignored while the handler runs, so a second Ctrl-C (or a write to the
+# closed pipe from teardown's own log lines) cannot cut the teardown short; it is
+# bounded anyway (SIGINT wait -> SIGTERM -> SIGKILL per process). A probe ssh in
+# flight is killed first - it runs in the background exactly so that this trap
+# fires at once instead of after up to 45 s (see pi_probe).
+# What it reaches: every launch is tracked the moment it is backgrounded, so a
+# Ctrl-C inside a start-up poll still stops it; the keyboard teleop, whose node
+# starts inside a terminal emulator and has no PID at launch, is marked pending
+# and claimed by teardown (bounded by its 15 s start-up window). How fast: the
+# probe and the settle/retry sleeps are interruptible; the start-up polls are
+# foreground sleeps of 0.5-3 s, so a signal sent to this PID alone can lag by
+# that much (a terminal Ctrl-C ends the sleep as well), and the ros2 CLI calls
+# under `timeout 20` (DDS node/topic list, lifecycle calls) are NOT interruptible:
+# timeout runs in its own process group, so the trap waits for them, up to 20 s.
+# A signal that arrives
+# while teardown runs does not cut it short - see teardown().
+on_fatal_signal() { # exit_status
+    trap '' INT TERM PIPE
+    if [ -n "${PI_PROBE_PID:-}" ]; then
+        kill -TERM "$PI_PROBE_PID" 2>/dev/null
+    fi
+    echo
+    log "interrupted - stopping."
+    teardown
+    exit "$1"
+}
+install_traps() {
+    trap 'on_fatal_signal 130' INT
+    trap 'on_fatal_signal 143' TERM
+    trap 'on_fatal_signal 141' PIPE
+    trap teardown EXIT
+}
+install_traps
 
 # --- Pi health check (real mode only) ---------------------------------------
 
-pi_health_check() {
-    log "== Pi health check (read-only, ssh $SSH_HOST) =="
+# A foreground sleep holds back a trap until it ends; a waited-for background one
+# does not (same reason as the background probe in pi_probe).
+interruptible_sleep() { # seconds
+    sleep "$1" &
+    wait "$!"
+}
+
+# One read-only look at the Pi, with retries. Sets PI_PROBE_OUT to the KEY: value
+# lines of the payload; returns 1 (after saying so) when every attempt failed.
+pi_probe() {
     # The retry budget is deliberately wide: on a fully loaded Pi (all four
     # services active) the first two attempts can time out and the third succeed.
     # A slow handshake is not a down robot, and declaring the robot unreachable
@@ -738,10 +1019,17 @@ pi_health_check() {
     # The outer "timeout" is not redundant with ConnectTimeout: ConnectTimeout
     # bounds the TCP/handshake phase only, and a session that hangs AFTER
     # authentication (the loaded case) would otherwise stall here for ever.
-    local out attempt=0 max=5
+    # BACKGROUND + wait, not $(...): bash runs a trap only after the foreground
+    # command returns, and "timeout" puts ssh in its own process group, so a
+    # Ctrl-C at the terminal reached neither - the run sat out the ssh (up to 45 s)
+    # before it could stop. The wait builtin returns as soon as a trapped signal
+    # arrives, and on_fatal_signal kills PI_PROBE_PID. stdin is /dev/null: ssh
+    # forwards stdin to the remote command, and this one reads none.
+    local out attempt=0 max=5 rc tmp="$LOG_DIR/pi_probe_$$.out"
+    PI_PROBE_OUT=""
     while :; do
         attempt=$((attempt + 1))
-        out=$(timeout 45 ssh -o ConnectTimeout=10 -o BatchMode=yes "$SSH_HOST" '
+        timeout 45 ssh -o ConnectTimeout=10 -o BatchMode=yes "$SSH_HOST" '
             echo "UPTIME_LINE: $(uptime)"
             echo "SVC_BRINGUP: $(systemctl is-active gripperx-bringup 2>/dev/null)"
             echo "SVC_AGENT: $(systemctl is-active gripperx-agent 2>/dev/null)"
@@ -781,8 +1069,30 @@ pi_health_check() {
             echo "N_EKF: $(pgrep -c -f "ekf_nod[e]")"
             echo "N_SLAM: $(pgrep -c -f "async_slam_toolbox_nod[e]")"
             echo "AGENT_CT: $(docker ps --filter name=mros_agent --format "{{.Status}}" 2>/dev/null)"
-        ' 2>&1)
-        if [ $? -eq 0 ]; then
+            # TRANSITION EVIDENCE - see "AND IT WAITS WHILE THE Pi STACK IS IN
+            # TRANSITION" in the header. systemd and the process table only, no
+            # journal text. The stop sequence runs as root under sudo from the
+            # button daemon, but its argv is still visible here; the [p] bracket
+            # is the same self-match guard as above.
+            echo "SVC_EXTERNAL: $(systemctl is-active gripperx-external 2>/dev/null)"
+            # The pattern also matches the three operator names gripperx-stop /
+            # gripperx-restart / gripperx-shutdown, which gripperx-stack-stop
+            # documents as symlinks to itself (dispatch on $0; NOT installed on
+            # GripperX-1 as of 2026-10-16). Every alternative carries its own
+            # bracket: one unguarded alternative would match our own argv.
+            echo "STACKSTOP_N: $(pgrep -c -f "bin/gripperx-(stack-sto[p]|restar[t]|sto[p]|shutdow[n])( |\$)")"
+            echo "STACKSTOP_CMDS: $(pgrep -a -f "bin/gripperx-(stack-sto[p]|restar[t]|sto[p]|shutdow[n])( |\$)" | cut -d " " -f 2- | tr "\n" "|")"
+            echo "JOBS: $(systemctl list-jobs --no-legend 2>/dev/null | grep -oE "gripperx[-a-z]*[.](service|target) +[a-z]+ +[a-z]+" | tr -s " " | tr " \n" ":,")"
+            echo "MAP_ACTIVE_ENTER_US: $(systemctl show -p ActiveEnterTimestampMonotonic --value gripperx-mapping 2>/dev/null)"
+            echo "UPTIME_S: $(cut -d. -f1 /proc/uptime)"
+        ' >"$tmp" 2>&1 </dev/null &
+        PI_PROBE_PID=$!
+        wait "$PI_PROBE_PID"
+        rc=$?
+        PI_PROBE_PID=""
+        out=$(cat "$tmp" 2>/dev/null)
+        rm -f "$tmp"
+        if [ "$rc" -eq 0 ]; then
             break
         fi
         if [ "$attempt" -ge "$max" ]; then
@@ -794,7 +1104,150 @@ pi_health_check() {
             return 1
         fi
         warn "ssh attempt $attempt/$max failed (timeout or refused), retrying in 5s..."
-        sleep 5
+        interruptible_sleep 5
+    done
+    PI_PROBE_OUT="$out"
+    return 0
+}
+
+probe_field() { # probe_output KEY
+    sed -n "s/^$2: //p" <<<"$1" | head -n1
+}
+
+# Seconds gripperx-mapping has been `active`, from the probe's two monotonic
+# readings; empty when either is missing or not a number (never active, old
+# systemd, garbled answer) - the caller then does not claim an age at all.
+mapping_active_age() { # probe_output
+    local us up
+    us=$(probe_field "$1" MAP_ACTIVE_ENTER_US)
+    up=$(probe_field "$1" UPTIME_S)
+    case "$us" in ''|*[!0-9]*) return 0 ;; esac
+    case "$up" in ''|*[!0-9]*) return 0 ;; esac
+    [ "$us" -gt 0 ] || return 0
+    echo $(( up - us / 1000000 ))
+}
+
+# The Pi's mapping node set is complete: slam_toolbox plus one odometry source of
+# the current stack (same rule as PI_MAPPING_EVIDENCE="active" below).
+mapping_nodes_complete() { # probe_output
+    local n_slam n_lsm n_ekf
+    n_slam=$(probe_field "$1" N_SLAM)
+    n_lsm=$(probe_field "$1" N_LSM)
+    n_ekf=$(probe_field "$1" N_EKF)
+    [ "${n_slam:-0}" -ge 1 ] 2>/dev/null \
+        && { [ "${n_lsm:-0}" -ge 1 ] 2>/dev/null || [ "${n_ekf:-0}" -ge 1 ] 2>/dev/null; }
+}
+
+# The modes of every running stop sequence, unique, space-separated: the last
+# --mode= on its command line (an explicit --mode wins over the name, as in
+# gripperx-stack-stop itself), else the mode its operator name dispatches to, else
+# "?" (unreadable - treated like a restart by the callers: worst case).
+stackstop_modes() { # probe_output
+    local cmds line m lines=() modes=()
+    cmds=$(probe_field "$1" STACKSTOP_CMDS)
+    IFS='|' read -r -a lines <<<"$cmds"
+    for line in "${lines[@]}"; do
+        [ -n "${line// /}" ] || continue
+        m=$(grep -oE -- '--mode=[a-z]+' <<<"$line" | tail -n1)
+        m="${m#--mode=}"
+        if [ -z "$m" ]; then
+            case " $line " in
+                *bin/gripperx-restart\ *)  m=restart ;;
+                *bin/gripperx-stop\ *)     m=stop ;;
+                *bin/gripperx-shutdown\ *) m=halt ;;
+                *)                         m="?" ;;
+            esac
+        fi
+        modes+=("$m")
+    done
+    [ "${#modes[@]}" -gt 0 ] || { echo "?"; return 0; }
+    printf '%s\n' "${modes[@]}" | sort -u | tr '\n' ' ' | sed 's/ $//'
+}
+
+# Non-empty (the modes) when stop sequences are running and NONE of them brings
+# the stack back: only --mode=stop (stack stays down; also bringup's own ExecStop,
+# --mode=stop --from-unit) and --mode=halt (Mode H, long press: the Pi powers off).
+# Mode R shows "restart" (plus that ExecStop's "stop"), and that is waited for.
+pi_stopping_only() { # probe_output
+    local n modes m
+    n=$(probe_field "$1" STACKSTOP_N)
+    [ "${n:-0}" -ge 1 ] 2>/dev/null || return 0
+    modes=$(stackstop_modes "$1")
+    for m in $modes; do
+        case "$m" in stop|halt) ;; *) return 0 ;; esac
+    done
+    echo "$modes"
+}
+
+# Prints the reasons ("; "-separated) why the Pi stack is in transition right now,
+# nothing if it is not. Pure: reads only the probe output, so the offline test
+# harness can drive it. See the header for why each signal is on the list.
+pi_transition_reasons() { # probe_output
+    local out="$1" r=() n modes jobs key unit st age
+    n=$(probe_field "$out" STACKSTOP_N)
+    if [ "${n:-0}" -ge 1 ] 2>/dev/null && [ -z "$(pi_stopping_only "$out")" ]; then
+        modes=$(stackstop_modes "$out")
+        r+=("stop sequence running (gripperx-stack-stop, mode: $modes)")
+    fi
+    jobs=$(probe_field "$out" JOBS)
+    jobs="${jobs%,}"
+    [ -n "${jobs//[[:space:],]/}" ] && r+=("systemd jobs queued: ${jobs//,/, }")
+    for key in AGENT:agent BRINGUP:bringup MAPPING:mapping NAV:navigation EXTERNAL:external; do
+        unit="gripperx-${key#*:}"
+        st=$(probe_field "$out" "SVC_${key%%:*}")
+        case "$st" in
+            activating|deactivating|reloading|refreshing) r+=("$unit $st") ;;
+        esac
+    done
+    if [ "$(probe_field "$out" SVC_MAPPING)" = "active" ] && ! mapping_nodes_complete "$out"; then
+        age=$(mapping_active_age "$out")
+        if [ -n "$age" ] && [ "$age" -lt "$PI_MAPPING_GRACE_SEC" ]; then
+            r+=("gripperx-mapping active for ${age}s, its nodes not all up yet")
+        fi
+    fi
+    [ "${#r[@]}" -eq 0 ] && return 0
+    local IFS=';'
+    printf '%s\n' "${r[*]}" | sed 's/;/; /g'
+}
+
+pi_health_check() {
+    log "== Pi health check (read-only, ssh $SSH_HOST) =="
+    local out reasons elapsed stopping settle_start=$SECONDS announced=0 stop_announced=0
+    PI_TRANSITION_LEFT=""
+    while :; do
+        pi_probe || return 1
+        out="$PI_PROBE_OUT"
+        stopping=$(pi_stopping_only "$out")
+        if [ -n "$stopping" ] && [ "$stop_announced" = 0 ]; then
+            warn "Pi stack is being STOPPED (gripperx-stack-stop, mode: $stopping) - nothing will"
+            warn "  bring it back by itself (stop: stack stays down; halt: the Pi powers off),"
+            warn "  so this run does NOT wait for a return. Units still shutting down are waited"
+            warn "  for; after that the usual checks decide, and an unreachable Pi is 'unknown'."
+            stop_announced=1
+        fi
+        reasons=$(pi_transition_reasons "$out")
+        if [ -z "$reasons" ]; then
+            [ "$announced" = 1 ] && ok "Pi stack settled after $((SECONDS - settle_start)) s - re-evaluating."
+            break
+        fi
+        elapsed=$((SECONDS - settle_start))
+        if [ "$announced" = 0 ]; then
+            warn "Pi stack is IN TRANSITION: $reasons"
+            warn "  Its state now says nothing about its state in a minute - e.g. a Mode R"
+            warn "  restart (short press of the shutdown button) brings mapping back by itself."
+            warn "  Waiting up to ${PI_SETTLE_MAX_SEC} s before deciding anything; nothing has been"
+            warn "  started yet. Ctrl-C aborts. (GRIPPERX_DESK_PI_SETTLE_SEC sets the bound.)"
+            announced=1
+        fi
+        if [ "$elapsed" -ge "$PI_SETTLE_MAX_SEC" ]; then
+            PI_TRANSITION_LEFT="$reasons"
+            warn "Pi stack still in transition after ${elapsed} s: $reasons"
+            warn "  Giving up the wait. Mapping evidence will be 'unsettled': no local"
+            warn "  mapping stack is started on it (see the local mapping line below)."
+            break
+        fi
+        log "  waiting for the Pi stack (${elapsed}/${PI_SETTLE_MAX_SEC} s): $reasons"
+        interruptible_sleep "$PI_SETTLE_POLL_SEC"
     done
 
     local uptime_line bringup_proc n_arm n_steer n_swerve n_jcb n_rsp n_rc n_lidar agent_ct
@@ -896,9 +1349,15 @@ pi_health_check() {
     # four mutually exclusive variants under different arguments, and this script
     # has no business predicting which one systemd picked - it only needs to know
     # that the odom edge on domain $REAL_DOMAIN is already owned by somebody.
-    if [ "$svc_mapping" = "active" ] && [ "${n_slam:-0}" -ge 1 ] 2>/dev/null \
-       && { [ "${n_lsm:-0}" -ge 1 ] 2>/dev/null || [ "${n_ekf:-0}" -ge 1 ] 2>/dev/null; }; then
+    # "inactive" is claimed only for a SETTLED Pi: a transition the wait above gave
+    # up on, or a mapping unit that is active without its full node set, is a Pi
+    # whose own mapping can (re)appear beside ours - "unsettled", refused like
+    # "unknown". Until 2026-10-16 the active-but-incomplete case counted as
+    # "inactive" and let the local stack start.
+    if [ "$svc_mapping" = "active" ] && mapping_nodes_complete "$out"; then
         PI_MAPPING_EVIDENCE="active"
+    elif [ -n "$PI_TRANSITION_LEFT" ] || [ "$svc_mapping" = "active" ]; then
+        PI_MAPPING_EVIDENCE="unsettled"
     else
         PI_MAPPING_EVIDENCE="inactive"
     fi
@@ -979,6 +1438,9 @@ mapping_check() { # svc_state n_laser_scan_matcher n_slam n_ekf
             elif [ "$PI_MAPPING_EVIDENCE" = "unknown" ] && [ "${LOCAL_MAP,,}" != "force" ]; then
                 log "local mapping: will be SKIPPED - the Pi could not be asked, and this script does"
                 log "  not start a mapping stack on domain $REAL_DOMAIN on a guess. --force-local-map overrides."
+            elif [ "$PI_MAPPING_EVIDENCE" = "unsettled" ] && [ "${LOCAL_MAP,,}" != "force" ]; then
+                log "local mapping: will be SKIPPED - the Pi stack has not settled, so its mapping can"
+                log "  still come up beside ours on domain $REAL_DOMAIN. --force-local-map overrides."
             else
                 log "local mapping: will be STARTED on this laptop (rf2o + slam_toolbox, domain $REAL_DOMAIN)."
                 log "  Laser odometry then runs over WiFi - the known weak point of this variant."
@@ -1178,6 +1640,24 @@ start_local_mapping() {
         ok "  edge would make the TF tree ambiguous - use the Pi's map."
         return 0
     fi
+    # UNSETTLED IS NOT "NO" EITHER. The Pi answered, but its stack was in a
+    # transition the health check gave up waiting for (a restart, a start job, a
+    # unit crash-looping through Restart=on-failure), or mapping is active with an
+    # incomplete node set. Either way its own slam_toolbox + odometry can appear
+    # beside ours at any moment - the 2026-10-16 collision. Refused before the DDS
+    # probe: an empty graph now would prove nothing about a minute from now.
+    if [ "$PI_MAPPING_EVIDENCE" = "unsettled" ] && [ "${LOCAL_MAP,,}" != "force" ]; then
+        LOCAL_MAP_STATE="skipped (Pi stack unsettled - refused to guess)"
+        warn "local mapping: NOT started - the Pi stack had not settled:"
+        warn "  ${PI_TRANSITION_LEFT:-gripperx-mapping is active but its node set is incomplete}"
+        warn "  A Pi whose mapping is coming back (or stuck half-up) is not a Pi that is not"
+        warn "  mapping: a local stack would become a second publisher of odom->base_footprint"
+        warn "  and a second /slam_toolbox on domain $REAL_DOMAIN."
+        warn "  Check it yourself:  ssh $SSH_HOST 'systemctl is-active gripperx-mapping; systemctl list-jobs'"
+        warn "  Then re-run this script once it has settled, or, if you KNOW the Pi will not"
+        warn "  map, with --force-local-map (that asserts it; it does not verify it)."
+        return 1
+    fi
     local nodes hits
     nodes=$(timeout 20 bash -c "$REAL_PRELUDE exec ros2 node list" 2>/dev/null)
     # Node NAMES as they appear in "ros2 node list", covering both stacks: the
@@ -1217,6 +1697,11 @@ start_local_mapping() {
     local logfile="$LOG_DIR/local_mapping_${REAL_DOMAIN}.log"
     bash -c "$REAL_PRELUDE exec ros2 launch gripperx_bringup mapping.launch.py" >"$logfile" 2>&1 &
     local lpid=$!
+    # Tracked AT LAUNCH, here and at every other launch: a Ctrl-C in the startup
+    # wait below must still find it. The pattern is in the wrapper's own argv
+    # (bash -c "... exec <pattern> ..."), so the PID-reuse check holds before
+    # and after the exec; a launch that dies is reported "already gone".
+    track "local mapping launch" "$lpid" "gripperx_bringup mapping.launch.py"
     sleep 3
     if ! kill -0 "$lpid" 2>/dev/null; then
         LOCAL_MAP_STATE="FAILED to start"
@@ -1224,7 +1709,6 @@ start_local_mapping() {
         return 1
     fi
     LOCAL_MAP_OURS=1
-    track "local mapping launch" "$lpid" "gripperx_bringup mapping.launch.py"
     ok "local mapping: launch started (PID $lpid, log: $logfile)"
 
     local waited=0 rf2o_pid="" slam_pid=""
@@ -1368,12 +1852,12 @@ start_rviz() { # prelude config domain label
     local logfile="$LOG_DIR/rviz_${domain}.log"
     bash -c "$prelude exec rviz2 -d '$config'" >"$logfile" 2>&1 &
     local pid=$!
+    track "$label RViz" "$pid" "rviz2"   # at launch - see start_local_mapping
     sleep 1
     if ! kill -0 "$pid" 2>/dev/null; then
         warn "$label RViz (domain $domain) exited immediately - see $logfile"
         return 1
     fi
-    track "$label RViz" "$pid" "rviz2"
     ok "$label RViz started (PID $pid, config: $config, log: $logfile)"
 }
 
@@ -1459,6 +1943,14 @@ start_teleop_keyboard() { # prelude domain label mode
     # already looking at it, and it is what is DRIVING the desk-wide teardown
     # that is about to run (see the wait loop in main, below); the flag file
     # is the one thing on this laptop that knows which case just happened.
+    # No PID to track yet (the node starts inside the terminal emulator): mark
+    # the launch pending, so a teardown during the poll below still claims it.
+    TELEOP_KBD_BASELINE=$(pids_for_pattern_on_domain "keyboard_teleop_node" "$domain"; \
+                          pids_for_pattern_on_domain "ros2 launch gripperx_teleop laptop_teleop.launch.py" "$domain")
+    TELEOP_KBD_BASELINE=$(tr '\n' ' ' <<<"$TELEOP_KBD_BASELINE")
+    TELEOP_KBD_PENDING_LABEL="$label"
+    TELEOP_KBD_PENDING_SINCE=$SECONDS
+    TELEOP_KBD_PENDING_DOMAIN="$domain"
     "$TERM_CMD" --title="GripperX teleop ($mode, domain $domain)" -- bash -c \
         "$cmd; echo; echo '[gripperx_desk] teleop ended.'; \
          if [ -f '$QUIT_FLAG' ]; then \
@@ -1468,21 +1960,21 @@ start_teleop_keyboard() { # prelude domain label mode
          fi" \
         >/dev/null 2>&1 &
 
-    local waited=0 node_pid launch_pid
-    while [ "$waited" -lt 15 ]; do
-        node_pid=$(pids_for_pattern_on_domain "keyboard_teleop_node" "$domain" | head -n1)
-        [ -n "$node_pid" ] && break
+    local waited=0 node_pid=""
+    while [ "$waited" -lt "$TELEOP_KBD_WAIT_SEC" ]; do
+        if resolve_kbd_teleop; then
+            node_pid="$TELEOP_NODE_PID"
+            break
+        fi
         sleep 1
         waited=$((waited + 1))
     done
     if [ -z "$node_pid" ]; then
-        warn "$label teleop: no keyboard_teleop_node appeared within 15s - check the terminal window for errors."
+        # Stays PENDING on purpose: if the node does come up late, teardown
+        # still claims it (bounded by the same window).
+        warn "$label teleop: no keyboard_teleop_node appeared within ${TELEOP_KBD_WAIT_SEC}s - check the terminal window for errors."
         return 1
     fi
-    launch_pid=$(pids_for_pattern_on_domain "ros2 launch gripperx_teleop laptop_teleop.launch.py" "$domain" | head -n1)
-    track "$label teleop node" "$node_pid" "keyboard_teleop_node"
-    [ -n "$launch_pid" ] && track "$label teleop launch" "$launch_pid" "gripperx_teleop laptop_teleop.launch.py"
-    TELEOP_NODE_PID="$node_pid"
     ok "$label teleop started in its own terminal window (node PID $node_pid, domain $domain)."
 }
 
@@ -1538,12 +2030,12 @@ start_teleop_web() { # prelude domain label
     bash -c "$prelude export GRIPPERX_DESK_QUIT_FLAG='$QUIT_FLAG'; exec ros2 launch gripperx_teleop web_teleop.launch.py $args" \
         >"$logfile" 2>&1 &
     local lpid=$!
+    track "$label teleop launch (web)" "$lpid" "gripperx_teleop web_teleop.launch.py" "" "" launch
     sleep 2
     if ! kill -0 "$lpid" 2>/dev/null; then
         warn "$label teleop (web): launch exited immediately - see $logfile"
         return 1
     fi
-    track "$label teleop launch (web)" "$lpid" "gripperx_teleop web_teleop.launch.py"
 
     local waited=0 node_pid=""
     while [ "$waited" -lt 20 ]; do
@@ -1557,7 +2049,7 @@ start_teleop_web() { # prelude domain label
         warn "$label teleop (web): the launch process is tracked and will be torn down with the rest."
         return 1
     fi
-    track "$label teleop node (web)" "$node_pid" "web_teleop_node"
+    track "$label teleop node (web)" "$node_pid" "web_teleop_node" "" "" node
     TELEOP_NODE_PID="$node_pid"
 
     # A live process is not a served page. Wait for the socket, so the URL below
@@ -1586,6 +2078,121 @@ start_teleop_web() { # prelude domain label
     echo
 }
 
+# --- leader arm node (real mode) -------------------------------------------------
+
+# "PID (cmdline)" of every process of THIS user with $1 open, one per line. Other
+# users' /proc/<pid>/fd is unreadable, so a foreign holder stays invisible here.
+# One find over all fds instead of a readlink per fd: that loop took ~15 s on a
+# laptop with ~2650 open fds.
+port_holders() { # device
+    local dev="$1" real pid
+    real=$(readlink -f -- "$dev" 2>/dev/null) || return 0
+    for pid in $(find /proc/[0-9]*/fd -maxdepth 1 \( -lname "$dev" -o -lname "$real" \) \
+                     2>/dev/null | cut -d/ -f3 | sort -u -n); do
+        echo "$pid $(tr '\0' ' ' 2>/dev/null < "/proc/$pid/cmdline")"
+    done
+}
+
+start_leader() { # prelude domain
+    local prelude="$1" domain="$2"
+    case "$LEADER" in
+        off|0|no|skip)
+            log "leader arm: disabled (GRIPPERX_DESK_LEADER=$LEADER / --no-leader) - J in the teleop will not work."
+            return 0 ;;
+    esac
+    if [ ! -e "$LEADER_DEV" ]; then
+        warn "leader arm: $LEADER_DEV not found - the leader arm is not plugged in (or the"
+        warn "  udev rule gripperx_leader/udev/99-gripperx-leader.rules is not installed)."
+        warn "  leader_arm_node NOT started: J (leader mode) in the teleop will not work."
+        warn "  Everything else starts as usual."
+        return 0
+    fi
+    # Already there: on our domain by name, or holding the port at all. Either way
+    # a second node would fight it for the bus. Reused, never tracked, never stopped.
+    local existing holders pid line others=() uncal=()
+    existing=$(pids_for_pattern_on_domain "leader_arm_node" "$domain" | tr '\n' ' ')
+    if [ -n "${existing// /}" ]; then
+        log "leader arm: leader_arm_node already running on domain $domain (PID(s): ${existing% })"
+        log "  - reused, NOT started again, and NOT stopped at teardown (not ours):"
+        # The match is by command line; shown so a false one (an editor, less) is visible.
+        for pid in $existing; do
+            log "    PID $pid: $(tr '\0' ' ' 2>/dev/null < "/proc/$pid/cmdline")"
+        done
+        for pid in $existing; do
+            pid_cmdline_matches "$pid" "calibration_file:=" || uncal+=("$pid")
+        done
+        if [ "${#uncal[@]}" -gt 0 ]; then
+            warn "leader arm: the reused node (PID(s) ${uncal[*]}) was started WITHOUT calibration_file:="
+            warn "  - leader angles unknown: J alignment is refused and the virtual wall is"
+            warn "  unavailable with it. Stop it (Ctrl-C in its terminal) and rerun this script."
+        fi
+        return 0
+    fi
+    # Only when no node was found by name: the fd scan is the slower check.
+    holders=$(port_holders "$LEADER_DEV")
+    if [ -n "$holders" ]; then
+        while IFS= read -r line; do
+            pid="${line%% *}"
+            if pid_cmdline_matches "$pid" "leader_arm_node"; then
+                warn "leader arm: leader_arm_node PID $pid holds $LEADER_DEV but runs on domain"
+                warn "  '$(domain_of_pid "$pid")', not $domain - J from this teleop will NOT reach it."
+                warn "  Reused anyway (a second node cannot open the port), NOT stopped at teardown."
+                pid_cmdline_matches "$pid" "calibration_file:=" || \
+                    warn "  It was also started WITHOUT calibration_file:= - J and the wall will not work with it."
+                return 0
+            fi
+            others+=("$line")
+        done <<< "$holders"
+        warn "leader arm: $LEADER_DEV is held by another process - leader_arm_node NOT started:"
+        for line in "${others[@]}"; do warn "    PID $line"; done
+        warn "  (leader_eeprom / record_limits / a serial terminal?) Nothing was killed."
+        warn "  J (leader mode) in the teleop will not work until it is free and the node runs."
+        return 0
+    fi
+    local exe="$WS/install/gripperx_leader/lib/gripperx_leader/leader_arm_node"
+    if [ ! -x "$exe" ]; then
+        warn "leader arm: $exe is missing - gripperx_leader is not built in this workspace."
+        warn "  leader_arm_node NOT started: J (leader mode) in the teleop will not work."
+        return 0
+    fi
+    if [ ! -f "$LEADER_CALIBRATION" ]; then
+        warn "leader arm: calibration file missing: $LEADER_CALIBRATION"
+        warn "  leader_arm_node NOT started - an uncalibrated leader has no angles, no wall,"
+        warn "  and refuses every J. Rebuild gripperx_leader (the file is installed from"
+        warn "  src/gripperx_leader/config/leader_calibration.yaml)."
+        return 0
+    fi
+
+    local logfile="$LOG_DIR/leader_${domain}.log"
+    # exec of the installed executable, not "ros2 run" - see the header (SIGINT).
+    bash -c "$prelude exec '$exe' --ros-args -p port:=$LEADER_DEV -p 'servo_ids:=$LEADER_SERVO_IDS' -p 'calibration_file:=$LEADER_CALIBRATION'" \
+        >"$logfile" 2>&1 &
+    local lpid=$! waited=0
+    # At launch - see start_local_mapping. The startup poll below can take 15 s.
+    track "leader arm node" "$lpid" "leader_arm_node" "$LEADER_STOP_WAIT_SEC" \
+        "it was KILLED, so its shutdown (torque off on every leader servo) did not run - a servo held by the virtual wall may still be torqued. Unplug the leader's power/USB or restart the node and stop it with Ctrl-C." command
+    # Ready = the node's own "DISARMED ... torque off" line; it dies on a failed
+    # startup check (bus, ping, calibration). 15 s covers the bus scan.
+    while [ "$waited" -lt 30 ]; do
+        kill -0 "$lpid" 2>/dev/null || break
+        grep -q 'leader streaming DISARMED' "$logfile" 2>/dev/null && break
+        sleep 0.5
+        waited=$((waited + 1))
+    done
+    if ! kill -0 "$lpid" 2>/dev/null; then
+        warn "leader arm: leader_arm_node exited during startup - see $logfile:"
+        tail -n 5 "$logfile" 2>/dev/null | sed 's/^/    /' >&2
+        warn "  J (leader mode) in the teleop will not work."
+        return 0
+    fi
+    if grep -q 'leader streaming DISARMED' "$logfile" 2>/dev/null; then
+        ok "leader arm: leader_arm_node started (PID $lpid, domain $domain, $LEADER_DEV, log $logfile)."
+    else
+        warn "leader arm: leader_arm_node (PID $lpid) is running but has not reported ready"
+        warn "  within 15 s - see $logfile. Tracked; teardown stops it."
+    fi
+}
+
 # --- groups -------------------------------------------------------------------
 
 start_real() {
@@ -1598,6 +2205,9 @@ start_real() {
     start_map_collision_watch
     start_rviz "$REAL_PRELUDE" "$RVIZ_CONFIG_REAL" "$REAL_DOMAIN" "real"
     start_teleop "$REAL_PRELUDE" "$REAL_DOMAIN" "real" "real"
+    # After the teleop, so its J and Space are there by the time the leader can
+    # act on them. Passive until an align request: moves nothing on start.
+    start_leader "$REAL_PRELUDE" "$REAL_DOMAIN"
     log "real: local mapping state: $LOCAL_MAP_STATE"
 }
 
@@ -1690,9 +2300,9 @@ start_twin() {
         bash -c "$TWIN_NAV_PRELUDE exec ros2 launch gripperx_gazebo sim_navigation.launch.py headless:=false use_rviz:=false localization:=slam odom_source:=ground_truth initial_mode:=keyboard" \
             >"$logfile" 2>&1 &
         local gzpid=$!
+        track "twin gazebo/sim_navigation" "$gzpid" "gripperx_gazebo"   # at launch
         sleep 2
         if kill -0 "$gzpid" 2>/dev/null; then
-            track "twin gazebo/sim_navigation" "$gzpid" "gripperx_gazebo"
             TWIN_LAUNCHED=1
             ok "twin Gazebo launch started (PID $gzpid, log: $logfile) - GUI window may take a few seconds."
         else
@@ -1705,6 +2315,15 @@ start_twin() {
 }
 
 # --- main ----------------------------------------------------------------
+
+# Sourced instead of executed (the offline test harness, scripts/test/
+# test_gripperx_desk.sh): every function is defined, nothing below is run.
+# "return" succeeds only in a sourced file or a function; comparing BASH_SOURCE
+# with $0 instead misfired for "bash < file" and bash -c "$(cat file)".
+if (return 0 2>/dev/null); then
+    trap - INT TERM PIPE EXIT
+    return 0
+fi
 
 MODE="real"
 case "${1:-}" in
@@ -1721,6 +2340,7 @@ while [ "$#" -gt 0 ]; do
         --no-steer-gate) STEER_GATE="off" ;;
         --no-local-map)  LOCAL_MAP="off" ;;
         --force-local-map) LOCAL_MAP="force" ;;
+        --no-leader)     LEADER="off" ;;
         --input)        shift; INPUT="${1:-}" ;;
         --input=*)      INPUT="${1#--input=}" ;;
         --web)          INPUT="web" ;;

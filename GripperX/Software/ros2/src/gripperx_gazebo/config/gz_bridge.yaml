@@ -6,7 +6,14 @@
   gz_type_name: gz.msgs.Clock
   direction: GZ_TO_ROS
 
-- topic_name: /imu/data
+# Gazebo publishes the IMU on /imu/data (the sensor <topic> in
+# gripperx_v1.gazebo.xacro); ROS receives it as /imu/bno085/data, the name the
+# real BNO085 driver publishes on. Same raw topic on both platforms, so
+# localization_input_node reads one name everywhere and a robot bag replays
+# against the same configuration as the twin (gripperx_localization
+# test/check_imu_wiring.py checks the two stay equal).
+- ros_topic_name: /imu/bno085/data
+  gz_topic_name: /imu/data
   ros_type_name: sensor_msgs/msg/Imu
   gz_type_name: gz.msgs.IMU
   direction: GZ_TO_ROS

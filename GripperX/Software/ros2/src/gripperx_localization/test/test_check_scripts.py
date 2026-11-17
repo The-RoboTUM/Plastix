@@ -28,7 +28,14 @@ _HERE = Path(__file__).parent
 CHECKS = [
     "check_autonomy_launch_wiring.py",
     "check_odom_divergence.py",
+    "check_yaw_divergence.py",
+    "check_yaw_divergence_node.py",
+    "check_position_reset.py",
+    "check_slam_rotation_scans.py",
+    "check_stale_wheel_sample.py",
     "check_wheel_rate_source.py",
+    "check_odom0_no_gate.py",
+    "check_imu_wiring.py",
 ]
 
 

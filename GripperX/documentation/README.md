@@ -4,15 +4,15 @@
 readable with the network down. Everything meant purely for *reading* — overviews, the user
 manual, the glossary — lives in the team wiki instead, and is not duplicated here.
 
-**Status:** 2026-08-25. One home per fact: where a document below and the wiki cover the same
+**Status:** 2026-11-17 (index extended; `DEPLOYMENT.md` and `ASBUILT.md` updated, see below). Per-file dates are in each document. One home per fact: where a document below and the wiki cover the same
 ground, the document is the source and the wiki links to it.
 
 ## Documents
 
 | File | What it is |
 | --- | --- |
-| `DEPLOYMENT.md` | Commissioning and bringup runbook: how the stack is brought up on the robot, the binding clean-teardown restart, and the lessons behind both. Kept here because it is needed exactly when the network is not available. |
-| `ASBUILT.md` | As-**built** inventory — what is physically fitted. Pairs with `schematics/WIRING_PLAN.md`, which is as-**drawn**. Drawn is not fitted, and where the two disagree on wiring or topology the wiring plan wins: it was traced element-by-element a month after this file's inventory date. |
+| `DEPLOYMENT.md` | Commissioning and bringup runbook: how the stack is brought up on the robot, the binding clean-teardown restart, and the lessons behind both. Kept here because it is needed exactly when the network is not available. Lists the systemd units (§0.1) and what changed in operation since 2026-09-30 (§7: drive-fault clear, aimed pick, list-loss hold, leader arm, IMU/yaw alarm, camera). |
+| `ASBUILT.md` | As-**built** inventory — what is physically fitted. Includes the sensors as wired into the software (IMU fusion, front camera, LiDAR stamp) and the leader arm. Pairs with `schematics/WIRING_PLAN.md`, which is as-**drawn**. Drawn is not fitted, and where the two disagree on wiring or topology the wiring plan wins: it was traced element-by-element a month after this file's inventory date. |
 | `ENCODER_FEEDBACK.md` | Design and implementation record of the wheel-encoder feedback path (firmware plus hardware interface), including the measured `COUNTS_PER_OUTPUT_REV`. |
 | `TWIN_OCTOPUS_RUNBOOK.md` | How to run the Octopus link against the digital twin. Versions with the world files it names. |
 

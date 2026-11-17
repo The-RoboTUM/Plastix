@@ -14,10 +14,12 @@ setup(
     data_files=[
         ("share/ament_index/resource_index/packages", [f"resource/{package_name}"]),
         (f"share/{package_name}", ["package.xml"]),
-        (f"share/{package_name}/config", ["config/localization.yaml"]),
+        (f"share/{package_name}/config", [
+            "config/localization.yaml", "config/imu_replay_plan.yaml",
+            "config/imu_replay_plan_2p6.yaml"]),
         (
             f"share/{package_name}/launch",
-            ["launch/localization.launch.py"],
+            ["launch/localization.launch.py", "launch/imu_replay.launch.py"],
         ),
         (f"share/{package_name}/rviz", ["rviz/localization.rviz"]),
         (
@@ -45,6 +47,9 @@ setup(
             "localization_input_node = gripperx_localization.localization_input_node:main",
             "ground_truth_odom_bridge = gripperx_localization.ground_truth_odom_bridge:main",
             "odom_divergence_monitor = gripperx_localization.odom_divergence_monitor:main",
+            "yaw_compare = gripperx_localization.yaw_compare:main",
+            "imu_replay = gripperx_localization.imu_replay:main",
+            "imu_replay_report = gripperx_localization.imu_replay_report:main",
         ],
     },
 )

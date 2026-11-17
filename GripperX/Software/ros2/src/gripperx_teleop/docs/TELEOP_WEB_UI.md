@@ -20,7 +20,42 @@ race.
 | Emergency stop | The space bar, drawn as the thing it is. Clickable, and available to every open page — see below. |
 | Robot view | Top view built from the node's own geometry. Dashed outline = the pose being **commanded**, solid wheel = the angle actually **measured** on `/hw/steer_states`. Watching the solid wheels swing into the outlines *is* the transition guard doing its job. The arrow in the middle is the commanded body twist. |
 | Readouts | Guard state, manoeuvre, steering angle against its limit, the exact `cmd_vel` on the wire, worst-wheel alignment error, external gate arming, link health. |
+| Camera | Tile with an On/Off and a View/Detail toggle, default OFF. Shows the front camera's JPEGs, fps, frame age and size; a frame older than `camera_stale_sec` dims the image and says STALE. See "Camera tile". |
 | Events | Mode changes, gripper/arm outcomes, gate arming replies, stops, link loss. |
+
+**Leader mode (J).** The J keycap (or the J key) goes through the same
+`toggle_leader()` the terminal teleop uses. Since 2026-10-13 (user decision,
+self-alignment) J with leader mode off sends an ALIGN request on
+`/arm/leader/align`: the leader arm drives itself to the follower's pose, goes
+limp, and the leader node then publishes `/arm/leader/enable` itself
+(`gripperx_leader/README.md`). While that runs the keycap reads ALIGNING, the
+banner says the leader is moving, and J or the space bar cancels. The last
+`leader_align_state` text stands in a line under the action keys; `refused` and
+`aborted` also take the top banner for 10 s (`leader_align_age_sec`, a display
+choice; ranked below a latched emergency stop) and appear as events. The
+transient_local replay of a state from before the node started is shown in the
+line but is no fresh notice (no banner, info event) unless a J is pending. The event log resets its last-seen id when the
+node's `events_epoch` changes, so a page left open across a node restart no
+longer skips new events (robot finding 2026-10-15: a refused J showed nothing). J with leader
+mode on switches it off. J, P, I and O are never re-sent after a failed request
+(the banner says "Delivery unknown ... check the J / arm state"); each one-shot carries an id and its page-side
+age, and the node drops duplicates and events older than `event_max_age_sec`.
+Space is always re-sent. A silent page also ends leader mode / an alignment. The keycap and the "LEADER MODE: drive blocked"
+banner follow `leader_enabled` in the telemetry, i.e. the node's real state as
+echoed by the topic, not a page-side guess. While on, the drive keys are greyed
+out and the node publishes only a zero twist. The space bar and the arm keys
+(P, I, O) switch it off first, via the inherited `center()` / `disarm_leader()`.
+
+**No leader process (2026-10-16).** A J that would send an align request first
+checks that something subscribes to `/arm/leader/align`. If nothing does, J is not
+sent and the align-state line and banner read `unavailable: leader process not
+running - start it (gripperx_desk.sh starts it when the leader is plugged in)`. If
+a request was sent but no `/arm/leader/align_state` answer arrives within
+`leader_answer_timeout_sec`, the request is cancelled (`disarm_leader()`) and the
+same text is shown. Before this, a J without a leader node went nowhere and only a
+second J logged "leader alignment CANCELLED". The first check reads the DDS graph,
+so in the first seconds after the leader node starts it can still say "not
+running"; a second J then goes through.
 
 Banners appear for the four states that are easy to misread and expensive to
 miss: emergency stop latched, observer mode, "armed on timeout without steering
@@ -122,6 +157,40 @@ has no way to tell which one it is in.
 
 ---
 
+## Camera tile
+
+Added 2026-11-17 (desk only; not yet tried on the robot, TO-VERIFY).
+
+    GET  /api/camera/stream    multipart/x-mixed-replace, the camera's JPEGs unchanged
+    POST /api/camera/profile   {"profile": "view"|"detail"}
+
+**What OFF guarantees.** The tile's On button opens the stream connection (an
+`<img>` on `/api/camera/stream`); Off, a closed tab or a dropped link ends it. The
+node holds its ROS subscription to `/camera/front/image_raw/compressed` (BEST_EFFORT,
+depth 1) only while at least one such connection is open: first viewer creates it,
+last one destroys it. With the tile off there is no subscriber, hence no camera DDS
+traffic to the laptop, and the camera node (lazy capture, `gripperx_sensors/README.md`)
+releases the USB stream within about a second, so the Pi spends no CPU and no WLAN
+bandwidth on it. A quiet or dead connection is noticed by a peek on the socket every 0.5 s; a viewer that makes no progress for 5 s (`CAMERA_WRITE_TIMEOUT_SEC`: a frame cannot be written, or the socket stays unwritable while frames wait) is dropped and its subscription released, so a frozen tab or half-open link cannot hold the camera on. With no frames at all (camera dead) a silently dead peer is not noticed, but then nothing is being sent either. A dropped WLAN link without a TCP reset is only noticed that way (TO-VERIFY on the robot).
+
+**Delivery.** The JPEG bytes are forwarded without decode or re-encode. Every viewer gets only the newest frame, and delay cannot build up in the kernel: the stream socket has a small send buffer (`CAMERA_SNDBUF`) and a frame is only started when the socket is writable now, otherwise it is skipped and the then-newest one is sent. The age shown in the tile (and the STALE mark, `camera_stale_sec`) is that of the frame the most-behind viewer was last handed and its TCP peer acknowledged (frame bytes no longer in the kernel send queue, `TIOCOUTQ`), not of what arrived from ROS or what `write()` accepted, so a viewer that is not being served reads STALE although the camera is live. What the browser has decoded and painted is not measured (TO-VERIFY); the client's own receive buffer is outside the server's control. The subscription callback only stores the frame, in its own callback group; the profile and parameter services are only called asynchronously, with a 3 s watchdog each, so the tile cannot delay teleop, E-stop or the control lease.
+
+**Profiles.** View sets the camera node's `profile` parameter (320x240 @ 15 fps), Detail
+640x480 @ 5 fps. The reply (set / refused / no answer / camera node not running)
+appears in the tile and in Events. The current profile is read from the camera node
+when the stream starts. If nothing publishes the image topic the tile says "no camera
+node"; before the first frame "waiting for frames".
+
+The page does not keep a profile list: a name is passed to the camera node, which refuses unknown ones (the list it reports, `profile_names`, is only shown). New node parameters: `camera_image_topic`, `camera_node` (default
+`/camera/front/camera_front`), `camera_stale_sec` (1.0).
+
+The camera stream and the profile route have no authentication of their own, like the drive controls: with `web_host` other than 127.0.0.1 anyone who can reach the port can watch the camera and switch its mode. The default bind is localhost.
+Browsers cap parallel HTTP/1.1 connections per host (6); the telemetry stream and
+the camera stream use two. Over WLAN use the View profile; Detail is for stopped
+inspection (measured numbers in `gripperx_sensors/README.md`).
+
+---
+
 ## Transport
 
 No third-party packages and no hand-rolled WebSocket framing — a dead-man
@@ -153,6 +222,7 @@ holds control and who does.
 | `web_stream_hz` | `20.0` | Telemetry frame rate. |
 | `client_timeout_sec` | `0.5` | Ride-through for a silent page; keys are released once it expires. |
 | `refresh_rate_hz` | `50.0` | How often the held set is re-asserted into the parent's timestamps. |
+| `leader_answer_timeout_sec` | `3.0` | How long a J waits for any `/arm/leader/align_state` answer before it is cancelled and shown as "leader process not running". A display choice. |
 | `takeover_sec` | `2.0` | How long a holder may be silent before another session may take over. |
 | `open_browser` | `false` | Open the page on start. |
 | `active_mode_topic` | `/teleop/active_mode` | Mode shown in the header. |

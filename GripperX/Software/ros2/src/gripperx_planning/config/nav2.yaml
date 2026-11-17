@@ -5,8 +5,11 @@ planner_server:
     planner_plugins: ["GridBased"]
     GridBased:
       plugin: "nav2_navfn_planner::NavfnPlanner"
-      # INVARIANT, do not break: tolerance < controller_server
-      # goal_checker.xy_goal_tolerance (0.10). It was 0.6 against a goal
+      # INVARIANT, do not break: tolerance <= controller_server
+      # goal_checker.xy_goal_tolerance. It was written as a strict "<" (planner
+      # tolerance 0.05 against a goal tolerance of 0.10); since 2026-11-16 both
+      # keys are 0.05, i.e. EQUAL - see the TO-VERIFY at the end of this comment.
+      # It was 0.6 against a goal
       # tolerance of 0.35 and that inversion was a real defect, reproduced and
       # then fixed on the twin 2026-08-19:
       #   goal 0.60 m ahead -> SUCCEEDED after 74 ms, robot never moved, final
@@ -32,7 +35,11 @@ planner_server:
       # different outcome. 0.05 still lets a goal that lands one cell inside an
       # inflated boundary snap to the adjacent free cell, which is what keeps
       # grasp-offset goals (FR-12) plannable at all, while being half the goal
-      # tolerance.
+      # tolerance. 2026-11-16: goal_checker went to 0.05 (user decision), so this
+      # is now EQUAL to the goal tolerance, not below it. The snap-to-self defect
+      # above needs tolerance >= the distance to the goal AND a goal cell without
+      # NavFn potential; worst-case position error is now 0.05 + 0.05. TO-VERIFY
+      # on the robot (watch for "SUCCEEDED" with ~no motion on short goals).
       tolerance: 0.05
       # A* explores alternate routes when the shortest corridor is blocked.
       use_astar: true
@@ -77,7 +84,7 @@ controller_server:
 
     progress_checker:
       plugin: "nav2_controller::SimpleProgressChecker"
-      # 0.15 m is LARGER than xy_goal_tolerance (0.10), which is correct here:
+      # 0.15 m is LARGER than goal_checker.xy_goal_tolerance (0.05 since 2026-11-16), which is correct here:
       # SimpleProgressChecker aborts if the robot fails to move this radius
       # within movement_time_allowance, so a larger radius is the STRICTER
       # setting. Measured margin on the twin: the last 0.15 m plus closing
@@ -90,10 +97,17 @@ controller_server:
 
     goal_checker:
       plugin: "nav2_controller::SimpleGoalChecker"
-      # 0.10 m (user decision). INVARIANT: keep
-      # FollowPath.RotateToGoal.xy_goal_tolerance equal to this, and keep
-      # planner_server.GridBased.tolerance below it (see there).
-      xy_goal_tolerance: 0.10
+      # 0.05 m: USER DECISION 2026-11-16 (was 0.10, user decision): at 0.10 a
+      # re-approach after the arm's OUT_OF_REACH ended "succeeded" without moving,
+      # because the robot already stood inside the window (aimed P robot test
+      # 2026-11-16, targets 145/147 blacklisted at x 0.438-0.458 > region edge
+      # 0.431; SR-16/FR-16 findings N2/N3). TO-VERIFY on the robot: whether the
+      # base, which cannot creep (OP-33), settles inside 0.05 or hunts / hits the
+      # progress checker. No separate audit (user); checked in the robot test.
+      # INVARIANT: keep FollowPath.xy_goal_tolerance (RotateToGoal window) <= this.
+      # planner_server.GridBased.tolerance (0.05, one costmap cell, cannot go
+      # lower meaningfully) is now EQUAL to this, no longer below it - see there.
+      xy_goal_tolerance: 0.05
       # 0.10 rad / 5.7 deg (user decision). Bound has a physical reason:
       # FR-12 (grasp goal placement) offsets goals by ~360 mm so the gripper
       # lands on the target, and heading error scales linearly into lateral
@@ -127,8 +141,9 @@ controller_server:
       # 0.035 rad / 2.0 deg: USER DECISION 2026-09-29, not a measurement - 13 mm of lateral
       # grasp error at the 0.36 m standoff, against 36 mm for goal_checker's
       # 0.10. WHAT ONLY THE ROBOT CAN SETTLE: the shim's stop profile commands
-      # sqrt(2 * max_angular_accel * |error|), i.e. 0.37 rad/s on entering
-      # this window - BELOW the 0.60 rad/s knee (FollowPath.min_speed_theta).
+      # sqrt(2 * max_angular_accel * |error|), i.e. 0.19 rad/s on entering
+      # this window (max_angular_accel 0.5; it was 0.37 rad/s at the former
+      # 2.0) - BELOW the 0.60 rad/s knee (FollowPath.min_speed_theta).
       # If the plant stalls under the knee, it stops outside this window and
       # the gateway's grasp.reaim_timeout_sec cancels the re-aim and judges
       # the pose reached with the normal arrival gate.
@@ -163,8 +178,8 @@ controller_server:
       # law is deadbeat and single-valued
       # (sign = angular_distance_to_heading > 0 ? +1 : -1), so there is no tie
       # to break. The only edge case, heading error exactly ±pi (the atan2
-      # branch cut), is self-resolving: a sign reversal costs 8 cycles of
-      # rate-limited acceleration (max_angular_accel * dt = 0.2 rad/s/cycle),
+      # branch cut), is self-resolving: a sign reversal costs 32 cycles of
+      # rate-limited acceleration (max_angular_accel * dt = 0.05 rad/s/cycle),
       # while one cycle of committed rotation moves the error off the branch
       # cut and locks the sign.
       # Engage threshold: rotate in place once bearing to the sampled path
@@ -191,23 +206,36 @@ controller_server:
       # above the knee — the value this file already used for rotation,
       # moved to the parameter that now performs it.
       rotate_to_heading_angular_vel: 0.80
-      # Matched exactly to velocity_smoother max_accel[2]/max_decel[2]
-      # (+-2.0 rad/s^2): the shim's own sqrt-deceleration stop profile is
-      # only honoured if the plant can actually decelerate at this rate;
-      # larger would plan past what the smoother delivers, i.e. overshoot
-      # the yaw window. Equal to behavior_server.rotational_acc_lim.
+      # DELIBERATELY BELOW velocity_smoother max_accel[2]/max_decel[2]
+      # (+-2.0 rad/s^2) and behavior_server.rotational_acc_lim (2.0), both
+      # left unchanged. The shim's own sqrt-deceleration stop profile is only
+      # honoured if the plant can actually decelerate at this rate, so the
+      # value must not exceed the smoother (test_shim_deceleration_is_
+      # deliverable); a lower one plans a gentler stop. MEASURED (laser-odometry
+      # coast after "Reached the goal!"): 9.3 deg at 2.0; 5.6 / 7.1 deg at 1.0
+      # (actual |wz| at reached 0.59-0.60 rad/s); 3.6 deg (2026-10-07, n=5) /
+      # 2.9 deg (2026-10-08, n=8; map-frame |err| 3.3 deg, |wz| 0.28 rad/s) at
+      # 0.5. The 2026-10-07 EKF divergence at 0.5 was the odom0 gate (removed);
+      # the 2026-10-08 run: EKF vs wheel twist max 2.96 deg, 8/8 goals, no
+      # aborts or recoveries, no stall under the knee in the final approach.
+      # Short stalls (18 x 0.1-0.8 s) at rotation onset coincide with swerve
+      # alignment-gate engagements, same total as at 1.0. NOT accepted until
+      # confirmed on the robot.
+      # Consequence: the peak command for a rotation of e rad is
+      # sqrt(2 * 0.5 * e), so the 0.60 rad/s knee is only reached for
+      # e >= 0.36 rad (20.6 deg).
       # (Plugin default 3.2 must not stand — it is above the smoother.)
-      max_angular_accel: 2.0
+      max_angular_accel: 0.5
       # ⚠ false, THE ONE PLACE THIS ROBOT DIFFERS FROM THE PLUGIN DEFAULT
       # (true). With true, nav2 1.3.12 rate-limits the command against the
       # MEASURED angular velocity, which is held at zero while the alignment
       # gate holds the drive during steering slew (up to
       # alignment_timeout_sec; measured 49 engagements in 23 min). The clamp
-      # then pins the command at max_angular_accel*dt = 0.2 rad/s — below the
+      # then pins the command at max_angular_accel*dt = 0.05 rad/s — below the
       # 0.60 knee — and the measured rate never climbs out: a deadlock
       # produced by the feedback path itself. With false the limiter runs
       # against the shim's own last command instead, ramping through the
-      # knee in four 10 Hz cycles regardless of what the plant reports.
+      # knee in twelve 10 Hz cycles regardless of what the plant reports.
       # Position feedback (the sqrt deceleration profile) is unaffected —
       # only the rate limiter goes open-loop.
       closed_loop: false
@@ -231,8 +259,8 @@ controller_server:
       #      were still asked of DWB it would return "No valid trajectories"
       #      at every goal.
       # INVARIANT: the shim takes over at goal_checker.xy_goal_tolerance
-      # (0.10), and DWB's RotateToGoal window is FollowPath.xy_goal_tolerance
-      # (0.06, must stay <= 0.10) — so that region lies strictly inside the
+      # (0.05 since 2026-11-16), and DWB's RotateToGoal window is
+      # FollowPath.xy_goal_tolerance (0.04, must stay <= 0.05) — so that region lies strictly inside the
       # shim's and DWB's RotateToGoal is never reached.
       rotate_to_goal_heading: true
       # ---- DWB, as primary_controller ----
@@ -380,7 +408,7 @@ controller_server:
       # silently ignored and the critic falls back to its 0.25 m default.
       #
       # INVARIANT (one-sided): this key <= goal_checker.xy_goal_tolerance
-      # (0.10). LARGER IS FATAL — once inside the critic's window with
+      # (0.05 since 2026-11-16). LARGER IS FATAL — once inside the critic's window with
       # translation stopped it declares every non-zero-vx trajectory
       # illegal, so a window wider than the goal tolerance strands the robot
       # at the window edge until the progress checker aborts. SMALLER is the
@@ -399,7 +427,9 @@ controller_server:
       # 10 Hz control rate for the closing rotation to start. This is the
       # first number to revisit if the real robot ever stops closing its
       # heading.
-      xy_goal_tolerance: 0.06
+      # 2026-11-16: 0.06 -> 0.04 with goal_checker 0.10 -> 0.05 (user decision),
+      # to stay strictly inside the shim's takeover radius. TO-VERIFY on the robot.
+      xy_goal_tolerance: 0.04
       prune_plan: true
       short_circuit_trajectory_evaluation: true
       # DEAD KEY, kept so nobody re-adds it believing it does something:
@@ -464,10 +494,10 @@ controller_server:
       Oscillation.oscillation_reset_angle: 0.015
       # ---- RotateToGoal (dwb_critics::RotateToGoalCritic) -------------------
       # ⚠ Unreachable in normal operation since P2a: it demands a pure
-      # rotation once inside FollowPath.xy_goal_tolerance (0.06) with
+      # rotation once inside FollowPath.xy_goal_tolerance (0.04 now) with
       # translation stopped, and under P2b DWB has no pure rotation to offer
       # — but it doesn't fire, because the shim takes the closing rotation
-      # over first, at goal_checker.xy_goal_tolerance (0.10 > 0.06, see
+      # over first, at goal_checker.xy_goal_tolerance (0.05 > 0.04 now, see
       # rotate_to_goal_heading above).
       # KEPT as a FAIL-VISIBLE backstop: if the shim's goal branch falls
       # through to DWB (base-frame transform failure), "No valid

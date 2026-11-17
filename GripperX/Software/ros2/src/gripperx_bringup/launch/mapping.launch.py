@@ -1,6 +1,8 @@
 """Mapping stack: rf2o odometry + slam_toolbox.
 
-Lifecycle activation is handled by gripperx-mapping.sh.
+gripperx-mapping.service does not run this launch file any more: since 2026-08-24 its
+script runs gripperx_localization/localization.launch.py instead (EKF, tuned
+slam_toolbox, /laser/odom). No systemd unit starts this file.
 """
 import os
 from ament_index_python.packages import get_package_share_directory

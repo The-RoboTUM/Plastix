@@ -1,9 +1,33 @@
 # gripperx_gazebo
 
-Gazebo sim: world, spawn, `ros2_control`, sensor bridge, `gripperx_control`.
+Gazebo sim (the digital twin): world, spawn, `ros2_control`, sensor bridge, the swerve controller
+and the teleop mux, with launch files for sim-only, sim plus SLAM mapping and sim plus Nav2.
+
+For: developers who test control, localization and navigation on the desk. Status: 2026-11-17.
+The twin is for geometry, topic wiring and control logic; it does not transfer load-sensitive
+results (see "Known defect" below).
+
+Short forms: DT-n (digital-twin work items in the requirements), EKF (extended Kalman filter, the
+`robot_localization` fusion), IMU (inertial sensor), SLAM (simultaneous localization and mapping).
 
 **Does not** launch localization, AMCL, EKF, or Nav2 — that goes in
 `gripperx_localization` and `gripperx_planning`.
+
+## Launch files
+
+| Launch | What it starts |
+|---|---|
+| `simulation.launch.py` | Sim only (gz-sim, spawn, controllers, `teleop_mux`); optional `use_lidar`, `use_camera`, `use_rviz`, `world_file`, `headless`, `initial_mode`. |
+| `sim_mapping.launch.py` | Sim plus `slam_toolbox` (async mapping), ground-truth odometry passed through as TF (coordinate transform) `odom->base_footprint`. |
+| `sim_navigation.launch.py` | One launch for the integrated stack: sim plus localization plus Nav2, with `use_sim_time:=true` throughout. Arguments: `odom_source` (`ground_truth` default, or `ekf`), `localization` (`slam` default, or `amcl` with `map_yaml_file`), `enable_laser_odometry`, `fuse_laser_odometry`, `world_file`, `headless`, spawn pose arguments. |
+| `simulate_robot.launch.py`, `spawn_robot.launch.py` | Building blocks the above include (gz bridge, spawn, controller spawners, mux). |
+
+`teleop_mux` starts in `keyboard` mode (`initial_mode`); Nav2 output reaches `/cmd_vel` only after
+`/teleop/set_mode` is set to `autonomous`, as on the real robot. The sim IMU appears as
+`/imu/bno085/data`, the same name as the real BNO085 driver, so one localization configuration
+serves both (`config/gz_bridge.yaml`). In the twin the EKF runs the robot's own filter
+configuration; its IMU noise is white only (no bias or drift), so IMU-robustness results do not
+transfer.
 
 ## Prerequisites (Jazzy)
 
@@ -30,7 +54,7 @@ isolated sim environment — never the plain `~/.bashrc` env (a dedicated
 `ROS_DOMAIN_ID` keeps the simulation isolated from the real robot's domain):
 
 ```bash
-source scripts/sim_env.sh
+source Software/ros2/scripts/sim_env.sh
 ```
 
 Around every run: check `ros2 node list` for leftovers before starting, and do a
@@ -41,18 +65,18 @@ usual survivors).
 **Terminal 1 — sim + GUI + SLAM:**
 
 ```bash
-source scripts/sim_env.sh
+source Software/ros2/scripts/sim_env.sh
 ros2 launch gripperx_gazebo sim_mapping.launch.py headless:=false
 ```
 
 `headless:=false` starts gz-sim WITHOUT `-s` (server+GUI in one process) — needs a
 desktop session/`$DISPLAY`. This also starts `slam_toolbox` (async, `mapping`
-mode) and `sim_steer_bridge` for real per-wheel servo steering (see below).
+mode).
 
 **Terminal 2 — RViz standalone (NOT via `use_rviz:=true`):**
 
 ```bash
-source scripts/sim_env.sh
+source Software/ros2/scripts/sim_env.sh
 rviz2 -d install/gripperx_localization/share/gripperx_localization/rviz/localization.rviz
 ```
 
@@ -63,26 +87,25 @@ current accepted practice.
 **Terminal 3 — teleop:**
 
 ```bash
-source scripts/sim_env.sh
+source Software/ros2/scripts/sim_env.sh
 ros2 launch gripperx_teleop laptop_teleop.launch.py
 ```
 
 Do **not** set `publish_steer_cmd_vel:=true` on `keyboard_teleop_node` — its
-default (`false`) is required here. Steering in the sim goes through
-`sim_steer_bridge` (real per-wheel servo angles via `/teleop/direct_steer`,
-the sim counterpart of the real robot's `steer_servo_node`), not through
-`angular.z`; enabling `publish_steer_cmd_vel` would additionally feed the
-same steering angle back in as `cmd_vel.angular.z` through the swerve IK —
-double-steering, with the wheels fighting each other.
+default (`false`) is required here, and the sim mux runs with `keyboard_pass_angular_z` false like
+the real robot. Enabling that option would feed the steering angle back in as `cmd_vel.angular.z`
+through the swerve inverse kinematics: double steering, with the wheels fighting each other.
+(`sim_steer_bridge` is retired from the active path; arbitration of the steering now lives in
+`swerve_controller`, one implementation shared by real robot and sim. Comments in
+`launch/simulate_robot.launch.py` still mention the bridge in one place.)
 
-Keys: **W/S** drive forward/backward, **A/D** steer (real per-wheel servo
-angles, not a turn-in-place), **Space** emergency stop (stop + straight ahead +
+Keys: **W/S** drive forward/backward, **A/D** steer, **Space** emergency stop (stop + straight ahead +
 back to keyboard mode).
 
 Save the map once mapping looks complete:
 
 ```bash
-source scripts/sim_env.sh
+source Software/ros2/scripts/sim_env.sh
 ros2 run nav2_map_server map_saver_cli -f <path>/<name> --ros-args -p save_map_timeout:=10.0
 ```
 
@@ -99,7 +122,7 @@ ros2 run nav2_map_server map_saver_cli -f <path>/<name> --ros-args -p save_map_t
   `gripperx_localization/launch/localization.launch.py` — instead, ground-truth
   odometry is passed through directly as TF `odom->base_footprint` via
   `ground_truth_odom_bridge` (`gripperx_localization`).
-- `scripts/sim_env_dt4.sh` predates `scripts/sim_env.sh` and is now superseded
+- `scripts/sim_env_dt4.sh` predates `Software/ros2/scripts/sim_env.sh` and is now superseded
   by it for normal use.
 - Full stack (localization + Nav2) once `ros-jazzy-robot-localization` is installed:
 
@@ -124,3 +147,14 @@ Consequence: **any load-sensitive twin result is tainted.** Traction, tipping,
 slip, motor effort and anything derived from them do not transfer to the robot.
 Geometry, topic wiring and control logic do transfer, and that is what the twin is
 for.
+
+## Build and test
+
+```bash
+cd Software/ros2 && colcon build --packages-select gripperx_gazebo
+```
+
+The package has no tests of its own; the twin is exercised by running the launch files above and
+by the checks in `gripperx_localization` and `gripperx_planning`. A sim run moves only simulated
+hardware, but always run it in the isolated sim environment (`Software/ros2/scripts/sim_env.sh`), never in the
+robot's `ROS_DOMAIN_ID`.

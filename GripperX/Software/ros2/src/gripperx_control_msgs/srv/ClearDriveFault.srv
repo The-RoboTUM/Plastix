@@ -1,0 +1,45 @@
+# Operator clear of the whole-drive fault -- SR-18 amendment 2026-11-09.
+#
+# Served by swerve_controller on /swerve_controller/clear_drive_fault.
+# Accepted ONLY while a whole-drive fault is latched AND its reason is one of
+# STALL_RETRIP, STALL_TRIP_COUNT, STALL_MULTI_WHEEL, STALL_LATCHED_HELD
+# (DriveFault REASON_* codes 2, 3, 4, 5). ENCODER_MISSING and FEEDBACK_LOST
+# are refused: they need a stack restart (Mode R or a bringup service start).
+#
+# A CLEAR IS A MOTION RELEASE. There is no precondition (user decision D2): a
+# drive command that is still held at clear time makes the robot drive off at
+# once. The only protection afterwards is the re-armed detection.
+#
+# success = true is returned only after the controller's update loop has
+# applied the clear (latch released, marker removed, detection re-armed).
+# On any failure nothing changes and the fault stays latched, in memory and in
+# the crash-surviving marker.
+#
+# ROS services carry no authenticated caller identity: `requester` is what the
+# caller claims (e.g. "web_teleop", "cli"); empty is logged as "unspecified".
+#
+# CLI (one line):
+#   ros2 service call /swerve_controller/clear_drive_fault
+#   gripperx_control_msgs/srv/ClearDriveFault
+#   "{requester: 'cli', expected_reason: 0, expected_fault_id: 0}"
+
+string requester
+# DriveFault REASON_* the caller believes is latched; 0 = no expectation. A
+# non-zero value that differs from the latched reason is refused (protects a
+# dialog that is showing a stale fault).
+uint8 expected_reason
+# DriveFault.fault_id of the fault the caller reviewed. Non-zero and different
+# from the latched fault's id -> refused ("fault changed, review again"), so a
+# dialog can never clear a fault it did not show. 0 = no expectation (CLI
+# convenience; the caller then clears whatever STALL_* fault is latched).
+# CLI with the check: read fault_id first, e.g.
+#   ros2 topic echo --once --qos-durability transient_local
+#   --qos-reliability reliable /swerve_controller/drive_fault
+# and pass it as expected_fault_id.
+uint32 expected_fault_id
+---
+bool success
+# The reason that was latched when the request was judged, or 0 (none).
+uint8 reason
+# Human-readable outcome: what was cleared, or why nothing was.
+string message

@@ -56,6 +56,16 @@ def check():
     for key in sorted(node_hold - drawn):
         problems.append(f'held key "{key}" has no keycap on the page')
 
+    # 2b. The quit confirmation must be an in-page dialog. A native confirm()
+    #     blocks the page's event loop, the beats stop and the node drops the
+    #     quit as "arrived after the link was lost" (found on the desk 2026-10-22).
+    for need in ('quit-dialog', 'quit-backdrop', 'btn-quit-confirm',
+                 'btn-quit-cancel', 'btn-quit-estop'):
+        if need not in js_ids:
+            problems.append(f'app.js no longer wires the quit dialog element "{need}"')
+    if not re.search(r'<dialog\b[^>]*\bid="quit-dialog"', html):
+        problems.append('index.html has no <dialog id="quit-dialog">')
+
     # 3. Classes the script toggles must be styled, or the state is invisible.
     toggled = (set(re.findall(r"classList\.(?:add|toggle)\('([\w-]+)'", js))
                | set(re.findall(r"className = '([\w-]+)'", js)))

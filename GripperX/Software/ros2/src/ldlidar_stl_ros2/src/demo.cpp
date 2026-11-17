@@ -21,8 +21,10 @@
 
 #include "ros2_api.h"
 #include "ldlidar_driver.h"
+#include "scan_stamp.h"
 
 void  ToLaserscanMessagePublish(ldlidar::Points2D& src, double lidar_spin_freq, LaserScanSetting& setting,
+  scan_stamp::ScanStamper& stamper,
   rclcpp::Node::SharedPtr& node, rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr& lidarpub);
 
 uint64_t GetSystemTimeStamp(void);
@@ -41,6 +43,9 @@ int main(int argc, char **argv) {
   setting.enable_angle_crop_func = false;
   setting.angle_crop_min = 0.0;
   setting.angle_crop_max = 0.0;
+  // GripperX: see scan_stamp.h for the modes and why mid_sweep is the default.
+  std::string stamp_source_name = "mid_sweep";
+  scan_stamp::StampSource stamp_source = scan_stamp::StampSource::kMidSweep;
   
   // declare ros2 param
   node->declare_parameter<std::string>("product_name", product_name);
@@ -52,6 +57,7 @@ int main(int argc, char **argv) {
   node->declare_parameter<bool>("enable_angle_crop_func", setting.enable_angle_crop_func);
   node->declare_parameter<double>("angle_crop_min", setting.angle_crop_min);
   node->declare_parameter<double>("angle_crop_max", setting.angle_crop_max);
+  node->declare_parameter<std::string>("stamp_source", stamp_source_name);
 
   // get ros2 param
   node->get_parameter("product_name", product_name);
@@ -63,6 +69,7 @@ int main(int argc, char **argv) {
   node->get_parameter("enable_angle_crop_func", setting.enable_angle_crop_func);
   node->get_parameter("angle_crop_min", setting.angle_crop_min);
   node->get_parameter("angle_crop_max", setting.angle_crop_max);
+  node->get_parameter("stamp_source", stamp_source_name);
 
   ldlidar::LDLidarDriver* ldlidarnode = new ldlidar::LDLidarDriver();
 
@@ -76,6 +83,14 @@ int main(int argc, char **argv) {
   RCLCPP_INFO(node->get_logger(), "<enable_angle_crop_func>: %s", (setting.enable_angle_crop_func?"true":"false"));
   RCLCPP_INFO(node->get_logger(), "<angle_crop_min>: %f", setting.angle_crop_min);
   RCLCPP_INFO(node->get_logger(), "<angle_crop_max>: %f", setting.angle_crop_max);
+  RCLCPP_INFO(node->get_logger(), "<stamp_source>: %s", stamp_source_name.c_str());
+
+  if (!scan_stamp::ParseStampSource(stamp_source_name, &stamp_source)) {
+    RCLCPP_ERROR(node->get_logger(),
+      "Error, input <stamp_source> '%s' is illegal (publish | first_ray | mid_sweep).",
+      stamp_source_name.c_str());
+    exit(EXIT_FAILURE);
+  }
 
   if (product_name == "LDLiDAR_LD06") {
     type_name = ldlidar::LDType::LD_06;
@@ -114,12 +129,13 @@ int main(int argc, char **argv) {
 
   ldlidar::Points2D laser_scan_points;
   double lidar_scan_freq;
+  scan_stamp::ScanStamper stamper(stamp_source);
   RCLCPP_INFO(node->get_logger(), "Publish topic message:ldlidar scan data.");
   while (rclcpp::ok()) {
     switch (ldlidarnode->GetLaserScanData(laser_scan_points, 1500)){
       case ldlidar::LidarStatus::NORMAL: 
         ldlidarnode->GetLidarScanFreq(lidar_scan_freq);
-        ToLaserscanMessagePublish(laser_scan_points, lidar_scan_freq, setting, node, publisher);
+        ToLaserscanMessagePublish(laser_scan_points, lidar_scan_freq, setting, stamper, node, publisher);
         break;
       case ldlidar::LidarStatus::DATA_TIME_OUT:
         RCLCPP_ERROR(node->get_logger(), "get ldlidar data is time out, please check your lidar device.");
@@ -145,6 +161,7 @@ int main(int argc, char **argv) {
 }
 
 void  ToLaserscanMessagePublish(ldlidar::Points2D& src,  double lidar_spin_freq, LaserScanSetting& setting,
+  scan_stamp::ScanStamper& stamper,
   rclcpp::Node::SharedPtr& node, rclcpp::Publisher<sensor_msgs::msg::LaserScan>::SharedPtr& lidarpub) {
   float angle_min, angle_max, range_min, range_max, angle_increment;
   double scan_time;
@@ -169,20 +186,46 @@ void  ToLaserscanMessagePublish(ldlidar::Points2D& src,  double lidar_spin_freq,
   angle_increment = (angle_max - angle_min) / (float)(beam_size -1);
   // Calculate the number of scanning points
   if (lidar_spin_freq > 0) {
+    // GripperX: stamp and timing from the sweep's per-point stamps unless
+    // stamp_source == publish. Scans with bad stamps or a stamp not later than the last
+    // published one are dropped, never stamped with an invented time (scan_stamp.h).
+    scan_stamp::ScanTiming timing;
+    const scan_stamp::Verdict verdict = stamper.Process(
+      src, beam_size, setting.laser_scan_dir, lidar_spin_freq,
+      start_scan_time.nanoseconds(), scan_time, &timing);
+    if (verdict == scan_stamp::Verdict::kPublishAfterClockStep) {
+      RCLCPP_ERROR(node->get_logger(),
+        "stamp_source=%s: system clock stepped back %.3f s; last stamp reset, scan published. "
+        "Resets so far: %lu",
+        scan_stamp::StampSourceName(stamper.source()),
+        static_cast<double>(stamper.last_clock_step_ns()) * 1e-9,
+        static_cast<unsigned long>(stamper.clock_step_resets()));
+    } else if (verdict != scan_stamp::Verdict::kPublish) {
+      // Throttled on a steady clock: the ROS clock is the system clock, and a clock step
+      // would otherwise suppress this warning for the length of the step.
+      static rclcpp::Clock steady_clock(RCL_STEADY_TIME);
+      RCLCPP_WARN_THROTTLE(node->get_logger(), steady_clock, 5000,
+        "stamp_source=%s: scan %s (%s); so far of %lu scans: %lu dropped for bad stamps, "
+        "%lu for a stamp not later than the last, %lu clock-step resets",
+        scan_stamp::StampSourceName(stamper.source()), scan_stamp::VerdictName(verdict),
+        scan_stamp::StampFaultName(timing.fault),
+        static_cast<unsigned long>(stamper.scans()),
+        static_cast<unsigned long>(stamper.dropped_bad_stamps()),
+        static_cast<unsigned long>(stamper.dropped_not_increasing()),
+        static_cast<unsigned long>(stamper.clock_step_resets()));
+      end_scan_time = start_scan_time;
+      return;
+    }
     sensor_msgs::msg::LaserScan output;
-    output.header.stamp = start_scan_time;
+    output.header.stamp = rclcpp::Time(timing.stamp_ns, start_scan_time.get_clock_type());
     output.header.frame_id = setting.frame_id;
     output.angle_min = angle_min;
     output.angle_max = angle_max;
     output.range_min = range_min;
     output.range_max = range_max;
     output.angle_increment = angle_increment;
-    if (beam_size <= 1) {
-      output.time_increment = 0;
-    } else {
-      output.time_increment = static_cast<float>(scan_time / (double)(beam_size - 1));
-    }
-    output.scan_time = scan_time;
+    output.time_increment = timing.time_increment;
+    output.scan_time = timing.scan_time;
     // First fill all the data with Nan
     output.ranges.assign(beam_size, std::numeric_limits<float>::quiet_NaN());
     output.intensities.assign(beam_size, std::numeric_limits<float>::quiet_NaN());
@@ -242,11 +285,12 @@ void  ToLaserscanMessagePublish(ldlidar::Points2D& src,  double lidar_spin_freq,
   } 
 }
 
+// GripperX: the per-point stamps (lipkg.cpp) come from here, and scan_stamp compares
+// them with node->now(). Both must stay on CLOCK_REALTIME (system_clock; node->now() is
+// RCL_ROS_TIME = system time without use_sim_time). A clock mismatch makes every scan
+// be dropped (kAfterPublish / kTooOld), loudly.
 uint64_t GetSystemTimeStamp(void) {
-  std::chrono::time_point<std::chrono::system_clock, std::chrono::nanoseconds> tp = 
-    std::chrono::time_point_cast<std::chrono::nanoseconds>(std::chrono::system_clock::now());
-  auto tmp = std::chrono::duration_cast<std::chrono::nanoseconds>(tp.time_since_epoch());
-  return ((uint64_t)tmp.count());
+  return scan_stamp::SystemTimeStampNs();  // test_scan_stamp checks it against node->now()
 }
 
 /********************* (C) COPYRIGHT SHENZHEN LDROBOT CO., LTD *******END OF

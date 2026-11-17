@@ -10,10 +10,18 @@ approval relayed by an agent does not satisfy it.
 
 FR-14 item 12 slow-end floor -- no-motion check. DEPLOY_2026-08-21 section 5.
 
-Commands BELOW the floor (stall_min_command_rad_s) and verifies that every
+Commands BELOW the floor (wheel_regulator_floor_rad_s) and verifies that every
 wheel reports REGULATOR_OFF_BELOW_FLOOR=7 with a correction of exactly 0.0.
 At this speed the machine does not break away, so no motion is expected --
 but the drive IS commanded.
+
+SINCE 2026-10-22 the default 0.06 m/s (0.857 rad/s) is above
+encoder_confirm_min_command_rad_s (0.71), where HWR-30a's ZERO-COUNT criterion
+watches LIVE wheels. A healthy wheel at least twitches and registers counts, so
+nothing trips; a wheel whose encoder shows NO count change for
+stall_silent_window_sec (2.0 s) is latched off, and two such wheels latch the
+whole-drive fault until the stack restarts. That is the check working, not this
+tool failing -- but expect it if an encoder is silent.
 """
 import sys, time, threading, argparse, math
 import rclpy

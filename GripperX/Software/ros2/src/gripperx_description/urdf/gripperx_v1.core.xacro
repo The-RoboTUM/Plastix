@@ -1,5 +1,31 @@
 <?xml version="1.0" encoding="utf-8"?>
 <robot xmlns:xacro="http://www.ros.org/wiki/xacro">
+  <xacro:include filename="gripperx_v1.arm.xacro" />
+
+  <!-- CHASSIS COLLISION MODEL (2026-10-13): four boxes cut from base_link.stl,
+       unpadded as [x_min y_min z_min x_max y_max z_max] in chassis_link, plus a
+       per-box padding on every side (order: bottom lower_body upper_body
+       pedestal). Source: gripperx_geometry/config/geometry.yaml
+       (chassis_box_*, chassis_box_padding), checked consumers - edit them
+       there, not here. Replaces the single bounding box of the mesh
+       (0.493 x 0.330 x 0.202 m), which the arm safety filter (SR-17) treated as
+       solid over the lid and beside the narrow bottom piece. -->
+  <xacro:property name="chassis_box_bottom" value="-0.0960 -0.0850 -0.0800 0.0960 0.0880 -0.0040" />
+  <xacro:property name="chassis_box_lower_body" value="-0.2251 -0.1651 -0.0040 0.2478 0.1663 0.0264" />
+  <xacro:property name="chassis_box_upper_body" value="-0.2251 -0.1645 0.0264 0.2679 0.1646 0.0801" />
+  <xacro:property name="chassis_box_pedestal" value="0.0814 -0.0266 0.0801 0.1857 0.0264 0.1223" />
+  <xacro:property name="chassis_box_padding" value="0.003 0.003 0.003 0.000" />
+
+  <xacro:macro name="chassis_collision_box" params="name bounds pad">
+    <xacro:property name="b" value="${[float(v) for v in bounds.split()]}" />
+    <collision name="${name}">
+      <origin xyz="${round((b[0] + b[3]) / 2.0, 6)} ${round((b[1] + b[4]) / 2.0, 6)} ${round((b[2] + b[5]) / 2.0, 6)}" rpy="0 0 0" />
+      <geometry>
+        <box size="${round(b[3] - b[0] + 2.0 * pad, 6)} ${round(b[4] - b[1] + 2.0 * pad, 6)} ${round(b[5] - b[2] + 2.0 * pad, 6)}" />
+      </geometry>
+    </collision>
+  </xacro:macro>
+
   <xacro:macro
     name="mesh_box_link"
     params="name inertial_xyz mass ixx ixy ixz iyy iyz izz mesh_file rgba collision_origin collision_size mesh_uri_root">
@@ -90,7 +116,7 @@
     </joint>
   </xacro:macro>
 
-  <xacro:macro name="gripperx_robot" params="mesh_dir">
+  <xacro:macro name="gripperx_robot" params="mesh_dir arm_articulated:=true">
     <xacro:property name="mesh_uri_root" value="${mesh_dir}" />
     <!-- STEERING WINDOW — asymmetric and per wheel (source of truth:
          gripperx_control/config/steer_servo.yaml; current values recalibrated
@@ -350,21 +376,32 @@
       <child link="base_link" />
     </joint>
 
-    <xacro:mesh_box_link
-      name="chassis_link"
-      inertial_xyz="-0.0202853583615552 -0.0035672102008257 0.0384224210186663"
-      mass="2.2668069894461"
-      ixx="0.00935572177906156"
-      ixy="7.8725799589304E-09"
-      ixz="0.00155513248174071"
-      iyy="0.013073444250648"
-      iyz="-4.07017227501552E-08"
-      izz="0.017855946897602"
-      mesh_file="base_link.stl"
-      rgba="${base_rgba}"
-      collision_origin="0.021541 0 0.021047"
-      collision_size="0.493083 0.330200 0.202094"
-      mesh_uri_root="${mesh_uri_root}" />
+    <link name="chassis_link">
+      <inertial>
+        <origin xyz="-0.0202853583615552 -0.0035672102008257 0.0384224210186663" rpy="0 0 0" />
+        <mass value="2.2668069894461" />
+        <inertia
+          ixx="0.00935572177906156"
+          ixy="7.8725799589304E-09"
+          ixz="0.00155513248174071"
+          iyy="0.013073444250648"
+          iyz="-4.07017227501552E-08"
+          izz="0.017855946897602" />
+      </inertial>
+      <visual>
+        <origin xyz="0 0 0" rpy="0 0 0" />
+        <geometry>
+          <mesh filename="${mesh_uri_root}/base_link.stl" />
+        </geometry>
+        <material name="">
+          <color rgba="${base_rgba}" />
+        </material>
+      </visual>
+      <xacro:chassis_collision_box name="chassis_bottom" bounds="${chassis_box_bottom}" pad="${float(chassis_box_padding.split()[0])}" />
+      <xacro:chassis_collision_box name="chassis_lower_body" bounds="${chassis_box_lower_body}" pad="${float(chassis_box_padding.split()[1])}" />
+      <xacro:chassis_collision_box name="chassis_upper_body" bounds="${chassis_box_upper_body}" pad="${float(chassis_box_padding.split()[2])}" />
+      <xacro:chassis_collision_box name="chassis_pedestal" bounds="${chassis_box_pedestal}" pad="${float(chassis_box_padding.split()[3])}" />
+    </link>
 
     <joint name="base_to_chassis_joint" type="fixed">
       <origin xyz="0 0 0" rpy="0 0 0" />
@@ -372,130 +409,29 @@
       <child link="chassis_link" />
     </joint>
 
-    <!-- ================= ARM, RIGID PLACEHOLDER ASSEMBLY =====================
-         Added 2026-08-20. The arm is in the model as ONE FIXED BODY. It has no
-         joints, on purpose, and this is an intermediate step - user decision:
-         "4. is enough for now. At some point we should build the arm in
-         properly."
+    <!-- ================= ARM, ARTICULATED (2026-10-07) ======================
+         Replaces the rigid arm_stowed_link (2026-08-20 .. 2026-10-07, one frozen
+         mesh, no joints). The chain hangs off the same frame that link sat in -
+         the Arm_1 axis - and q = 0 reproduces its pose; everything else (source,
+         joint/servo naming, TO-VERIFY limits and masses, collision boxes, TCP) is
+         in gripperx_v1.arm.xacro.
 
-         WHY NO JOINTS. A movable model needs a tick<->radian mapping for the six
-         Feetech servos and real end stops, and neither exists in a calibrated
-         form:
-           - the CAD import gives +-pi on all six joints (Arm_1..Arm_6), which is
-             the exporter's default for a revolute joint, not a measured limit;
-           - gripperx_arm/config/arm_poses.yaml carries the full 12-bit servo
-             range, which is the register width, not a reachable range.
-         Both are placeholders. An articulated model built on them would publish a
-         joint state and a TF for every arm link, i.e. it would ASSERT a pose the
-         robot is not in, and every consumer downstream - costmap footprint
-         sources, collision checks, a future grasp pipeline - would believe it.
-         A rigid body asserts only "something of this size is bolted here", which
-         is true. Making it movable is issue #340 and needs movement approval to
-         calibrate.
+         Still true from the rigid version: in the CAD (q = 0) pose the arm sits
+         ABOVE and BEHIND the LiDAR (98.3 % of the mesh), and it does not reach out
+         of the swept wheel envelope that defines the costmap footprint
+         (x_max +0.2584 < 0.2994). Detail: claude/docs/ARM_HOME_REFERENCE_2026-08-25.md.
 
-         THE POSE IN THIS MESH IS THE CAD FOLDED (STOWED) POSE. It sits ABOVE
-         and BEHIND the LiDAR, which is where the user reports the real arm sits
-         both while driving and in the present home pose.
+         PARENT is chassis_link, not base_link (same frame, zero offset): the arm
+         is bolted to the body, and base_link stays free of geometry. -->
+    <xacro:gripperx_arm parent="chassis_link" mesh_uri_root="${mesh_uri_root}"
+      rgba="${base_rgba}" articulated="${arm_articulated}" />
 
-         CORRECTED 2026-08-25 - the previous wording here claimed this pose reaches
-         "about 10 mm IN FRONT of the LiDAR" and warned against deriving anything
-         from it. That was an AABB artefact: it compared x extents and ignored
-         height. Re-measured on the installed mesh:
-           - the point at x_max +0.2584 sits at z +0.2723, i.e. 169 mm ABOVE the
-             LiDAR scan plane, not in front of it in any meaningful sense;
-           - inside the LiDAR housing band (z +0.0800...+0.1133) the arm's
-             forwardmost point is 29.8 mm BEHIND the LiDAR, at 0.032-0.060 m range,
-             i.e. below the declared min_range of 0.10 m and discarded anyway;
-           - in the scan plane +-5 mm there is not a single vertex;
-           - 98.3 % of the mesh lies above the scan plane AND behind the LiDAR in x.
-         So this link does NOT occlude the scanner and does not contradict the
-         driving pose. Detail: dated re-teach record, tracked internally, not in
-         this repository.
-
-         What remains true: this is ONE frozen pose with no joints, so it still
-         asserts nothing about where the arm is at any given moment.
-
-         Extents in chassis_link, measured on the merged mesh:
-           x [+0.0716, +0.2584]  y [-0.0312, +0.0375]  z [+0.0691, +0.3696]
-         NO EFFECT ON THE FOOTPRINT, and the footprint is deliberately not
-         touched: the costmap footprint is +-0.300 x +-0.230, taken from the swept
-         wheel envelope, and both the CAD stow pose (0.2584) and the real driving
-         pose (< 0.2488) sit inside 0.2994. The arm does not stick out of the
-         wheels in either pose.
-
-         MESH: meshes/arm_stowed.stl, a NEW file - none of the existing ten meshes
-         is touched. Built from the six CAD parts limb1_1..limb6_1 of the 70 mm
-         import with the CAD joint values and the global Rz(+90 deg) baked in,
-         then expressed in this link's own frame. Quadric-decimated from 171334 to
-         34263 triangles (8.17 MB -> 1.63 MB); the merged bounding box moves by at
-         most 0.027 mm, so the decimation is irrelevant at the scale anything here
-         is used for.
-
-         FRAME. The fixed joint puts this link at the Arm_1 axis, i.e. at the
-         shoulder, not at the mesh centroid. That costs nothing now and is the
-         frame the articulated version will need as the root of the real joint
-         chain, so #340 can add joints below it without moving this link.
-
-         PARENT is chassis_link, not base_link. Geometrically the two are the same
-         frame (base_to_chassis_joint has an all-zero origin), so this is a
-         semantic choice: chassis_link is the body - it carries the hull mesh, the
-         hull collision box and the entire non-trivial mass, and it is already the
-         parent of the LiDAR, the IMU and all four steering assemblies. base_link
-         is the bare kinematic root that base_footprint and the vertical chain
-         hang off, and it stays free of geometry. The arm is bolted to the body,
-         so it hangs off the body.
-
-         INERTIAL IS A PLACEHOLDER AND IS DECLARED AS ONE. The CAD masses for the
-         six limbs are 1e-09 kg, i.e. unusable, and the real arm has not been
-         weighed - so no mass is invented here. 0.001 kg with 1e-6 diagonal
-         inertia is the same minimal stand-in already used for imu_link above: it
-         is non-zero, so nothing downstream trips over a zero-mass link, and it is
-         small enough to be dynamically inert (against the 2.2668 kg chassis it
-         moves the combined centre of mass by well under a millimetre, so the
-         tuning done without the arm still holds). TO-VERIFY: the real arm mass
-         and centre of mass. Until measured, this model must not be used for any
-         statement about tipping, payload or traction.
-
-         COLLISION is a single box, not the mesh - a 34k-triangle collision body
-         would be paid for on every costmap and physics query for no gain at this
-         fidelity. The box is the tight axis-aligned bounding box of the assembly
-         in this link's frame, so it encloses the mesh completely. Because the
-         joint rotation is a signed axis permutation (rpy pi/0/pi/2 maps this
-         link's axes onto chassis axes), the box stays axis-aligned in
-         chassis_link too, and is therefore also the tight AABB there. -->
-    <link name="arm_stowed_link">
-      <inertial>
-        <origin xyz="0 0 0" rpy="0 0 0" />
-        <mass value="0.001" />
-        <inertia ixx="1e-6" ixy="0.0" ixz="0.0" iyy="1e-6" iyz="0.0" izz="1e-6" />
-      </inertial>
-      <visual>
-        <origin xyz="0 0 0" rpy="0 0 0" />
-        <geometry>
-          <mesh filename="${mesh_uri_root}/arm_stowed.stl" />
-        </geometry>
-        <material name="">
-          <color rgba="${base_rgba}" />
-        </material>
-      </visual>
-      <collision>
-        <origin xyz="0.003300 -0.006237 -0.104046" rpy="0 0 0" />
-        <geometry>
-          <box size="0.068653 0.186842 0.300523" />
-        </geometry>
-      </collision>
-    </link>
-
-    <!-- Origin = Arm_1 axis in chassis_link, straight out of the CAD import
-         (R90 * world[limb1_1]). The rotation is not decoration: the CAD arm
-         frame is rolled 180 deg and yawed 90 deg against the chassis frame, and
-         the mesh above is stored in THAT frame, so origin and mesh belong
-         together. Changing one without the other silently moves the arm. -->
-    <joint name="arm_stowed_joint" type="fixed">
-      <origin xyz="0.171223 -0.000151 0.115294" rpy="${pi} 0 ${pi/2}" />
-      <parent link="chassis_link" />
-      <child link="arm_stowed_link" />
-    </joint>
+    <!-- IMU (BNO085): imu_link is the sensor frame the driver stamps. Mounted
+         roll pi (y and z mirrored against base_link by design), centre above
+         the base_link origin. Source: gripperx_geometry/config/geometry.yaml
+         (imu_mount_xyz, imu_mount_rpy), checked consumers - edit them there. -->
+    <xacro:property name="imu_mount_xyz" value="0.0000 0.0000 0.0589" />
+    <xacro:property name="imu_mount_rpy" value="3.141593 0.000000 0.000000" />
 
     <link name="imu_link">
       <inertial>
@@ -506,7 +442,7 @@
     </link>
 
     <joint name="imu_joint" type="fixed">
-      <origin xyz="0 0 0.08" rpy="0 0 0" />
+      <origin xyz="${imu_mount_xyz}" rpy="${imu_mount_rpy}" />
       <parent link="chassis_link" />
       <child link="imu_link" />
     </joint>

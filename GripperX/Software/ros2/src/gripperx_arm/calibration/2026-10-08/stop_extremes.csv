@@ -1,0 +1,7 @@
+joint,servo_id,source_log,tick_min,utc_at_min,tick_max,utc_at_max,deg_at_tick_min,deg_at_tick_max
+limb1,1,limb1stop (after screw removal),781,09:53:29,3487,09:53:48,-116.631,121.201
+limb2,2,all (whole session log),817,07:52:19,3214,07:51:30,14.150,-196.523
+limb3,3,all (whole session log),870,07:57:31,3083,07:40:33,193.711,-0.791
+limb4,4,all (whole session log),905,07:51:53,3197,07:52:14,11.426,-190.020
+limb5,5,all (whole session log),222,07:52:09,4005,07:52:17,-169.277,163.213
+gripper,6,all (whole session log),1315,07:56:04,2774,07:56:10,-18.633,109.600

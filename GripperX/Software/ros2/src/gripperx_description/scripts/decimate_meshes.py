@@ -103,6 +103,10 @@ TARGETS = {
     'back_left_steer.stl': 4000, 'back_right_steer.stl': 4000,
     'front_left_wheel.stl': 1080, 'front_right_wheel.stl': 1080,
     'back_left_wheel.stl': 1080, 'back_right_wheel.stl': 1080,
+    # Articulated arm, 2026-10-07: input = scripts/arm_from_cad_export.py output.
+    # 30 % of full resolution; below that the bbox shift passes 2 mm (limb1/limb2).
+    'arm_limb1.stl': 8594, 'arm_limb2.stl': 7702, 'arm_limb3.stl': 9470,
+    'arm_limb4.stl': 8794, 'arm_limb5.stl': 8324, 'arm_gripper.stl': 10392,
 }
 
 if __name__ == '__main__':

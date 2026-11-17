@@ -144,6 +144,18 @@ struct WheelRegulatorConfig
   /// no control at all. One `assume_live_provenance` parameter feeds both
   /// configs so its two consumers cannot disagree about the same topic.
   bool assume_live_provenance{false};
+
+  /// THE SLOW-END FLOOR (FR-14 item 12, acceptance A17), rad/s. At or below
+  /// this |requested command| the correction is exactly 0.0, the integrator is
+  /// held reset and the wheel reports kRegulatorOffBelowFloor. TO-VERIFY, kept
+  /// in step with wheel_regulator_floor_rad_s in ros2_controllers.yaml.
+  ///
+  /// ITS OWN NUMBER SINCE 2026-10-22, NOT HWR-30a's ARMING THRESHOLD ANY MORE
+  /// (both are 2.0 rad/s today, as two parameters). The safety property the old coupling carried — THE REGULATOR
+  /// MAY ONLY ADD AUTHORITY WHERE HWR-30a IS WATCHING — is now an INEQUALITY,
+  /// floor >= StallDetectorConfig::min_command_rad_s, and validate_floor()
+  /// refuses a configuration that breaks it.
+  double floor_rad_s{2.0};
 };
 
 /// One cycle's worth of inputs. Everything is in JOINT ORDER FL, FR, BL, BR and
@@ -170,16 +182,6 @@ struct WheelRegulatorInput
   /// HWR-30a tier-1 latch state per wheel, as it stands BEFORE the stall gate
   /// runs this cycle. A latched wheel must not be regulated — see update().
   std::array<bool, kNumWheels> stall_latched{};
-
-  /// THE SLOW-END FLOOR (FR-14 item 12) is not a number of its own: it is
-  /// HWR-30a's arming threshold `stall_min_command_rad_s`, handed in per cycle
-  /// from the detector's own config (`stall_config_.min_command_rad_s` in
-  /// SwerveController::write_wheel_commands()) rather than copied once, so the
-  /// two provably cannot disagree — that coupling is the safety property. The
-  /// default is likewise taken FROM StallDetectorConfig rather than duplicated
-  /// as a literal, so a caller that forgets to set it gets a floor, not none.
-  /// See the floor gate in update() for why this threshold and not a lower one.
-  double stall_min_command_rad_s{StallDetectorConfig{}.min_command_rad_s};
 };
 
 struct WheelRegulatorResult
@@ -210,6 +212,16 @@ public:
   /// fraction outside [0, 1], a non-positive freshness window or output limit)
   /// and explains why in `error`.
   static bool validate(const WheelRegulatorConfig & config, std::string & error);
+
+  /// THE REGULATOR MAY ONLY ADD AUTHORITY WHERE HWR-30a IS WATCHING. Both gates
+  /// use a strict `>` on the same requested magnitude (the regulator regulates
+  /// above floor_rad_s, the detector arms above min_command_rad_s), so the
+  /// property is exactly floor_rad_s >= stall.min_command_rad_s; equality is
+  /// allowed. Refused otherwise, with the reason in `error`. Checked whether or
+  /// not the regulator is enabled at configure: wheel_regulator_enabled is
+  /// runtime-switchable, the floor is not.
+  static bool validate_floor(
+    const WheelRegulatorConfig & config, const StallDetectorConfig & stall, std::string & error);
 
   void configure(const WheelRegulatorConfig & config);
   const WheelRegulatorConfig & config() const { return config_; }

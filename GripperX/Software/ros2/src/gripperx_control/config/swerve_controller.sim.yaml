@@ -49,3 +49,16 @@ swerve_controller:
     # preserved here, which is why nothing decided this for the twin
     # specifically.
     assume_live_provenance: true
+    #
+    # THIRD CONSUMER, NARROWER READING (whole-drive fault, 2026-10-16): the
+    # encoder-missing trip treats a wheel as LIVE only UNTIL the first
+    # message on /hw/wheel_feedback_valid arrives, and believes the message
+    # from then on. So the twin does not trip permanently (nothing publishes
+    # there), and the trip is still exercisable in the twin by publishing a
+    # provenance array, e.g. the 2026-10-13 shape:
+    #   ros2 topic pub --once --qos-durability transient_local \
+    #     /hw/wheel_feedback_valid std_msgs/msg/Int32MultiArray "{data: [3, 3, 3, 2]}"
+
+    # No crash-surviving drive-fault marker in the twin: on the developer's
+    # laptop it would latch every later sim run until reboot.
+    drive_fault_marker_path: ""

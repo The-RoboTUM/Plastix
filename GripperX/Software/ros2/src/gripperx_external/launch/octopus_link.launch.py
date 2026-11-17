@@ -87,6 +87,10 @@ def generate_launch_description():
         ]
     )
 
+    tf_freshness_file = os.path.join(
+        get_package_share_directory("gripperx_arm_msgs"), "config", "tf_freshness.yaml"
+    )
+
     # Only the two stage switches are overridable from the command line, and
     # only these. Everything else comes from the config file, so a run is
     # reproducible from one reviewable artefact.
@@ -111,7 +115,8 @@ def generate_launch_description():
         name="goal_gateway_node",
         namespace=_NAMESPACE,
         output="screen",
-        parameters=[params_file, dict(overrides, dry_run=dry_run)],
+        # + the TF age bound shared with the arm (SR-16 E3, audit F4 (a)): no default.
+        parameters=[params_file, tf_freshness_file, dict(overrides, dry_run=dry_run)],
         additional_env=_NO_ROSDEPS_ENV,
     )
 

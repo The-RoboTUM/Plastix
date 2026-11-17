@@ -236,10 +236,13 @@ TEST(StallDetector, UnreadablePositionDisarmsRatherThanTrips)
 // ----------------------------------------------------- the arming threshold
 TEST(StallDetector, ACommandBelowTheArmingThresholdNeverTrips)
 {
-  // A command too small to break the motor away is not a stall. 1.0 rad/s is
-  // below min_command_rad_s = 2.0.
+  // A command too small to break the motor away is not a stall. 0.5 rad/s is
+  // below both of this config's arming thresholds: min_command_rad_s = 2.0
+  // (net displacement) and the default silent_min_command_rad_s = 0.71 (zero
+  // count). Between the two, a wheel with NO count trips -- see
+  // test_drive_fault_monitor.cpp's DriveFaultSlowBand tests.
   Rig rig(test_config());
-  const std::array<double, kNumWheels> tiny{1.0, 1.0, 1.0, 1.0};
+  const std::array<double, kNumWheels> tiny{0.5, 0.5, 0.5, 0.5};
   const auto result = rig.run(10.0, tiny, kStopped);
   for (std::size_t i = 0; i < kNumWheels; ++i) {
     EXPECT_FALSE(rig.detector.latched(i));

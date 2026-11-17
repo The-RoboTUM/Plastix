@@ -1,5 +1,12 @@
 # GripperX — Target Wiring Plan (Soll-Verkabelung)
 
+> **Reading guide (token frugality):** do not read this file in full (~95k chars). Grep for the section
+> heading (e.g. `^## 9\.`, `^### 12\.3`) or for an ID/designator (`HWR-40`, `K2`, `GPIO4`) and read only that
+> section. Sections: §0 key decisions · §1 ESP32-S3 pins · §2 Pi 5 pins · §3 Pi link transport ·
+> §4 S3 constraints · §5 changes vs. legacy · §6 recommended REQUIREMENTS change · §7 open questions ·
+> §8 conductor cross-sections · §9 operator/switching architecture · §10 protection/resistors ·
+> §11 battery-voltage monitoring · §12 star-ground scheme.
+
 **Status: PLAN — pin-assignment target for the HWR-8 rewire at reassembly.**
 **User decisions 2026-07-19 (see §7):** Pi-link = Option A (UART bridge) · LIDAR_EN default ON ·
 RGB LED kept (GPIO48 conditional spare only) · board silkscreen/PSRAM verify at bench.
@@ -166,9 +173,12 @@ Header GPIOs are on the RP1; the peripheral functions below are the standard Pi 
 | LiDAR UART RX (LD06) | **GPIO15 / RXD (ttyAMA0)** | pin 10 | uart3 GPIO5 (RXD) via dtoverlay | **fixed** | Pair of the above. |
 | IMU I2C SDA (BNO085) | **GPIO2 / SDA1 (i2c1)** | pin 3 | i2c-gpio bit-bang or i2c3 (GPIO4/5) via dtoverlay | **fixed** (primary I2C, has onboard 1.8 kΩ pull-ups) | HWR-25, STEMMA-QT. BNO085 default addr 0x4A/0x4B. Onboard pull-ups suit the IMU. |
 | IMU I2C SCL (BNO085) | **GPIO3 / SCL1 (i2c1)** | pin 5 | i2c3 (GPIO4/5) via dtoverlay | **fixed** | Pair of the above. |
+| IMU supply VIN (BNO085) | **3.3 V** | **pin 17** | pin 1 (3.3 V) | no | **As fitted 2026-10-20** (user). Breakout VIN from the Pi 3.3 V rail; same cable as SDA/SCL. Device answers at **0x4A** on `i2c-1` (`i2cdetect -y 1`, 2026-10-20). INT, RST and the other breakout pins are **not connected** (RST → GPIO27/pin 13 decided 2026-11-09, see the IMU_RST row; INT stays unconnected). |
+| IMU GND (BNO085) | **GND** | **pin 6** | any Pi GND pin | no | **As fitted 2026-10-20** (user). Directly on the Pi header in the same cable as SDA/SCL/VIN — this is the Pi I2C reference that FLAG A (§12.3 row 25) asks for. |
 | **LIDAR_EN** power switch (HWR-23) | **GPIO23** | pin 16 | **GPIO24** (pin 18) | no | Drives a high-side MOSFET/relay for the switchable LiDAR branch. Both are plain, unused header GPIOs clear of UART/I2C/SPI0 defaults. Idle state must be defined (see Open Q3). |
 | GNSS reserve UART (HWR-26) | **GPIO4/5 (uart3)** | pins 7 / 29 | **USB-serial GNSS via the powered hub** | no | Reserve only (use = stage 2). Alt route (USB) avoids header UART contention and keeps GNSS platform-agnostic (HWR-18). Keep both options open in the layout. |
 | **Clean-shutdown / restart button** signal (HWR-40) | **GPIO17** | **pin 11** | none declared (see §2.1 for the exclusion set) | no | **Bench-verified 2026-08-19** — plain GPIO, no strapping/boot function, clear of `i2c1` / `ttyAMA0` / SPI0. Idle **HIGH**, pressed **LOW**. Module **GND = pin 9**, **VCC = pin 1 = 3.3 V — never 5 V**. Keeps GPIO24 (pin 18) free as the LIDAR_EN alternative. Detail + evidence: §2.1. |
+| **IMU_RST** BNO085 hard reset (HWR-42) | **GPIO27** | **pin 13** | none (GPIO22 / pin 15, measured free 2026-11-06, was the fallback) | no | **Pin DECIDED 2026-11-09 (user, OP-H16 Q1); wire FITTED 2026-11-09 (user).** Breakout `RST` → pin 13, in the same cable as the IMU leads. **RST only, `INT` stays unconnected** (user 2026-11-09, OP-H16 Q3). Open-drain style: driven LOW only for the pulse, otherwise released (input) — never driven high (HWR-42). Measured 2026-11-06: GPIO27 no consumer, input, no `config.txt` overlay. Pin 13 sits in the same odd row as the HWR-40 button (pins 9/11): keep the button plug clear of pin 13. Breakout: 10 kΩ pull-up to VIN on `RST`, buffered to nRST; driver pulse 0.01 s, settle 0.5 s (OP-H16 Q2, sources in HWR-42). |
 | USB hub uplink (HWR-5/22) | **1× Pi USB 3.0 port** | USB-A | the other Pi USB 3.0 port | no | Powered hub, **data uplink only**; hub supply from the regulated 5 V rail, not Pi USB. Downstream: drive ESP32, steering-servo adapter, arm board, cam-gripper, cam-front. |
 
 **USB topology (HWR-5, HWR-22):** externally-powered USB hub → uplink to one Pi USB 3.0 port.
@@ -280,7 +290,7 @@ The overlay emits a **single `KEY_POWER` event** and **cannot measure press dura
 distinguish **none** of the three bands above — it cannot tell a restart press from a halt press, and it
 cannot discard the dead zone. The trigger is therefore a **small non-ROS userspace daemon reading GPIO17** on
 `/dev/gpiochip4` line 17 — consistent with HWR-40's decided *"Pi GPIO evaluated by a small independent
-systemd unit"* signalling path. **The daemon is not designed here** (another agent implements it); this
+systemd unit"* signalling path. **The daemon is not designed here** (implemented separately); this
 subsection only fixes the pin assignment, and that assignment matches a **daemon-based** trigger, not the
 overlay.
 
@@ -923,7 +933,7 @@ achieved by referencing them to the ESP32 ground node instead of a separate stri
 | 22 | Gripper camera GND (UVC, via hub) | *none — returns through the hub* | **USB bus power from the 12 V-fed hub** | via hub | **CONSEQUENCE OF ROW 21:** the hub supplies the cameras from its own 12 V-fed 5 V, so the cameras need **NO second supply** — no `+5V_SENS` feed, no `X-SEN` stub, no own strip terminal. Their GND returns through the hub's USB ground → `X-SEN:3` → **`X-PWR`**. |
 | 23 | Front camera GND (UVC, via hub) | *none — returns through the hub* | **USB bus power from the 12 V-fed hub** | via hub | Same as row 22 — no second supply, no own strip terminal. |
 | 24 | GNSS reserve GND (Pi UART/USB) | **X-SEN** | +5V_SENS | 0.5 mm² | Reserve (stage 2). |
-| 25 | IMU BNO085 GND | **X-CPU** *(not X-SEN)* | Pi 3V3 | 0.5 mm² | **FLAG A:** I2C sensor — its GND is the Pi I2C reference; route with the I2C cable to Pi/X-CPU, not the sensor strip. |
+| 25 | IMU BNO085 GND | **X-CPU** *(not X-SEN)* | Pi 3V3 | 0.5 mm² | **FLAG A:** I2C sensor — its GND is the Pi I2C reference; route with the I2C cable to Pi/X-CPU, not the sensor strip. **As fitted 2026-10-20:** GND lands directly on Pi header **pin 6**, in the same cable as SDA/SCL/VIN (VIN = pin 17, 3.3 V) — no terminal on X-CPU is used; the Pi GND is the X-CPU reference, so FLAG A is satisfied (§2). |
 | 26 | Status display Sharp LCD GND | **X-CPU** *(not X-SEN)* | +5V_SENS | 0.5 mm² | **FLAG A:** SPI slave of the ESP32 — GND references ESP32 for clean SPI, though powered from +5V_SENS. |
 | 27 | BATT_SENSE module B6 GND | **X-CPU** *(not X-SEN)* | — | 0.5 mm² | **FLAG A:** ADC divider bottom must share the **ESP32 ADC** reference or the reading skews (§11). Route to X-CPU. |
 | 28–31 | 4× drive-motor encoder GND (FL/FR/BL/BR) | **ESP32 (`A1`) ground node**, via the `N-ENC-A`/`N-ENC-B` collectors *(**not** `X-ENC` — that strip is not built; no dedicated per-cable terminals either)* | **+3V3, sourced from `A1`** | 0.5 mm²/AWG20 | **FLAG B (key) — REVISED 2026-08-10, requirement UNCHANGED, RESOLVED 2026-08-12.** Encoders sit physically **on the power-side motors** but are **signal-GND**: their 4-wire cable GND **MUST NOT** land on the adjacent motor/driver power GND. **What changed is only the destination:** instead of a dedicated `X-ENC` strip, the returns go to the **`esp32-drive` (`A1`) ground node**. **Reasoning (user):** `+3V3` for the encoders is **sourced from `A1`**, so supply and return pair up at the same reference — exactly what FLAG B asks for, and a separate strip adds a node without adding separation. **RESOLVED 2026-08-12 — no longer violated:** the returns land on the collector nodes `N-ENC-A` (M1 FL, M2 BL) / `N-ENC-B` (M3 FR, M4 BR), which now reach **only** the ESP32 reference; the `N-GND1` → `X-DRV:1` cross-bond that made this a ground loop is gone, and `netlist_check.py` C-08 verifies it for all four motors. **No dedicated per-cable terminals are used** — the user removed the interim `X-CPU:11`–`X-CPU:14` in the GUI round-trip as unnecessary. |
@@ -1008,7 +1018,7 @@ Do **not** re-draw 30–48 conductors to one point. In the QET **terminal-block 
 - Only the **trunks** (X-GND↔X-AKT, ↔X-LOG, ↔X-PWR, and the sub-trunks X-AKT↔X-DRV, X-LOG↔X-CPU/SEN)
   are drawn as **conductors**, each carrying its cross-section label from §12.4.
 - Net result: from ~48 conductors-to-one-point down to **~10 labelled trunk conductors** + tidy strips.
-- **Reminder (agent process):** per the QET id-regeneration gotcha, build the strips/terminals first,
+- **Reminder (drawing process):** per the QET id-regeneration gotcha, build the strips/terminals first,
   let the user round-trip (open+save) so QET assigns canonical ids, then add trunk conductors against
   those ids. That is the *next* run — not this one.
 
@@ -1038,7 +1048,7 @@ on 2026-08-10:
    OP-H9); what separates a star from a loop is the number of paths. A net-membership test would be
    unsatisfiable and would have to be neutered to pass.
 
-### 12.7 Open questions / decisions (for coordinator + user)
+### 12.7 Open questions / decisions (for the project lead and user)
 
 1. **[KEY] ESP↔driver common ground: rely on the star, or add a direct bond?** The MDD10A internally
    commons its power GND (B−) and its control-header GND into **one** node. If we run a dedicated ESP32

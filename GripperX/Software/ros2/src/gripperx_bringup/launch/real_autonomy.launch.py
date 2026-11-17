@@ -36,7 +36,11 @@ the real robot none of them currently carries usable data:
                                 see it: enable_laser_odometry (runs the matcher and
                                 publishes the topic) and fuse_laser_odometry (lets it
                                 into the filter). Both default to false.
-  imu0   /imu/data/filtered     BNO085 is not connected (documentation/ASBUILT.md)
+  imu0   /imu/data/filtered     published on the real robot (BNO085 driver
+                                /imu/bno085/data -> localization_input_node), but
+                                imu0_config is all false: fused only from step 2.4
+                                of the IMU fusion work (yaw rate, after the offline
+                                A/B replay; gripperx_localization/config/localization.yaml)
 
 Fix the inputs before drawing conclusions from a map or a pose estimate.
 """
@@ -59,11 +63,11 @@ def _reject_mock_sensors(context, *args, **kwargs):
     (lidar_link, gripperx_sensors/config/sensors.yaml) — two publishers whose output is
     indistinguishable downstream.
 
-    The IMU is the worse half: sensor_mocks also publishes /imu/data, which
-    localization_input_node filters into /imu/data/filtered and robot_localization fuses
-    as imu0 (gripperx_localization/config/localization.yaml). The BNO085 is not connected
-    (ASBUILT), so that path fabricates the only attitude input the EKF has. A map built
-    on it looks plausible and is wrong, which is why this refuses rather than warns.
+    That collision alone is the reason: a map built on a scan mixed from the real
+    LD06 and the mock looks plausible and is wrong, which is why this refuses rather
+    than warns. The mock IMU is no longer part of it: sensor_mocks publishes /imu/data,
+    which nothing reads any more — localization_input_node takes the BNO085's
+    /imu/bno085/data (gripperx_localization/config/localization.yaml).
 
     For bench runs without hardware use the simulation
     (gripperx_gazebo/simulation.launch.py) or sensors.launch.py on its own.
@@ -71,8 +75,8 @@ def _reject_mock_sensors(context, *args, **kwargs):
     if LaunchConfiguration("use_mock_sensors").perform(context).lower() in ("true", "1"):
         raise RuntimeError(
             "use_mock_sensors:=true is not valid in real_autonomy.launch.py — this launch "
-            "always starts the real LD06, so mock /scan collides with it and mock "
-            "/imu/data would be fused into the EKF as if it were a real sensor. "
+            "always starts the real LD06, so mock /scan collides with it on the same "
+            "topic and frame. "
             "Use gripperx_gazebo/simulation.launch.py for a sensor-free bench run."
         )
     return []
@@ -158,7 +162,9 @@ def generate_launch_description():
             ),
             DeclareLaunchArgument(
                 "use_mock_firmware",
-                default_value="true",
+                # false, as in real_robot.launch.py (user decision 2026-10-16):
+                # passed through to it, so a true here would override that default.
+                default_value="false",
                 choices=["true", "True", "false", "False"],
             ),
             DeclareLaunchArgument(
@@ -193,7 +199,7 @@ def generate_launch_description():
                 default_value="false",
                 description="Laser scan matcher (needs a moving /scan; disable with static mocks).",
             ),
-            # With the BNO085 absent, /wheel/odom is the EKF's only other live
+            # With the BNO085 unfused, /wheel/odom is the EKF's only other live
             # source when this is off — and /wheel/odom is the topic measured
             # on 2026-08-21 reporting 1 % of the commanded linear velocity and
             # a phantom -0.2594 rad/s yaw.

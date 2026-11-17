@@ -8,7 +8,10 @@ Controls:
   Arrow ←/→   Crab walk left / right (sideways, deadman)        FR-7
   Arrow ↑/↓   Steer the crab's direction of travel while crabbing (deadman)
   0 / 9       Spin in place clockwise / counter-clockwise (deadman)
-  Space       EMERGENCY STOP: stop + straight ahead + back to keyboard mode
+  Space       EMERGENCY STOP: stop + straight ahead + back to keyboard mode; also
+              /arm/stop (arm moving -> torque OFF, limp; arm still -> nothing),
+              leaves leader mode and cancels a running pick_plastic. Space never
+              commands arm motion (OP-42 (i), user decision 2026-10-07)
   K           Mode: keyboard (manual control)
   G           Mode: autonomous (Nav2 takes over, goal via RViz)
   P           Start full grip sequence
@@ -16,6 +19,14 @@ Controls:
   I           Arm to home position
   U           Arm the external authority gate (Octopus goals), 120 s window
   L           Disarm the external authority gate (Octopus goals), immediately
+  J           Leader mode (off at start). Off -> J sends an ALIGN request
+              (/arm/leader/align): the leader drives itself to the follower's pose,
+              goes limp and then requests leader mode itself (/arm/leader/enable,
+              user decision 2026-10-13; THE LEADER MOVES). J again while aligning
+              cancels; J while on switches it off.
+              Space, O, I, P and quitting switch it off first, before anything else.
+              While it is on, drive teleop is BLOCKED (OP-42 (h)): W/S/A/D, arrows,
+              0/9 are ignored and only a zero twist is published.
   Q / Ctrl+C  Quit
 
 Two routes, one node
@@ -39,6 +50,7 @@ import termios
 import select
 import math
 import os
+import signal
 import time
 import threading
 
@@ -46,6 +58,8 @@ import rclpy
 from rclpy.node import Node
 from rclpy.parameter import Parameter
 from rclpy.action import ActionClient
+from rclpy.executors import ExternalShutdownException
+from rclpy.signals import SignalHandlerOptions
 from rclpy.qos import (
     DurabilityPolicy,
     HistoryPolicy,
@@ -53,7 +67,7 @@ from rclpy.qos import (
     ReliabilityPolicy,
 )
 from geometry_msgs.msg import Twist
-from std_msgs.msg import Float64MultiArray, String
+from std_msgs.msg import Bool, Empty, Float64MultiArray, Int64, String
 from gripperx_arm_msgs.action import PickPlastic
 from gripperx_external_msgs.srv import SetArming
 
@@ -187,6 +201,10 @@ class KeyboardTeleopNode(Node):
         # the name it had.
         super().__init__(node_name)
 
+        # Without the kitty protocol a held J arrives as repeated PRESS bytes and
+        # would toggle align/cancel/align (audit LA1 M4): J bytes closer together
+        # than this are one press. TO-VERIFY.
+        self.declare_parameter('leader_key_debounce_sec', 0.5)
         self.declare_parameter('steer_rate_rad_s',  0.6)
         # Self-centring return rate for momentary A/D steering (FR-13):
         # straight ahead is the resting state, so the robot cannot be driven
@@ -380,6 +398,9 @@ class KeyboardTeleopNode(Node):
         self._steer_pub   = self.create_publisher(Float64MultiArray, steer_topic,         10)
         self._cmd_vel_pub = self.create_publisher(Twist,             cmd_vel_topic,       10)
         self._arm_pub     = self.create_publisher(String,            arm_topic,           10)
+        # Space -> arm_action_server: torque off if the arm is moving, else nothing
+        # (user decision 2026-10-07). Published FIRST in center().
+        self._arm_stop_pub = self.create_publisher(Empty, '/arm/stop', 10)
         self._mode_pub    = self.create_publisher(String,            '/teleop/set_mode',  10)
         # Latched: whoever subscribes late (a second terminal, rqt) still learns
         # which manoeuvre the robot is in without waiting for the next change.
@@ -393,7 +414,44 @@ class KeyboardTeleopNode(Node):
                 durability=DurabilityPolicy.TRANSIENT_LOCAL,
             ),
         )
+        # Leader-arm streaming REQUEST (not an authority: the follower side gates
+        # it itself). Latched so a late subscriber sees the current request.
+        # Starts DISARMED; the subscription keeps this node in step when the
+        # leader node withdraws the request (read errors, shutdown).
+        _leader_qos = QoSProfile(
+            depth=1,
+            history=HistoryPolicy.KEEP_LAST,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.TRANSIENT_LOCAL,
+        )
+        self._leader_enabled = False
+        self._leader_pub = self.create_publisher(Bool, '/arm/leader/enable', _leader_qos)
+        self.create_subscription(Bool, '/arm/leader/enable', self._on_leader_enable, _leader_qos)
+        self._leader_pub.publish(Bool(data=False))
+        # Self-alignment (user decision 2026-10-13): J asks the leader node to align the
+        # leader to the follower; that node publishes the enable itself on arrival.
+        # Volatile on purpose: a latched align request would start a leader motion when
+        # the leader node is restarted later.
+        self._align_pub = self.create_publisher(Bool, '/arm/leader/align', 10)
+        self._align_pending = False
+        # Set only by a deliberate operator quit (Q, the Ctrl+C byte, the web UI's
+        # quit), never by a signal or a hang-up. main() reads it after the stop to
+        # decide whether to tell gripperx_desk.sh -- see _signal_desk_quit().
+        self._deliberate_quit = False
+        # Set (under self._lock) once the shutdown tail has begun; press() then
+        # refuses every key. See begin_ending().
+        self._ending = False
+        self._last_j = -float('inf')
+        self._j_debounce = float(self.get_parameter('leader_key_debounce_sec').value)
+        self._align_state = 'unknown (no leader node seen)'
+        self.create_subscription(String, '/arm/leader/align_state', self._on_align_state,
+                                 _leader_qos)
         self._pick_client = ActionClient(self, PickPlastic, 'pick_plastic')
+        # Stop epoch (user decision 2026-10-12): every P carries the last value the arm
+        # node published; a P sent before this node saw a Space's new epoch is refused
+        # there. None until the first (latched) value arrives: P is not sent.
+        self._stop_epoch = None
+        self.create_subscription(Int64, '/arm/stop_epoch', self._on_stop_epoch, _leader_qos)
         self._arming_client = self.create_client(
             SetArming, '/gripperx/external/set_arming'
         )
@@ -415,6 +473,7 @@ class KeyboardTeleopNode(Node):
         self._crab_psi  = None
         self._dt        = 1.0 / rate
         self._pick_busy = False
+        self._pick_handle = None
         self._steer_states = None
         self._steer_states_t = 0.0
         self._status_line = ''
@@ -603,6 +662,15 @@ class KeyboardTeleopNode(Node):
 
     def _publish(self):
         now = time.monotonic()
+        if self._leader_enabled:
+            # OP-42 (h): no drive while the arm follows the leader. Only a zero twist:
+            # swerve_controller holds the steering on a fresh zero twist, and nothing
+            # goes to /teleop/direct_steer, so no steering command either.
+            with self._lock:
+                self._keys.clear_all(now)
+            self._cmd_vel_pub.publish(Twist())
+            self._announce('LEADER MODE: drive blocked')
+            return
         with self._lock:
             manoeuvre = self._active_manoeuvre(now)
             crabbing = manoeuvre in (CRAB_LEFT, CRAB_RIGHT)
@@ -763,6 +831,14 @@ class KeyboardTeleopNode(Node):
         """
         now = time.monotonic()
         with self._lock:
+            if self._ending:
+                return   # the final stop is going out; see begin_ending()
+            if (kind != RELEASE and self._leader_enabled
+                    and key in DRIVE_KEYS + MANOEUVRE_KEYS + STEER_KEYS + CRAB_STEER_KEYS):
+                self.get_logger().warn(
+                    f'"{key}" ignored: drive teleop is blocked while leader mode is on '
+                    '(J or Space to leave it)', throttle_duration_sec=2.0)
+                return
             self._keys.on_event(key, kind, now)
             if kind == RELEASE:
                 return
@@ -791,7 +867,14 @@ class KeyboardTeleopNode(Node):
                 # Pressing one with no crab active correctly does nothing.
                 pass
 
-    def center(self):
+    def center(self, reason: str = 'estop'):
+        # Leader streaming off FIRST, so the follower stops following before the
+        # stop is announced. Never commands arm motion (no go_home): the
+        # emergency stop must not start a movement. /arm/stop goes first: the arm
+        # node lets an arm that is moving go limp, and does nothing to a still one.
+        self._arm_stop_pub.publish(Empty())
+        self.disarm_leader()
+        self.cancel_pick()
         # EMERGENCY STOP: forces keyboard mode, so the space bar also stops
         # in autonomous mode — teleop_mux publishes zero immediately on the
         # switch and ignores Nav2 commands from then on. Unconditional in every
@@ -820,8 +903,26 @@ class KeyboardTeleopNode(Node):
         straight = Float64MultiArray()
         straight.data = [0.0] * STEER_JOINT_COUNT
         self._steer_pub.publish(straight)
-        self.get_logger().info('EMERGENCY STOP: stop + center + keyboard mode')
+        # Same publishes either way; only the log differs, so a deliberate quit
+        # is not read as an e-stop that fired (2026-10-22).
+        if reason == 'shutdown':
+            self.get_logger().info('shutdown: stop + center + keyboard mode')
+        else:
+            self.get_logger().info('EMERGENCY STOP: stop + center + keyboard mode')
         self._announce(status)
+
+    def begin_ending(self):
+        """Close key input for good, BEFORE the final center().
+
+        Under self._lock, the same lock press() registers keys under: any press
+        that got in before this is wiped by center()'s clear_all(), and none can
+        get in after it, so nothing can drive again between the final stop and
+        the exit. Here the only key source is the reader in the main thread, which
+        has already returned; the web front-end's input threads are the reason
+        the gate is in press() (web_teleop_node.begin_ending()).
+        """
+        with self._lock:
+            self._ending = True
 
     def _held(self, key: str, window: float = 0.15) -> bool:
         return self._keys.held(key, time.monotonic(), window)
@@ -833,18 +934,36 @@ class KeyboardTeleopNode(Node):
 
     # ── Arm commands ──────────────────────────────────────────────────────────
 
-    def trigger_pick(self):
+    def trigger_pick(self) -> bool:
+        """True if a goal was sent (the web UI reports it), False if not."""
+        self.disarm_leader()   # before any arm command: the leader must not fight the sequence
         if self._pick_busy:
             self.get_logger().info('pick_plastic already running')
-            return
+            return False
         if not self._pick_client.wait_for_server(timeout_sec=0.5):
             self.get_logger().warn('pick_plastic server unreachable')
-            return
-        self._pick_busy = True
-        goal = PickPlastic.Goal()
-        future = self._pick_client.send_goal_async(goal)
+            return False
+        if self._stop_epoch is None:
+            self.get_logger().warn('pick_plastic NOT sent: no stop epoch from the arm '
+                                   'node yet (/arm/stop_epoch)')
+            return False
+        # The wait above can outlast the start of the shutdown (web: an input
+        # thread). Checked and sent under the lock begin_ending() sets the gate
+        # under, so a goal goes out either before the final stop or not at all.
+        with self._lock:
+            if self._ending:
+                self.get_logger().warn('pick_plastic NOT sent: teleop is shutting down')
+                return False
+            self._pick_busy = True
+            goal = PickPlastic.Goal()
+            goal.stop_epoch = self._stop_epoch
+            future = self._pick_client.send_goal_async(goal)
         future.add_done_callback(self._on_goal_response)
         self.get_logger().info('pick_plastic: sent')
+        return True
+
+    def _on_stop_epoch(self, msg):
+        self._stop_epoch = int(msg.data)
 
     def _on_goal_response(self, future):
         handle = future.result()
@@ -852,14 +971,25 @@ class KeyboardTeleopNode(Node):
             self.get_logger().warn('pick_plastic: goal rejected')
             self._pick_busy = False
             return
+        self._pick_handle = handle
         handle.get_result_async().add_done_callback(self._on_pick_done)
 
     def _on_pick_done(self, future):
         result = future.result().result
         self._pick_busy = False
+        self._pick_handle = None
         self.get_logger().info(
             f'pick_plastic: {"OK" if result.success else "ERROR"} — {result.message}'
         )
+
+    def cancel_pick(self):
+        """Space: cancel a pick this teleop started. The arm server answers a cancel
+        by HOLDING; a pick started by the external-goal gateway is cancelled by the
+        gateway itself, which disarms on the keyboard-mode switch Space publishes."""
+        handle = self._pick_handle
+        if handle is not None:
+            handle.cancel_goal_async()
+            self.get_logger().warn('pick_plastic: CANCEL requested (Space) — arm holds')
 
     def set_mode(self, mode: str):
         msg = String(); msg.data = mode
@@ -867,11 +997,13 @@ class KeyboardTeleopNode(Node):
         self.get_logger().info(f'Teleop mode → {mode}')
 
     def open_gripper(self):
+        self.disarm_leader()
         msg = String(); msg.data = 'open_gripper'
         self._arm_pub.publish(msg)
         self.get_logger().info('Arm: opening gripper')
 
     def go_home(self):
+        self.disarm_leader()
         msg = String(); msg.data = 'go_home'
         self._arm_pub.publish(msg)
         self.get_logger().info('Arm: home position')
@@ -925,6 +1057,50 @@ class KeyboardTeleopNode(Node):
             self.get_logger().info(f'DISARMED — {response.message}')
         else:
             self.get_logger().warn(f'set_arming REFUSED — {response.message}')
+
+    def _on_leader_enable(self, msg: Bool):
+        self._leader_enabled = bool(msg.data)
+
+    def _on_align_state(self, msg: String):
+        self._align_state = msg.data
+        self._align_pending = msg.data.startswith('aligning')
+        # One call site per severity: rclpy caches the severity per call site and
+        # raises "Logger severity cannot be changed between calls" otherwise -
+        # robot 2026-10-15, a refused J followed by a direct J killed the teleop.
+        if msg.data.startswith(('aborted', 'refused')):
+            self.get_logger().warn(f'leader alignment: {msg.data}')
+        else:
+            self.get_logger().info(f'leader alignment: {msg.data}')
+
+    def toggle_leader(self):
+        """J key. On -> off. Aligning -> cancel. Off -> align request (the leader node
+        moves the leader, then requests leader mode). Touches no drive state.
+        O, I, P and Space switch it off first (see disarm_leader callers)."""
+        if self._leader_enabled:
+            self.disarm_leader()
+            self.get_logger().info('leader streaming request OFF')
+        elif self._align_pending:
+            self.disarm_leader()
+            self.get_logger().info('leader alignment CANCELLED')
+        else:
+            self._align_pending = True
+            self._align_pub.publish(Bool(data=True))
+            self.get_logger().info('leader ALIGN requested: the leader moves to the follower '
+                                   'pose, then leader mode is requested')
+
+    def leader_key_repeat(self) -> bool:
+        """Fallback regime only: True if this J byte is auto-repeat of a held J.
+        Sliding: every J byte restarts the window, so a held J is one press."""
+        now = time.monotonic()
+        repeat = now - self._last_j < self._j_debounce
+        self._last_j = now
+        return repeat
+
+    def disarm_leader(self):
+        self._leader_enabled = False
+        self._align_pending = False
+        self._leader_pub.publish(Bool(data=False))
+        self._align_pub.publish(Bool(data=False))     # cancels a running alignment
 
     def arm_gateway(self):
         self._call_arming(True, ARM_REQUEST_DURATION_SEC)
@@ -983,6 +1159,7 @@ def _dispatch(node: KeyboardTeleopNode, key: str, kind: int, stop_event) -> None
         # Quit on the PRESS edge. Acting on a release instead would leave the
         # operator holding a key that has visibly done nothing.
         if kind != RELEASE:
+            node._deliberate_quit = True
             stop_event.set()
         return
 
@@ -1012,6 +1189,10 @@ def _dispatch(node: KeyboardTeleopNode, key: str, kind: int, stop_event) -> None
         node.arm_gateway()
     elif key == "l":
         node.disarm_gateway()
+    elif key == "j":
+        if not node._keys.release_reporting and node.leader_key_repeat():
+            return
+        node.toggle_leader()
 
 
 def _key_reader(node: KeyboardTeleopNode, stop_event: threading.Event):
@@ -1036,6 +1217,8 @@ def _key_reader(node: KeyboardTeleopNode, stop_event: threading.Event):
         '║  K = Keyboard mode   G = Autonomous (Nav2)           ║\r\n'
         '║  P = Grip  O = Gripper open  I = Arm home            ║\r\n'
         '║  U = Arm external gate (120s)  L = Disarm gate       ║\r\n'
+        '║  J = Leader: the LEADER MOVES to the follower pose,  ║\r\n'
+        '║      then leader mode. J again = cancel / off        ║\r\n'
         '║  Q / Ctrl+C = Quit                                   ║\r\n'
         '╚══════════════════════════════════════════════════════╝\r\n\n'
     )
@@ -1060,15 +1243,30 @@ def _key_reader(node: KeyboardTeleopNode, stop_event: threading.Event):
     sys.stdout.flush()
 
     try:
+        # The select timeout is also what lets a signal end this loop: the
+        # handler only sets stop_event (route_stop_signals()).
         while not stop_event.is_set():
             r, _, _ = select.select([tty_file], [], [], 0.05)
             if not r:
                 continue
-            raw = tty_file.read(1).decode('utf-8', errors='ignore')
+            try:
+                byte = tty_file.read(1)
+            except OSError:
+                byte = b''
+            if not byte:
+                # EOF/EIO: the terminal was hung up (window closed). Nothing can
+                # be typed any more; end like a signal, NOT like a quit.
+                stop_event.set()
+                break
+            raw = byte.decode('utf-8', errors='ignore')
             if raw == '\x1b':
                 # Resolve BEFORE lowercasing: the cursor-key finals are 'A'..'D',
                 # and 'A'.lower() == 'a' would read as steer-left.
-                decoded = read_sequence(tty_file, _ESC_SEQUENCE_TIMEOUT)
+                try:
+                    decoded = read_sequence(tty_file, _ESC_SEQUENCE_TIMEOUT)
+                except OSError:
+                    stop_event.set()   # hung up mid-sequence
+                    break
                 if decoded is not None:
                     _dispatch(node, decoded[0], decoded[1], stop_event)
                 continue
@@ -1077,6 +1275,7 @@ def _key_reader(node: KeyboardTeleopNode, stop_event: threading.Event):
             # event type, so it is a press by definition.
             ch = raw.lower()
             if ch == '\x03':
+                node._deliberate_quit = True
                 stop_event.set()
                 break
             if ch == ' ':
@@ -1087,40 +1286,154 @@ def _key_reader(node: KeyboardTeleopNode, stop_event: threading.Event):
             # here is a key the operator cannot press when the protocol is
             # absent.
             elif ch in ('w', 's', 'a', 'd', '0', '9',
-                        'q', 'k', 'g', 'p', 'o', 'i', 'u', 'l'):
+                        'q', 'k', 'g', 'p', 'o', 'i', 'u', 'l', 'j'):
                 _dispatch(node, ch, PRESS, stop_event)
     finally:
         # Pop the flags BEFORE restoring the termios settings: leaving them set
         # would hand the operator's shell a terminal that reports every keystroke
         # as an escape sequence — a broken shell after a clean quit.
-        disable_release_reporting()
-        termios.tcsetattr(fd, termios.TCSADRAIN, old)
-        tty_file.close()
-        sys.stdout.write('\r\nKeyboard teleop ended.\r\n')
-        sys.stdout.flush()
+        # Each step is best-effort: after a hang-up every one of them fails with
+        # EIO, and a raise here must not stand between the operator and the stop
+        # main() publishes next.
+        for step in (disable_release_reporting,
+                     lambda: termios.tcsetattr(fd, termios.TCSADRAIN, old),
+                     tty_file.close,
+                     lambda: _tty_write('\r\nKeyboard teleop ended.\r\n')):
+            try:
+                step()
+            except (OSError, termios.error):
+                _detach_stdout()
+
+
+def _detach_stdout():
+    """Point stdout at /dev/null once the terminal is gone.
+
+    Otherwise the interpreter's final flush fails on the dead tty and Python
+    turns that into exit code 120 after an otherwise clean shutdown.
+    """
+    try:
+        sys.stdout = open(os.devnull, 'w', encoding='utf-8')
+    except OSError:
+        pass
+
+
+def _tty_write(text):
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
+# The signals an operator's session can end this process with: SIGINT (Ctrl+C in
+# the launching shell, gripperx_desk.sh's first teardown step), SIGTERM (`kill`,
+# `ros2 launch`, the desk's second step), SIGHUP (the terminal window closed).
+STOP_SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+
+
+def route_stop_signals(stop_event, received=None):
+    """Make every stop signal end the node through its normal shutdown tail.
+
+    Use with rclpy.init(signal_handler_options=SignalHandlerOptions.NO). rclpy's
+    own handler shuts the ROS context down from inside the signal, i.e. BEFORE
+    main() can publish the stop -- after that nothing goes out any more. This
+    handler only sets stop_event, so the main thread leaves its wait and runs
+    center() while the context is still valid, and only then shuts it down
+    (stop_spinning()). A second signal during that tail (the desk's SIGTERM
+    after its SIGINT) sets the event again and nothing else: it cannot abort a
+    stop that is being published. SIGKILL stays the last resort.
+
+    Once-only by construction: the handler never calls the tail. The tail runs
+    exactly once, in main()'s finally, so a repeated INT/TERM/HUP (Ctrl-C in
+    the desk terminal, then the desk's own SIGINT ~0.1-1 s later) re-sets an
+    event that is already set and records the number -- nothing else.
+
+    `received` (a list) collects the signal numbers for the shutdown log; the
+    handler itself must not log -- it runs between two bytecodes of whatever
+    the main thread was doing.
+    """
+    def _handler(signum, _frame):
+        if received is not None:
+            received.append(signum)
+        stop_event.set()
+    for sig in STOP_SIGNALS:
+        signal.signal(sig, _handler)
+
+
+def log_stop_signals(node, received):
+    if received:
+        names = ', '.join(dict.fromkeys(signal.Signals(s).name for s in received))
+        node.get_logger().info(f'shutdown: {names} received')
+
+
+def _spin(node, stop_event=None):
+    """Spin until stop_spinning() shuts the context down.
+
+    The context going down while the executor is between two waits surfaces as
+    ExternalShutdownException or as an RCLError ("failed to initialize wait
+    set"); both are the expected end, not a fault. Anything raised while the
+    context is still up IS a fault and is re-raised -- after stop_event is set,
+    so the main thread publishes the stop instead of running on without its
+    publish timer.
+    """
+    try:
+        rclpy.spin(node)
+    except (KeyboardInterrupt, ExternalShutdownException):
+        pass
+    except Exception:
+        if rclpy.ok():
+            raise
+    finally:
+        if stop_event is not None:
+            stop_event.set()
+
+
+def stop_spinning(node, spin_thread, timeout: float = 2.0):
+    """Shut the context down, wait for the spin thread to leave rclpy, destroy.
+
+    The spin thread is a daemon. If main() returns while it is still inside an
+    rclpy C++ call, the interpreter finalises underneath it, the thread is
+    force-unwound through that C++ frame, and std::terminate aborts the process:
+    `terminate called without an active exception`, exit -6 (desk, 2026-10-22;
+    gdb: main thread in Py_FinalizeEx, spin thread in pthread_exit from
+    PyEval_RestoreThread inside _rclpy_pybind11). Shutting the context down
+    wakes the executor; joining makes sure it has actually left before exit.
+
+    Call it only AFTER the final stop has been published: once the context is
+    down, nothing more goes out.
+    """
+    rclpy.try_shutdown()
+    spin_thread.join(timeout)
+    if spin_thread.is_alive():
+        node.get_logger().warn(
+            f'spin thread still running {timeout:.1f} s after shutdown')
+    node.destroy_node()
 
 
 def main():
-    rclpy.init()
-    node = KeyboardTeleopNode()
+    # Handlers first, so a signal during node construction is not lost either.
     stop_event = threading.Event()
-    spin_thread = threading.Thread(target=rclpy.spin, args=(node,), daemon=True)
+    received = []
+    route_stop_signals(stop_event, received)
+    rclpy.init(signal_handler_options=SignalHandlerOptions.NO)
+    node = KeyboardTeleopNode()
+    spin_thread = threading.Thread(target=_spin, args=(node, stop_event), daemon=True)
     spin_thread.start()
-    _key_reader(node, stop_event)
-    node.center()
-    time.sleep(0.15)
-    # Reaching this line at all means _key_reader() RETURNED rather than
-    # raised, which only happens via stop_event.is_set() -- and the only two
-    # things that ever set it are Q and Ctrl+C inside _dispatch(), both
-    # deliberate operator quits in THIS window. A SIGTERM/SIGINT delivered
-    # from outside (gripperx_desk.sh teardown, `kill`) does not go through
-    # here: it either interrupts the tty read with an exception that skips
-    # straight past node.center(), or it never reaches this process at all.
-    # So, unlike web_teleop_node.py, no separate "was this deliberate" flag is
-    # needed -- every arrival here already is one.
-    _signal_desk_quit()
-    node.destroy_node()
-    rclpy.shutdown()
+    try:
+        _key_reader(node, stop_event)
+    finally:
+        # Every way out of the reader -- Q, the Ctrl+C byte, a signal, a hang-up,
+        # even a raise -- passes here with the context still up, so the stop
+        # always goes out before stop_spinning() takes the context down.
+        try:
+            node.begin_ending()
+            log_stop_signals(node, received)
+            node.disarm_leader()
+            node.center(reason='shutdown')
+            time.sleep(0.15)
+            # Deliberate quits only: a signal or a hang-up must leave the rest
+            # of the desk session running for the operator to inspect.
+            if node._deliberate_quit:
+                _signal_desk_quit()
+        finally:
+            stop_spinning(node, spin_thread)
 
 
 if __name__ == '__main__':

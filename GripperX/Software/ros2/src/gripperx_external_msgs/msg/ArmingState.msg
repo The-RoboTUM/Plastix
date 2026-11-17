@@ -56,6 +56,10 @@ uint8 TRIGGER_CLOCK_STALLED=8       # the ROS clock stopped advancing (SAFETY.md
 # 2026-08-19; the wire-format change was the accepted cost). The BEHAVIOUR is
 # identical to a stall - disarm, cancel, re-baseline; only the code differs.
 uint8 TRIGGER_CLOCK_JUMPED_BACK=9
+# Aimed pick, mode confirm_by_rearm (SR-16 extension E11, draft 2026-10-13): the gateway
+# disarmed itself before an aimed pick; the operator's next arming approves exactly
+# that one pending pick. Not an error.
+uint8 TRIGGER_PICK_CONFIRM=10
 uint8 last_disarm_trigger
 string last_disarm_detail
 
@@ -64,6 +68,8 @@ string last_disarm_detail
 # second writer (SR-9). Stopping is Nav2's job.
 bool last_disarm_cancelled
 
-# Whether auto-pick may run in this build. Stubbed and false in the twin: there
-# is no arm in the URDF or sim.
+# Whether auto-pick may run: true only when the gateway parameter auto_pick is true
+# AND a /pick_plastic server is discovered. The twin config keeps auto_pick false and
+# the twin launches start no pick server, so it reads false there; the real config
+# sets auto_pick true (see the gateway configs).
 bool auto_pick_available

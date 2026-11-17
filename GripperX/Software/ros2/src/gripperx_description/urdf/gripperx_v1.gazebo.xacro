@@ -11,7 +11,8 @@
   <xacro:include filename="gripperx_v1.camera.xacro" />
   <xacro:include filename="gripperx_v1.ros2_control.xacro" />
 
-  <xacro:gripperx_robot mesh_dir="$(arg mesh_dir)" />
+  <!-- No arm controller in Gazebo: the arm is fixed in its CAD pose (q = 0). -->
+  <xacro:gripperx_robot mesh_dir="$(arg mesh_dir)" arm_articulated="false" />
 
   <xacro:if value="$(arg use_lidar)">
     <xacro:gripperx_lidar add_gazebo="true" />
@@ -26,6 +27,42 @@
       <always_on>1</always_on>
       <update_rate>$(arg imu_update_rate)</update_rate>
       <topic>/imu/data</topic>
+      <!-- Gaussian noise, standard deviation per axis measured at standstill on the
+           real BNO085 (/imu/bno085/data) in bag 2026-10-22_desk_check, desk, robot
+           stationary the whole time: n = 157421 samples (3155.7 s at ~50 Hz). One robot,
+           one temperature, one bag. gyro x/y/z 0.000456/0.000406/0.000333 rad/s,
+           accel x/y/z 0.0104/0.0112/0.0196 m/s^2. Mean and bias stay 0 (the real
+           mean is gravity/mounting, not noise). The real sensor is QUANTISED
+           (gyro 1/512 rad/s, mostly exact 0 at rest), the sim is continuous. The twin IMU runs at
+           100 Hz (imu_update_rate) vs 50 Hz real: same per-sample std, so the noise
+           density is ~sqrt(2) lower than the real sensor's. The
+           noise exists so six consecutive samples are never bit-identical, otherwise
+           the frozen-sample check of localization_input_node trips at every standstill
+           and the gyro bias is never estimated in the twin. -->
+      <imu>
+        <angular_velocity>
+          <x>
+            <noise type="gaussian"><mean>0.0</mean><stddev>0.000456</stddev></noise>
+          </x>
+          <y>
+            <noise type="gaussian"><mean>0.0</mean><stddev>0.000406</stddev></noise>
+          </y>
+          <z>
+            <noise type="gaussian"><mean>0.0</mean><stddev>0.000333</stddev></noise>
+          </z>
+        </angular_velocity>
+        <linear_acceleration>
+          <x>
+            <noise type="gaussian"><mean>0.0</mean><stddev>0.0104</stddev></noise>
+          </x>
+          <y>
+            <noise type="gaussian"><mean>0.0</mean><stddev>0.0112</stddev></noise>
+          </y>
+          <z>
+            <noise type="gaussian"><mean>0.0</mean><stddev>0.0196</stddev></noise>
+          </z>
+        </linear_acceleration>
+      </imu>
     </sensor>
   </gazebo>
 

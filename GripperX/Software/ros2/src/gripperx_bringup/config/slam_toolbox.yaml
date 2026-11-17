@@ -1,3 +1,4 @@
+# Rollback copy: using it loses check_min_dist_and_heading_precisely (see gripperx_localization/config/localization.yaml) and with it scan processing during pure rotation.
 slam_toolbox:
   ros__parameters:
     solver_plugin: solver_plugins::CeresSolver

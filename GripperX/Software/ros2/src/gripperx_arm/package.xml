@@ -12,6 +12,24 @@
   <depend>rclpy</depend>
   <depend>sensor_msgs</depend>
   <depend>gripperx_arm_msgs</depend>
+  <depend>std_msgs</depend>
+  <!-- aimed P (FR-16 stage 1): the target's transform into base_link, the base-still check -->
+  <depend>geometry_msgs</depend>
+  <depend>tf2_ros</depend>
+  <depend>tf2_msgs</depend>
+  <exec_depend>gripperx_external_msgs</exec_depend>
+  <!-- steer_servo.yaml: mechanical steering stops for the SR-17 wheel envelope -->
+  <exec_depend>gripperx_control</exec_depend>
+  <exec_depend>python3-yaml</exec_depend>
+  <!-- generate_acm / stop_protected read the arm stops from gripperx_geometry -->
+  <exec_depend>gripperx_geometry</exec_depend>
+  <exec_depend>python3-numpy</exec_depend>
+  <!-- self-contact recovery: hull vertices and the convex_distance fallback -->
+  <exec_depend>python3-scipy</exec_depend>
+
+  <test_depend>ament_cmake_pytest</test_depend>
+  <test_depend>gripperx_description</test_depend>
+  <test_depend>xacro</test_depend>
 
   <export>
     <build_type>ament_cmake</build_type>

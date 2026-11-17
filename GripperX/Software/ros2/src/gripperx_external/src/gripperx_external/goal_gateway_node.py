@@ -135,7 +135,7 @@ import signal
 import sys
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace as dc_replace
 from typing import Dict, List, Optional, Sequence, Tuple
 
 import rclpy
@@ -162,10 +162,11 @@ from diagnostic_msgs.msg import DiagnosticArray
 from geometry_msgs.msg import Point
 from nav_msgs.msg import OccupancyGrid, Odometry
 from rosgraph_msgs.msg import Clock as ClockMsg
-from std_msgs.msg import ColorRGBA, String
+from std_msgs.msg import ColorRGBA, Int64, String
 from visualization_msgs.msg import Marker, MarkerArray
 
 from gripperx_arm_msgs.action import PickPlastic
+from gripperx_arm_msgs.msg import ArmState
 from nav2_msgs.action import NavigateToPose
 
 import tf2_ros
@@ -189,7 +190,9 @@ from . import line_frame as lf
 from . import validation as val
 from .arming import (
     REQUIRED_TELEOP_MODE,
+    TRIGGER_MODE_CHANGE,
     TRIGGER_NAV2_UNAVAILABLE,
+    TRIGGER_CODES,
     TRIGGER_OPERATOR,
     ArmingMachine,
 )
@@ -243,7 +246,7 @@ AGREED_DEFAULT_ARMING_DURATION_SEC = 120.0
 #: window got a confirmation and no protection), so it is the one that is gone
 #: here. Runtime-changeable values (the geofence, the grasp offsets,
 #: `datum_jump_warn_m`, `goal_match_tolerance_m`, `max_attempts_per_target`,
-#: `max_stamp_age_sec`, `max_tf_age_sec`, `max_teleop_mode_age_sec`,
+#: `max_stamp_age_sec`, `max_teleop_mode_age_sec`,
 #: `max_goal_cost`) are re-read at the point of use and are NOT in this list.
 _AUTHORITY_REASON = (
     "the authority gate and the domain must not be widened by a running node "
@@ -294,6 +297,34 @@ _STARTUP_ONLY_PARAMS = {
     "allow_arm": _AUTHORITY_REASON,
     "dry_run": _AUTHORITY_REASON,
     "auto_pick": _AUTHORITY_REASON,
+    "arm_state_topic": _AUTHORITY_REASON,
+    "arm_state_max_age_sec": "it is a gate width of the dispatch gate (ARM_NOT_HOME)",
+    "arm_state_ready_hold_sec": "it is a gate width of the dispatch gate (ARM_NOT_HOME)",
+    "dispatch_requires_arm_home": _AUTHORITY_REASON,
+    # Aimed pick (SR-16 extension E10/E11, draft 2026-10-13): safety-deciding.
+    "grasp.aimed_pick": _AUTHORITY_REASON,
+    "grasp.aim_position_drift_warn_m": "it is fixed with the aimed-pick mode it serves",
+    "grasp.pending_pick_max_age_sec": (
+        "it bounds how old a pending aimed pick may be when a re-arm approves it; a "
+        "running node must not be able to widen what a re-arm authorises"
+    ),
+    "grasp.localisation_settle_sec": (
+        "it decides how long the pose must hold still before an aimed pick is judged"
+    ),
+    "grasp.localisation_settle_timeout_sec": (
+        "it bounds how long an aimed pick waits for the localisation to settle"
+    ),
+    "grasp.pending_pick_max_target_shift_m": (
+        "it bounds how far the confirmed pick's target may lie from the previewed one; "
+        "a running node must not be able to widen it"
+    ),
+    # SR-16 E3 / audit F4 (OP-47 (c)): the reached-check TF freshness bound is the SAME
+    # bound as the arm's, one shared file (tf_freshness.yaml), read once by both.
+    "max_tf_age_sec": (
+        "it is one bound with the arm's startup-only max_tf_age_sec (SR-16 E3, "
+        "gripperx_arm_msgs/config/tf_freshness.yaml); a running node must not be able "
+        "to widen it or split it from the arm's"
+    ),
     "arming.max_duration_sec": (
         "the arming ceiling is fixed when the arming machine is built; a running "
         "node must not be able to lengthen the window it is already inside "
@@ -387,6 +418,11 @@ _STARTUP_ONLY_PARAMS = {
     "map_session_grace_sec": (
         "it decides how long an invisible map publisher is tolerated under a "
         "goal in flight - a gate width, which a running node must not raise"
+    ),
+    "correlation_list_loss_hold_sec": (
+        "it WIDENS the correlation gate of SAFETY.md F-13 for an empty or stale "
+        "target list (user decision 2026-11-16) - a gate width, which a running "
+        "node must not raise (SAFETY.md A-4)"
     ),
 }
 
@@ -547,6 +583,35 @@ NAV_REAIMING = "reaiming"
 #: coasted another 7-10 deg over ~0.4 s - judging (and picking) at the result
 #: would judge a pose that is not the final one, on a moving base.
 NAV_SETTLING = "settling"
+#: Aimed pick, mode confirm_by_rearm (SR-16 extension E11, draft): the preview
+#: passed, the gateway disarmed itself, and ONE pick waits for the operator's re-arm.
+#: Nothing is in flight; nothing arm-related follows unless that re-arm comes.
+NAV_PENDING_CONFIRM = "pending_confirm"
+
+#: `grasp.aimed_pick` (user decisions 2026-10-13). off: the fixed sequence, exactly as
+#: before. confirm_by_rearm: every aimed pick needs its own re-arm. automatic: aimed
+#: picks under SR-16 - gated by the pending safety audit (E12), never in a real config.
+AIMED_OFF, AIMED_CONFIRM, AIMED_AUTOMATIC = "off", "confirm_by_rearm", "automatic"
+AIMED_MODES = (AIMED_OFF, AIMED_CONFIRM, AIMED_AUTOMATIC)
+#: Arm refusals of an aimed pick (gripperx_arm.aimed_grasp). The first three end the
+#: attempt and the target is re-approached by the ordinary dispatch (user decision
+#: 2026-10-13, answer 3); the last two point to a fault driving again does not fix:
+#: counted, and the target is held off (blacklisted) - no re-approach.
+#: BASE_MOVED_DURING_PICK: SR-16 E5, the arm aborted a running aimed P on base motion
+#: (audit F3) - the arm has moved, so never re-approached either. TARGET_SHIFTED: the
+#: confirmed pick's target left the preview's in the arm's own transform (E11 item 4,
+#: audit F5) - a discard, never a re-approach.
+AIM_REAPPROACH = frozenset(("OUT_OF_REACH", "ENVELOPE_REJECTED", "NO_PATH"))
+AIM_NO_REAPPROACH = frozenset(
+    ("STALE_TF", "BASE_MOVING", "STEERING_UNKNOWN", "REFUSED_AFTER_MOTION",
+     "BASE_MOVED_DURING_PICK", "TARGET_SHIFTED")
+)
+#: The arm's result reason after a Space (PickPlastic.action).
+ARM_REASON_STOPPED = "STOPPED"
+#: The gateway's own disarm before a pending aimed pick (SR-16 E11 item 2); SR-15 rule 7's
+#: tenth trigger since its amendment of 2026-11-05. Mode confirm_by_rearm refuses to start
+#: if `arming.TRIGGER_CODES` does not carry it (a consistency guard).
+TRIGGER_PICK_CONFIRM = "PICK_CONFIRM"
 #: USER DECISIONS 2026-09-29, not measurements: "standing still" means the TF
 #: pose moved less than this between two consecutive dispatch ticks (0.5 s at
 #: dispatch_rate_hz 2.0); if that does not happen within the timeout, the
@@ -571,6 +636,19 @@ REAIM_SWITCHED_OFF_REASON = "REAIM_SWITCHED_OFF"
 #: NOT here: a frozen list is loss of information, not evidence of occlusion,
 #: and stays a refusal (FR-12 section 6). See `_reaim_correlation_holds`.
 _REAIM_ABSENCE_STATUSES = frozenset((corr.NO_MATCH, corr.NO_TARGETS))
+#: LIST-LOSS HOLD (USER DECISION 2026-11-16, SR-16): which caller of
+#: `_correlation_holds` may hold an EMPTY (NO_TARGETS with `absence`) or STALE
+#: target list for `correlation_list_loss_hold_sec`. The default is NONE, the
+#: narrowest, so a call site that does not say what it is gets no hold.
+#:   DRIVE - the goal in flight: empty AND stale are held (the goal keeps driving);
+#:   PICK  - the arrival gate: only the empty list is held; a stale list is loss
+#:           of information, not evidence of occlusion, and refuses (F-28);
+#:   NONE  - the irreversible acknowledgement: never held.
+CORR_HOLD_NONE = "none"
+CORR_HOLD_DRIVE = "drive"
+CORR_HOLD_PICK = "pick"
+#: Rate limit of the WARN while a list-loss hold is active (log only, no gate).
+_LIST_LOSS_HOLD_WARN_PERIOD_SEC = 2.0
 #: `validate_dispatch` reasons that describe the STATE of the gate, not the
 #: re-aim pose. A re-aim refused for one of these does not fall back to the
 #: arrival gate: disarmed, dry run, link down, mode wrong or stale, Nav2 gone,
@@ -585,6 +663,7 @@ _REAIM_STATE_REJECTIONS = frozenset(
         val.NAV2_UNAVAILABLE,
         val.DATUM_CHANGED,
         val.LINE_CALIBRATION_CHANGED,
+        val.ARM_NOT_HOME,
     )
 )
 NAV_CANCELLING = "cancelling"
@@ -603,6 +682,9 @@ ACK_NOT_CORRELATED = "NOT_CORRELATED"
 #: ACK_NOT_CORRELATED, which means there never was an id: this one means the id
 #: we hold stopped being provable while we were holding it (SAFETY.md F-13).
 ACK_CORRELATION_CHANGED = "CORRELATION_CHANGED"
+#: `trash_goal_done.publish` raised. Structural: whether it reached the wire is
+#: unknowable, so the target is held off rather than re-driven.
+ACK_PUBLISH_FAILED = "ACK_PUBLISH_FAILED"
 #: The real robot's domain plus an unmeasured `grasp.tolerance_m`: the pick is
 #: refused because "arrived" cannot be proven, and the arm would actuate on an
 #: unsupported claim (SAFETY.md F-14). Structurally unreachable on the twin -
@@ -681,6 +763,14 @@ class Mission:
     #: ambiguity seen once is not undone by the ambiguity going away.
     unique_seen: bool = False
     latch_void_reason: str = ""
+    #: LIST-LOSS HOLD (user decision 2026-11-16) - see `_list_loss_hold`.
+    #: `last_unique_sec`: `_safety_now()` of the last re-correlation that named
+    #: this mission's own id uniquely; the hold window counts from it.
+    #: `grasp_requested`: a real pick (not the arm's preview) was sent for this
+    #: mission; from then on no list loss is ever held.
+    last_unique_sec: Optional[float] = None
+    grasp_requested: bool = False
+    list_loss_warned_sec: Optional[float] = None
     #: The goal exactly as it was validated, kept so the in-flight
     #: re-validation runs on the same object rather than on a fresh
     #: interpretation of a message that may have changed underneath it.
@@ -705,6 +795,8 @@ class Mission:
     settle_started_at_sec: Optional[float] = None
     settle_last_pose: Optional[Tuple[float, float, float]] = None
     settle_last_stamp: Optional[float] = None
+    #: Aimed pick only: (pose, TF stamp) where the current still window began.
+    settle_anchor: Optional[Tuple[Tuple[float, float, float], float]] = None
     #: COAST EVIDENCE for the robot test (user request 2026-09-29): the pose at
     #: the Nav2 result that started the settle, and a one-line summary of how
     #: far the base coasted and how long it took, appended to the ARRIVAL /
@@ -713,6 +805,20 @@ class Mission:
     settle_result_pose: Optional[Tuple[float, float, float]] = None
     coast_summary: str = ""
     reaim_outcome: str = ""
+    #: AIMED PICK. `aimed_sent`: the pick in flight is aimed (its refusals are
+    #: mapped by reason). `previewing`: the goal in flight is the arm's preview
+    #: (mode confirm_by_rearm). `pending`: the one pending pick while disarmed for
+    #: confirmation. `confirmed`: the operator's re-arm approved this mission's
+    #: pending pick - the next arrival pass sends it (once). `confirm_pass`: that
+    #: arrival pass takes the FULL correlation, not the re-aim-phase rule.
+    aimed_sent: bool = False
+    previewing: bool = False
+    pending: Optional["PendingPick"] = None
+    preview_target: Optional[Tuple[float, float]] = None
+    confirmed: bool = False
+    confirm_pass: bool = False
+    #: `_discard_pending` has run: it ends the mission once, never twice.
+    discarded: bool = False
     #: Set when the mission reaches a terminal state or a cancel is confirmed.
     #: `prepare_shutdown` waits on it - on the MAIN thread, with the executor
     #: still spinning, which is the only place in this package that waits at all.
@@ -721,6 +827,21 @@ class Mission:
     @property
     def cancelling(self) -> bool:
         return self.cancel_requested_at_sec is not None
+
+
+@dataclass
+class PendingPick:
+    """The one aimed pick waiting for the operator's re-arm (SR-16 E11 item 2)."""
+
+    target_id: str
+    object_xy: Tuple[float, float]           # the dispatched goal position (map)
+    arrival_pose: Tuple[float, float, float]  # map -> base at arrival
+    target_in_base: Tuple[float, float]      # the arm's preview
+    recorded_mono: float                     # monotonic, at the disarm
+    #: ArmingMachine counters right after the gateway's own disarm (AP1 L5, M1): the
+    #: re-arm approves only a NEW arming, and any later disarm request voids it.
+    disarm_requests: int = 0
+    arm_count: int = 0
 
 
 class GoalGatewayNode(Node):
@@ -788,16 +909,50 @@ class GoalGatewayNode(Node):
         self.declare_parameter(
             "grasp.reaim_behavior_tree", "gripperx_planning/config/reaim_in_place.xml"
         )
+        # AIMED PICK (FR-16 stage 1; SR-16 extension E1-E13, DRAFT, audit pending).
+        # Default off: the fixed sequence, exactly as before. Startup-only.
+        self.declare_parameter("grasp.aimed_pick", AIMED_OFF)
+        self.declare_parameter(
+            "grasp.aim_position_drift_warn_m", _TO_VERIFY, _measured_descriptor()
+        )
+        # Localisation settling before an aimed pick (user decision 2026-10-13: "Wir
+        # müssen nur aufpassen, dass die Lokalisierung vor der Prüfung genug Zeit
+        # hatte, sich korrekt auszurichten"). TO-VERIFY; the configs carry proposals.
+        for name in (
+            "grasp.pending_pick_max_age_sec",
+            "grasp.pending_pick_max_target_shift_m",
+            "grasp.localisation_settle_sec",
+            "grasp.localisation_settle_timeout_sec",
+        ):
+            self.declare_parameter(name, _TO_VERIFY, _measured_descriptor())
 
         self.declare_parameter("max_goal_cost", 200)
         self.declare_parameter("max_stamp_age_sec", 5.0)
-        self.declare_parameter("max_tf_age_sec", 1.0)
+        # SR-16 E3 / audit F4 (a): ONE bound with the arm, from the shared file
+        # gripperx_arm_msgs/config/tf_freshness.yaml - no code default; missing = no start.
+        self.declare_parameter("max_tf_age_sec", Parameter.Type.DOUBLE)
+        try:
+            tf_age = self.get_parameter("max_tf_age_sec").value
+        except Exception:  # noqa: BLE001 - ParameterUninitializedException
+            tf_age = None
+        if tf_age is None or not math.isfinite(float(tf_age)) or float(tf_age) <= 0.0:
+            raise ValueError(
+                f"max_tf_age_sec={tf_age!r}: missing or invalid - it comes ONLY from "
+                "gripperx_arm_msgs/config/tf_freshness.yaml, shared with the arm (SR-16 "
+                "E3). Refusing to start: no dispatch, reached check or aimed pick without it"
+            )
         self.declare_parameter("max_teleop_mode_age_sec", 2.0)
         self.declare_parameter("link_lost_sec", 5.0)
         self.declare_parameter("datum_jump_warn_m", _TO_VERIFY, _measured_descriptor())
         # INTERIM. See _correlation_holds for what it does and what it costs.
         # Startup-only, like every other gate width.
         self.declare_parameter("occlusion_latch_enabled", False)
+        # LIST-LOSS HOLD (user decision 2026-11-16, SR-16). `TO-VERIFY` (no
+        # number in code): without a configured value nothing is held - today's
+        # behaviour, the narrow one. See `_list_loss_hold`.
+        self.declare_parameter(
+            "correlation_list_loss_hold_sec", _TO_VERIFY, _measured_descriptor("seconds")
+        )
         self.declare_parameter("goal_match_tolerance_m", 0.25)
         self.declare_parameter("max_attempts_per_target", 2)
         # NOT derived from `goal_match_tolerance_m` (0.25) - a deliberately
@@ -912,6 +1067,18 @@ class GoalGatewayNode(Node):
         )
         self.declare_parameter("costmap_topic", "/global_costmap/costmap")
         self.declare_parameter("odom_topic", "/odometry/filtered")
+        # ARM_NOT_HOME (audit AP1 H-pre, user decision 2026-10-13 option a): no
+        # dispatch unless the newest /arm/state is idle, at home and at most this old.
+        # TO-VERIFY: 2.0 s = four periods of the arm node's 2 Hz state.
+        self.declare_parameter("arm_state_topic", "/arm/state")
+        self.declare_parameter("arm_state_max_age_sec", 2.0)
+        # Hysteresis (audit AP3 F2): the state must have been continuously fresh and
+        # ready this long before it counts - a flapping state cannot cause
+        # stop/restart churn. TO-VERIFY: 2.0 s = four periods.
+        self.declare_parameter("arm_state_ready_hold_sec", 2.0)
+        # The gate may be switched off ONLY in a simulation domain (the Gazebo twin
+        # has no arm and publishes no state); refused at startup anywhere else.
+        self.declare_parameter("dispatch_requires_arm_home", True)
         # Which executor spins the /tf + odometry side node (see
         # `_start_side_executor`): "single_threaded" (rclpy's Python
         # SingleThreadedExecutor, the default) or "events" (rclpy's
@@ -990,6 +1157,7 @@ class GoalGatewayNode(Node):
             float(self.get_parameter("grasp.reaim_timeout_sec").value),
         )
         self._reaim_bt_path, self._reaim_config_error = self._resolve_reaim_config()
+        self._aimed_mode = self._resolve_aimed_mode()
 
         configured_max = float(self.get_parameter("arming.max_duration_sec").value)
         if configured_max > HARD_MAX_ARMING_DURATION_SEC:
@@ -1042,6 +1210,17 @@ class GoalGatewayNode(Node):
         self._line_frame_id = str(self.get_parameter("line_frame_id").value)
         #: None while `TO-VERIFY` - see the declaration.
         self._map_grace_sec = self._measured("map_session_grace_sec")
+        #: None = no list-loss hold (unset, or invalid - refused at ERROR below).
+        self._list_loss_hold_sec = self._measured("correlation_list_loss_hold_sec")
+        if self._list_loss_hold_sec is not None and not self._list_loss_hold_sec > 0.0:
+            self.get_logger().error(
+                f"correlation_list_loss_hold_sec={self._list_loss_hold_sec!r} is not "
+                "> 0: the list-loss hold is OFF (an empty or stale target list "
+                "cancels the goal at once, as before 2026-11-16)"
+            )
+            self._list_loss_hold_sec = None
+        #: Diagnostics: the list-loss hold active on the mission, or "".
+        self._mission_correlation_hold = ""
         #: Monotonic time since which no map publisher has been visible, or None.
         self._map_empty_since: Optional[float] = None
         #: The map topic's publisher set as last observed (dispatch tick).
@@ -1336,6 +1515,35 @@ class GoalGatewayNode(Node):
             _latched(),
             callback_group=self._safety_group,
         )
+        # Stop epoch (user decision 2026-10-12, Space must always abort P): the arm
+        # node raises it on every Space; each PickPlastic carries the last value seen,
+        # and the arm refuses any other - a Space this node had not seen yet wins.
+        self._arm_stop_epoch = None
+        self._arm_stop_epoch_warned = False
+        self._arm_state: Optional[Tuple[ArmState, float]] = None   # (msg, monotonic rx)
+        self._arm_ready_since: Optional[float] = None   # monotonic, continuously ready
+        self._arm_not_home_cancels = 0
+        self._arm_home_required = bool(
+            self.get_parameter("dispatch_requires_arm_home").value)
+        if not self._arm_home_required and not is_simulation_domain():
+            raise ValueError(
+                "dispatch_requires_arm_home=false outside a simulation domain: refused "
+                "(never drive with the arm out)"
+            )
+        self.create_subscription(
+            ArmState,
+            str(self.get_parameter("arm_state_topic").value),
+            self._on_arm_state,
+            _latched(),
+            callback_group=self._safety_group,
+        )
+        self.create_subscription(
+            Int64,
+            "/arm/stop_epoch",
+            self._on_arm_stop_epoch,
+            _latched(),
+            callback_group=self._safety_group,
+        )
         # SAFETY.md F-35, second firing point. ONLY on wall time: with
         # `use_sim_time` true, /clock is rclpy's own subscription and the
         # situation is not the finding. This one is a DETECTOR, not a clock
@@ -1625,6 +1833,9 @@ class GoalGatewayNode(Node):
             with self._arming_lock:
                 event = self._arming.disarm(TRIGGER_OPERATOR, now, "operator disarm")
             self._handle_disarm(event)
+            # AP1 M1: also when already disarmed (event None) - a pending aimed pick
+            # does not survive an operator's disarm.
+            self._check_pending_after_disarm()
             response.success = True
             response.message = "disarmed"
             response.state = self._arming_state_msg()
@@ -1696,6 +1907,8 @@ class GoalGatewayNode(Node):
                 f"ARMED for {duration:.0f}s by '{request.requested_by}'. "
                 "Remaining blocks: " + "; ".join(self._dispatch_blocks())
             )
+            if self._aimed_mode == AIMED_CONFIRM:
+                self._on_rearm()
         else:
             self.get_logger().warn(f"SetArming refused: {result.message}")
         response.state = self._arming_state_msg()
@@ -2978,7 +3191,9 @@ class GoalGatewayNode(Node):
             cross_check_reported_id=False,
         )
 
-    def _correlation_holds(self, mission: Mission) -> Tuple[bool, str]:
+    def _correlation_holds(
+        self, mission: Mission, hold: str = CORR_HOLD_NONE
+    ) -> Tuple[bool, str]:
         """Does the id this mission carries STILL follow from its own fix?
 
         THE ANSWER IS COMPUTED HERE, EVERY TIME IT IS ASKED. It is never
@@ -3001,7 +3216,13 @@ class GoalGatewayNode(Node):
                            re-correlation that passed.
         Nearest-wins is never an option; that is `correlation.py`'s rule and it
         does not change because we are already moving.
+
+        Two deliberate exceptions, both user decisions: the interim occlusion
+        latch for NO_MATCH (`_occlusion_latch_holds`, 2026-08-25) and the
+        LIST-LOSS HOLD for an empty or stale list (`_list_loss_hold`,
+        2026-11-16), which applies only where ``hold`` says so (`CORR_HOLD_*`).
         """
+        self._mission_correlation_hold = ""
         try:
             result = self._recorrelate_mission(mission)
         except Exception as exc:  # noqa: BLE001 - refusing is the fail-safe answer
@@ -3013,6 +3234,8 @@ class GoalGatewayNode(Node):
         self._mission_correlation = result.status
         if result.unique and result.target_id == mission.target_id:
             mission.unique_seen = True
+            mission.last_unique_sec = self._safety_now()
+            mission.list_loss_warned_sec = None
             return True, result.detail
 
         if result.unique:
@@ -3025,15 +3248,95 @@ class GoalGatewayNode(Node):
                 mission.latch_void_reason = reason
             return False, reason
 
+        remaining = self._list_loss_remaining(mission, result)
+        if remaining is not None and remaining >= 0.0:
+            # Inside the list-loss window: NOT voiding the latch - whether or
+            # not THIS caller may hold (the stale list at the pick gate refuses
+            # below), the loss is not yet evidence of anything.
+            return self._list_loss_hold(mission, result, hold, remaining)
+
         if result.status != corr.NO_MATCH and not mission.latch_void_reason:
             # AMBIGUOUS, TARGETS_STALE, NO_TARGETS: none of these is the
-            # self-occlusion case, and each of them permanently voids the latch.
+            # self-occlusion case, and each of them permanently voids the latch
+            # (an empty or stale list only once the list-loss window is over).
             mission.latch_void_reason = f"{result.status}: {result.detail}"
 
         held, why = self._occlusion_latch_holds(mission, result)
         if held:
             return True, why
+        if remaining is not None:
+            return False, (
+                f"{result.status}: list-loss hold expired after "
+                f"{self._list_loss_hold_sec:.1f} s without a unique correlation of "
+                f"target {mission.target_id} - {result.detail}"
+            )
         return False, f"{result.status}: {result.detail}"
+
+    def _list_loss_remaining(self, mission: Mission, result) -> Optional[float]:
+        """Seconds left in the LIST-LOSS HOLD window, negative once it is over,
+        or None when the hold does not apply to this result at all.
+
+        USER DECISION 2026-11-16 (REQUIREMENTS.md SR-16, DECIDED block): the
+        robot can occlude the litter itself on the approach, and when it was the
+        ONLY target Octopus's list goes EMPTY - which, unlike NO_MATCH, voided
+        the occlusion latch and cancelled (`CORRELATION_LOST ... NO_TARGETS`).
+        A STALE list is held the same way (user chose "also hold"). Applies
+        armed or not, only to:
+          * NO_TARGETS with `absence` (a live list received but empty - not "no
+            list yet", which has no `absence`), or TARGETS_STALE;
+          * a mission whose own id was correlated uniquely at least once - the
+            window counts from the LAST such correlation;
+          * a mission for which no grasp was requested yet.
+        Everything else (AMBIGUOUS, another id, NO_MATCH, a failed recheck) is
+        not this hold's business and keeps its own rule.
+
+        ⚠ COST: the F-13 gap reopened for an empty or stale list, bounded by
+        `correlation_list_loss_hold_sec` (15 s by user decision, not measured).
+        """
+        if self._list_loss_hold_sec is None:
+            return None
+        if not (
+            (result.status == corr.NO_TARGETS and result.absence)
+            or result.status == corr.TARGETS_STALE
+        ):
+            return None
+        if mission.grasp_requested or mission.last_unique_sec is None:
+            return None
+        return self._list_loss_hold_sec - (self._safety_now() - mission.last_unique_sec)
+
+    def _list_loss_hold(
+        self, mission: Mission, result, hold: str, remaining: float
+    ) -> Tuple[bool, str]:
+        """Inside the window: hold for the caller allowed to, refuse otherwise."""
+        allowed = hold == CORR_HOLD_DRIVE or (
+            hold == CORR_HOLD_PICK and result.status == corr.NO_TARGETS
+        )
+        if not allowed:
+            return False, (
+                f"{result.status}: not held for this decision ({hold}) - a stale "
+                "list is no evidence for a pick, and nothing unproven is ever "
+                f"acknowledged (SAFETY.md F-28) - {result.detail}"
+            )
+        self._mission_correlation_hold = (
+            f"{result.status} held, {remaining:.1f} s left"
+        )
+        now = self._safety_now()
+        if (
+            mission.list_loss_warned_sec is None
+            or now - mission.list_loss_warned_sec >= _LIST_LOSS_HOLD_WARN_PERIOD_SEC
+        ):
+            mission.list_loss_warned_sec = now
+            self.get_logger().warning(
+                f"LIST-LOSS HOLD for target {mission.target_id} ({hold}): "
+                f"{result.status} - the target list is "
+                + ("empty" if result.status == corr.NO_TARGETS else "stale")
+                + f"; holding on the last unique correlation, {remaining:.1f} s "
+                "left (user decision 2026-11-16, not measured)"
+            )
+        return True, (
+            f"{result.status} held by the list-loss hold ({remaining:.1f} s left); "
+            f"last unique correlation named target {mission.target_id}"
+        )
 
     def _reaim_correlation_holds(self, mission: Mission) -> Tuple[bool, str]:
         """The correlation rule of the RE-AIM PHASE: the re-aim in flight and the
@@ -3060,8 +3363,10 @@ class GoalGatewayNode(Node):
             self._mission_correlation = "RECHECK_FAILED"
             return False, f"the re-correlation itself failed ({exc!r})"
         self._mission_correlation = result.status
+        self._mission_correlation_hold = ""
         if result.unique:
             if result.target_id == mission.target_id:
+                mission.last_unique_sec = self._safety_now()
                 return True, result.detail
             return False, (
                 f"the mission's own fix now names target {result.target_id}, not "
@@ -3178,6 +3483,7 @@ class GoalGatewayNode(Node):
             if self._teleop_mode_mono_sec is None
             else max(0.0, self._safety_now() - self._teleop_mode_mono_sec)
         )
+        arm_ready, arm_detail = self._arm_ready()
         return val.DispatchContext(
             armed=armed,
             dry_run=self._dry_run,
@@ -3198,6 +3504,8 @@ class GoalGatewayNode(Node):
             max_teleop_mode_age_sec=float(
                 self.get_parameter("max_teleop_mode_age_sec").value
             ),
+            arm_ready=arm_ready,
+            arm_detail=arm_detail,
         )
 
     def _datum_unchanged_since(self, lat: float, lon: float) -> bool:
@@ -3389,6 +3697,8 @@ class GoalGatewayNode(Node):
                 f"target {mission.target_id} arrived, but {why}. NOT picking on "
                 "Nav2's word alone: the reached check cannot run (F-15)."
             )
+            if self._confirm_pass_failed(mission, "POSE_UNAVAILABLE", why):
+                return
             self._fail_attempt(mission, "POSE_UNAVAILABLE", why)
             return
         reaim: Optional[ReaimDecision] = None
@@ -3415,7 +3725,10 @@ class GoalGatewayNode(Node):
                     judged = (pose[0], pose[1], reaim.target_yaw)
             else:
                 self._log_arrival_geometry(
-                    mission, f"AFTER RE-AIM ({mission.reaim_outcome})", pose,
+                    mission,
+                    "AT CONFIRMATION (re-arm)" if mission.confirm_pass
+                    else f"AFTER RE-AIM ({mission.reaim_outcome})",
+                    pose,
                     "settle" if mission.coast_summary else "", mission.coast_summary,
                 )
             verdict = check_reached(mission.object_xy, judged, offset)
@@ -3435,6 +3748,8 @@ class GoalGatewayNode(Node):
                     f"target {mission.target_id} arrived, but {verdict.detail}. "
                     "Not picking: the blind sequence would close on nothing."
                 )
+                if self._confirm_pass_failed(mission, verdict.reason, verdict.detail):
+                    return
                 self._fail_attempt(mission, verdict.reason, verdict.detail)
                 return
 
@@ -3482,6 +3797,8 @@ class GoalGatewayNode(Node):
         #     that "arrived" is a checked claim and not an assumed one
         #     (SAFETY.md F-14).
         if not armed:
+            if self._confirm_pass_failed(mission, ACK_DISARMED, "the gate closed"):
+                return
             self._finish_unacknowledged(mission, ACK_DISARMED, structural=False)
             return
         # Condition 8. The pick is the point of no return for the OBJECT even
@@ -3495,8 +3812,8 @@ class GoalGatewayNode(Node):
         # target may drop out of Octopus's list exactly during the re-aim.
         # Every other gate below still runs in both passes.
         holds, correlation_detail = (
-            self._correlation_holds(mission)
-            if first_pass
+            self._correlation_holds(mission, hold=CORR_HOLD_PICK)
+            if first_pass or mission.confirm_pass
             else self._reaim_correlation_holds(mission)
         )
         if not holds:
@@ -3506,12 +3823,21 @@ class GoalGatewayNode(Node):
                 "sequence would close on an object we cannot name, and nothing "
                 "we cannot name may ever be acknowledged (SAFETY.md F-13)."
             )
+            if self._confirm_pass_failed(
+                mission, ACK_CORRELATION_CHANGED, correlation_detail
+            ):
+                return
             self._finish_unacknowledged(
                 mission, ACK_CORRELATION_CHANGED, structural=False
             )
             return
-        # Condition 9.
-        if self._pick_needs_measured_tolerance and not offset.tolerance_configured:
+        # Condition 9. NOT in mode confirm_by_rearm (USER DECISION 2026-10-13: "Ja,
+        # für den aktuellen Test sollte autopick entfallen"): there the operator's
+        # re-arm per pick is the approval (SR-1), not the SR-16 exception - so neither
+        # this gate nor auto_pick below applies. Mode automatic keeps both.
+        confirm = self._aimed_mode == AIMED_CONFIRM
+        if (self._pick_needs_measured_tolerance and not offset.tolerance_configured
+                and not confirm):
             self.get_logger().error(
                 f"target {mission.target_id} arrived, but grasp.tolerance_m is "
                 "unmeasured and this is the REAL ROBOT's domain. NOT picking: "
@@ -3524,10 +3850,12 @@ class GoalGatewayNode(Node):
                 mission, ACK_TOLERANCE_UNMEASURED, structural=True
             )
             return
-        if not self._auto_pick:
+        if not self._auto_pick and not confirm:
             self._finish_unacknowledged(mission, ACK_AUTO_PICK_OFF, structural=True)
             return
         if not self._pick_available:
+            if self._confirm_pass_failed(mission, ACK_NO_PICK_CLIENT, "no pick server"):
+                return
             self._finish_unacknowledged(mission, ACK_NO_PICK_CLIENT, structural=True)
             return
 
@@ -3545,6 +3873,8 @@ class GoalGatewayNode(Node):
                 + ("re-aiming" if reaim is not None and reaim.rotate else "picking")
                 + f" - {refusal.reason}: {refusal.detail}. Withdrawn."
             )
+            if self._confirm_pass_failed(mission, refusal.reason, refusal.detail):
+                return
             self._clear_mission(mission)
             return
         if reaim is not None and reaim.rotate:
@@ -3561,6 +3891,9 @@ class GoalGatewayNode(Node):
                 cancel_reason = mission.cancel_reason
             else:
                 cancel_reason = None
+                # Taken with the cancelling check, under the lock _on_arm_stop_epoch
+                # holds while it cancels BEFORE storing a new epoch (audit r10b G3).
+                stop_epoch = self._arm_stop_epoch
                 mission.state = NAV_PICKING
                 # Audit F-53: a fresh goal. The navigation's confirmed terminal
                 # result must not stand in for the pick's, or an unconfirmed
@@ -3571,17 +3904,469 @@ class GoalGatewayNode(Node):
                 f"target {mission.target_id}: NOT picking, the mission was "
                 f"cancelled after arrival ({cancel_reason or 'no reason recorded'})"
             )
+            if self._confirm_pass_failed(
+                mission, "CANCELLED", cancel_reason or "no reason recorded"
+            ):
+                return
             self._clear_mission(mission)
             return
         self._nav_state = NAV_PICKING
-        self.get_logger().warn(
-            f"SR-16: sending PickPlastic for target {mission.target_id} while armed. "
-            "Arm and gripper WILL move; the arming act is the approval."
-        )
+        if self._aimed_mode == AIMED_CONFIRM and not mission.confirmed:
+            self.get_logger().warn(
+                f"AIMED PICK (confirm_by_rearm): previewing target {mission.target_id} "
+                "on the arm - nothing moves; if it passes, the gateway disarms and "
+                "waits for your re-arm"
+            )
+        else:
+            self.get_logger().warn(
+                f"SR-16: sending PickPlastic for target {mission.target_id} while armed. "
+                "Arm and gripper WILL move; the arming act is the approval."
+            )
         goal = PickPlastic.Goal()
         goal.execute = True
+        if stop_epoch is None and not self._arm_stop_epoch_warned:
+            # Sent anyway with 0 (= not filled): the arm refuses it and the rejection
+            # path below ends the mission, instead of a mission stuck in NAV_PICKING.
+            # Once per gap, not per attempt (each refused pick spends an attempt).
+            self._arm_stop_epoch_warned = True
+            self.get_logger().error(
+                "PickPlastic sent with stop_epoch 0: no /arm/stop_epoch received yet "
+                "(arm_action_server not running, another ROS domain, or a QoS "
+                "mismatch - it is RELIABLE + TRANSIENT_LOCAL depth 1). The arm refuses "
+                "every pick until the epoch arrives."
+            )
+        goal.stop_epoch = stop_epoch or 0
+        if self._aimed_mode != AIMED_OFF and not self._fill_aimed(mission, goal):
+            return
+        with self._mission_lock:
+            # LIST-LOSS HOLD: a grasp requested ends it for this mission. The
+            # arm's preview (confirm_by_rearm) moves nothing and does not count.
+            if not mission.previewing:
+                mission.grasp_requested = True
         future = self._pick_client.send_goal_async(goal)
         future.add_done_callback(lambda f: self._on_pick_goal_response(mission, f))
+
+    # -- aimed pick (FR-16 stage 1; SR-16 extension E1-E13, DRAFT) ----------
+    def _target_shift_refusal(
+        self, object_xy: Tuple[float, float], preview: Tuple[float, float]
+    ) -> Optional[str]:
+        """The ONE pending-pick bound (user decision 2026-10-13: 0.03 m, TO-VERIFY
+        until real runs): the target, expressed in the base frame from the gateway's
+        own FRESH pose now, may differ from the arm's preview by at most
+        grasp.pending_pick_max_target_shift_m. It covers a moved robot and a moved
+        estimate alike. None = within the bound."""
+        pose, age, tf_error = self._robot_pose()
+        max_tf_age = float(self.get_parameter("max_tf_age_sec").value)
+        if pose is None or age is None or age > max_tf_age:
+            return f"no fresh robot pose ({tf_error or age})"
+        bound = self._measured("grasp.pending_pick_max_target_shift_m")
+        dx, dy = object_xy[0] - pose[0], object_xy[1] - pose[1]
+        c, s_ = math.cos(pose[2]), math.sin(pose[2])
+        bx, by = c * dx + s_ * dy, -s_ * dx + c * dy
+        shift = math.hypot(bx - preview[0], by - preview[1])
+        if bound is None or shift > bound:
+            return (f"the target seen from the robot moved {shift * 1000:.0f} mm from the "
+                    f"preview (grasp.pending_pick_max_target_shift_m {bound})")
+        return None
+
+    def _resolve_aimed_mode(self) -> str:
+        """`grasp.aimed_pick`, validated at startup: an unknown value, or a mode
+        without its TO-VERIFY bounds, is a startup REFUSAL. Mode `automatic` outside
+        a simulation domain is allowed since the user decision 2026-11-16 (prototype
+        assumptions, TO-VERIFY) and logs a loud WARN; the arm still refuses every
+        automatic aimed goal while `aimed.region_margin_m` is unset (N7)."""
+        mode = str(self.get_parameter("grasp.aimed_pick").value).strip()
+        if mode not in AIMED_MODES:
+            raise ValueError(
+                f"grasp.aimed_pick={mode!r} is not one of {AIMED_MODES}: refusing to "
+                "start (an unknown mode is never a default)"
+            )
+        if mode == AIMED_AUTOMATIC and not is_simulation_domain():
+            self.get_logger().warn(
+                "grasp.aimed_pick=automatic on a NON-SIMULATION domain (USER DECISION "
+                "2026-11-16): runs on PROTOTYPE ASSUMPTIONS, all TO-VERIFY and not "
+                "measured - aimed.region_margin_m 0.0, grasp.offset_x_m 0.361, "
+                "grasp.tolerance_m 0.10 (SR-16 condition 6 waived, E12 (d) owed). "
+                "Arming, correlation, acknowledgement and TF gates stay in force."
+            )
+        if mode == AIMED_CONFIRM and TRIGGER_PICK_CONFIRM not in TRIGGER_CODES:
+            raise ValueError(
+                "grasp.aimed_pick=confirm_by_rearm needs the PICK_CONFIRM disarm trigger "
+                "(SR-15 rule 7, amended 2026-11-05), which arming.TRIGGER_CODES does not "
+                "carry: refusing to start"
+            )
+        if mode != AIMED_OFF:
+            missing = [n for n in ("grasp.localisation_settle_sec",
+                                   "grasp.localisation_settle_timeout_sec")
+                       if self._measured(n) is None]
+            if missing:
+                raise ValueError(
+                    f"grasp.aimed_pick={mode} needs " + ", ".join(missing)
+                    + " (TO-VERIFY): an aimed pick is judged only on a settled "
+                    "localisation, and there is no default"
+                )
+        if mode == AIMED_CONFIRM:
+            missing = [
+                n
+                for n in (
+                    "grasp.pending_pick_max_age_sec",
+                    "grasp.pending_pick_max_target_shift_m",
+                )
+                if self._measured(n) is None
+            ]
+            if missing:
+                raise ValueError(
+                    "grasp.aimed_pick=confirm_by_rearm needs "
+                    + ", ".join(missing)
+                    + " (TO-VERIFY): what a re-arm approves is bounded by them, and "
+                    "there is no default"
+                )
+        log = self.get_logger().warn if mode != AIMED_OFF else self.get_logger().info
+        log(
+            f"grasp.aimed_pick = {mode}"
+            + (
+                ""
+                if mode == AIMED_OFF
+                else " - the pick grasps at the dispatched object position (FR-16 "
+                "stage 1); SR-16 extension E1-E13 is a DRAFT, audit pending"
+            )
+        )
+        return mode
+
+    def _fill_aimed(self, mission: Mission, goal) -> bool:
+        """Aim the goal at the DISPATCHED position (user decision 2026-10-13, answer
+        2). Mode confirm_by_rearm without a confirmation: a preview only. False: not
+        sent - the confirmed pick's target moved off the preview (AP1 L4), discarded."""
+        if mission.confirmed and mission.preview_target is not None:
+            why = self._target_shift_refusal(mission.object_xy, mission.preview_target)
+            if why is not None:
+                self._discard_pending(mission, f"at the send: {why}")
+                return False
+            # SR-16 E11 item 4 / E3, audit F5: the check above sees only OUR map ->
+            # base_footprint pose; the bound is enforced again by the arm on the very
+            # transform it picks with (TARGET_SHIFTED there; a missing bound fails closed).
+            goal.check_target_shift = True
+            goal.preview_target_in_base.x = float(mission.preview_target[0])
+            goal.preview_target_in_base.y = float(mission.preview_target[1])
+            bound = self._measured("grasp.pending_pick_max_target_shift_m")
+            goal.max_target_shift_m = float("nan") if bound is None else float(bound)
+        goal.aimed = True
+        goal.target.header.frame_id = self._map_frame
+        goal.target.header.stamp = self.get_clock().now().to_msg()
+        goal.target.point.x = float(mission.object_xy[0])
+        goal.target.point.y = float(mission.object_xy[1])
+        goal.target.point.z = 0.0
+        preview = self._aimed_mode == AIMED_CONFIRM and not mission.confirmed
+        goal.preview = preview
+        with self._mission_lock:
+            mission.previewing = preview
+            mission.aimed_sent = not preview
+            mission.confirmed = False           # one re-arm, one pick
+        try:
+            result = self._recorrelate_mission(mission)
+        except Exception as exc:  # noqa: BLE001 - a warning, never a gate
+            result = None
+            self.get_logger().warn(f"aim drift not measurable: {exc!r}")
+        drift = (
+            float(result.distance_m)
+            if result is not None
+            and result.unique
+            and result.target_id == mission.target_id
+            and math.isfinite(result.distance_m)
+            else None
+        )
+        warn_m = self._measured("grasp.aim_position_drift_warn_m")
+        text = (
+            f"AIMED at the dispatched position ({mission.object_xy[0]:.3f}, "
+            f"{mission.object_xy[1]:.3f}) in {self._map_frame} for target "
+            f"{mission.target_id}"
+            + ("" if not preview else " (PREVIEW, nothing moves)")
+            + "; latest match "
+            + ("not unique - drift unknown" if drift is None else f"{drift:.3f} m away")
+        )
+        if drift is not None and warn_m is not None and drift > warn_m:
+            self.get_logger().warn(
+                text + f" - MORE than grasp.aim_position_drift_warn_m {warn_m:.3f}; "
+                "the aim is NOT changed (user decision 2026-10-13)"
+            )
+        else:
+            self.get_logger().info(
+                text
+                + (
+                    " (grasp.aim_position_drift_warn_m TO-VERIFY: no warning threshold)"
+                    if warn_m is None
+                    else ""
+                )
+            )
+        return True
+
+    def _aimed_refusal(self, mission: Mission, result) -> bool:
+        """An aimed pick (or its preview) refused by the arm before any motion. True
+        when handled. Each counts as an attempt and acknowledges nothing (E7)."""
+        reason = str(getattr(result, "reason", "") or "")
+        message = str(getattr(result, "message", "") or "")
+        if reason in AIM_REAPPROACH:
+            self.get_logger().error(
+                f"aimed pick for target {mission.target_id} REFUSED by the arm "
+                f"({reason}): {message}. Counted; the target is re-approached by the "
+                "ordinary dispatch - a new NavigateToPose through every gate of the "
+                "first approach - while attempts remain (user decision 2026-10-13)."
+            )
+            self._fail_attempt(mission, f"AIMED_{reason}", message)
+            return True
+        if reason in AIM_NO_REAPPROACH:
+            target_id = mission.target_id
+            latlon = self._mission_object_latlon(mission)
+            self.get_logger().error(
+                f"aimed pick for target {target_id} REFUSED by the arm ({reason}): "
+                f"{message}. Counted, and NOT re-approached: a stale transform or a "
+                "moving base is a fault driving again does not fix (user decision "
+                "2026-10-13). The target is held off until an operator clears the "
+                "blacklist."
+            )
+            self._fail_attempt(mission, f"AIMED_{reason}", message)
+            if target_id:
+                self._blacklist_target(
+                    target_id, f"aimed pick refused {reason}: no re-approach", latlon=latlon
+                )
+                self._publish_mission_status(
+                    mission, ExternalGoalStatus.STATE_BLACKLISTED, f"AIMED_{reason}"
+                )
+            return True
+        return False
+
+    def _on_preview_result(self, mission: Mission, outcome) -> None:
+        with self._mission_lock:
+            mission.previewing = False
+            cancelling = mission.cancelling
+        if outcome.status == GoalStatus.STATUS_CANCELED or cancelling:
+            self.get_logger().warn(
+                f"aimed-pick preview for target {mission.target_id} ended cancelled "
+                f"({mission.cancel_reason or 'no reason recorded'}); nothing pending"
+            )
+            self._clear_mission(mission)
+            return
+        result = outcome.result
+        if outcome.status == GoalStatus.STATUS_SUCCEEDED and result.success \
+                and result.reason == "PREVIEW_OK":
+            self._enter_pending(mission, result)
+            return
+        if not self._aimed_refusal(mission, result):
+            self._fail_attempt(
+                mission, f"AIMED_PREVIEW_{result.reason or 'FAILED'}", result.message or ""
+            )
+
+    def _enter_pending(self, mission: Mission, result) -> None:
+        """E11 items 2-3: disarm FIRST, then record ONE pending pick (AP1 L5: the pick
+        can only ever be approved by an arming that comes after the disarm), and tell
+        the operator."""
+        pose, age, tf_error = self._robot_pose()
+        max_tf_age = float(self.get_parameter("max_tf_age_sec").value)
+        if pose is None or age is None or age > max_tf_age:
+            self._fail_attempt(
+                mission, "POSE_UNAVAILABLE",
+                f"no fresh pose to record the pending aimed pick ({tf_error or age})",
+            )
+            return
+        with self._mission_lock:
+            withdrawn = mission.cancelling
+        if withdrawn:
+            self._clear_mission(mission)
+            return
+        detail = (
+            f"aimed pick for target {mission.target_id} pending: re-arm to approve "
+            "exactly this pick"
+        )
+        with self._arming_lock:
+            event = self._arming.disarm(TRIGGER_PICK_CONFIRM, self._safety_now(), detail)
+            requests, arms = self._arming.disarm_requests, self._arming.arm_count
+        if event is None:
+            # The gate had already closed by another trigger: no pending pick.
+            self._discard_pending(mission, "the gate was already closed")
+            return
+        # NOT _handle_disarm: nothing is in flight to cancel.
+        self._last_disarm_error = False
+        self.get_logger().info(
+            f"disarmed by {event.trigger} (ArmingState constant {event.trigger_code}): "
+            f"{event.detail}"
+        )
+        self._publish_arming_state()
+        pending = PendingPick(
+            target_id=mission.target_id,
+            object_xy=(float(mission.object_xy[0]), float(mission.object_xy[1])),
+            arrival_pose=(float(pose[0]), float(pose[1]), float(pose[2])),
+            target_in_base=(
+                float(result.target_in_base.point.x), float(result.target_in_base.point.y)
+            ),
+            recorded_mono=time.monotonic(),
+            disarm_requests=requests,
+            arm_count=arms,
+        )
+        with self._mission_lock:
+            withdrawn = mission.cancelling
+            # AP2 (1): an arming that landed between the disarm and here would leave
+            # the gateway armed with a pick pending - nothing may be recorded then.
+            with self._arming_lock:
+                rearmed = (self._arming.arm_count != arms
+                           or self._arming.is_armed(self._safety_now()))
+            if not withdrawn and not rearmed:
+                mission.pending = pending
+                mission.preview_target = pending.target_in_base
+                mission.state = NAV_PENDING_CONFIRM
+        if withdrawn:
+            self._discard_pending(mission, f"cancelled ({mission.cancel_reason})")
+            return
+        if rearmed:
+            self._discard_pending(
+                mission, "an arming arrived between the gateway's disarm and the record"
+            )
+            return
+        self._nav_state = NAV_PENDING_CONFIRM
+        max_age = self._measured("grasp.pending_pick_max_age_sec")
+        self.get_logger().warn(
+            f"PENDING AIMED PICK for target {pending.target_id}: object at "
+            f"({pending.object_xy[0]:.3f}, {pending.object_xy[1]:.3f}) in "
+            f"{self._map_frame}, seen by the arm at ({pending.target_in_base[0]:+.3f}, "
+            f"{pending.target_in_base[1]:+.3f}) in base_link; robot at "
+            f"({pose[0]:.3f}, {pose[1]:.3f}, {math.degrees(pose[2]):.1f} deg). THE "
+            f"GATEWAY DISARMED. Arm again within {max_age:.0f} s to approve THIS pick "
+            "(SR-1: the re-arm is the per-test approval) - the arm and gripper will "
+            "then move. Any disarm request, a moved robot or the age bound discards it."
+        )
+
+    def _discard_pending(self, mission: Mission, why: str) -> None:
+        """Counted, and NO re-approach (draft E11 item 4, audit AP1 M3): the target is
+        held off (blacklisted, the operator clears it) and the gateway is disarmed, so
+        the arming the operator gave for THIS pick cannot carry the robot anywhere
+        else - a discarded pick means the world changed after the operator looked.
+
+        The gate closes BEFORE the mission slot is released: the dispatch tick can
+        never find the slot free while the gateway is still armed (SR-15 rule 13)."""
+        target_id = mission.target_id
+        with self._mission_lock:
+            if mission.discarded:
+                return
+            mission.discarded = True
+            mission.pending = None
+            mission.confirmed = False
+            with self._arming_lock:
+                event = self._arming.disarm(
+                    TRIGGER_PICK_CONFIRM, self._safety_now(),
+                    f"pending aimed pick for target {target_id} discarded: {why}",
+                )
+        latlon = self._mission_object_latlon(mission)
+        self.get_logger().error(
+            f"pending aimed pick for target {target_id} DISCARDED: {why}. Nothing "
+            "arm-related follows from it; counted as an attempt, the target is held off "
+            "and the gateway disarmed - no re-approach."
+        )
+        self._fail_attempt(mission, "PENDING_PICK_DISCARDED", why)
+        if target_id:
+            self._blacklist_target(target_id, f"pending aimed pick discarded: {why}",
+                                   latlon=latlon)
+            self._publish_mission_status(
+                mission, ExternalGoalStatus.STATE_BLACKLISTED, "PENDING_PICK_DISCARDED"
+            )
+        self._handle_disarm(event)
+
+    def _confirm_pass_failed(self, mission: Mission, reason: str, why: str) -> bool:
+        """Mode confirm_by_rearm, after the operator's re-arm (USER DECISION
+        2026-11-09, "1 a"): EVERY non-success - a gate of the confirmation pass or the
+        confirmed pick's own result - ends like a discarded pending pick (E11 item 4):
+        counted, held off, disarmed (PICK_CONFIRM), no re-approach. The re-arm approved
+        exactly one pick; it must not carry the robot on to anything else. True when
+        handled; modes off and automatic are untouched."""
+        if self._aimed_mode != AIMED_CONFIRM or not mission.confirm_pass:
+            return False
+        self._discard_pending(mission, f"after the re-arm, {reason}: {why}")
+        return True
+
+    def _pending_voided(self, pending: PendingPick) -> Optional[str]:
+        """A disarm request after the pending pick was recorded voids it (AP1 M1)."""
+        with self._arming_lock:
+            requests = self._arming.disarm_requests
+        if requests != pending.disarm_requests:
+            return (f"{requests - pending.disarm_requests} disarm request(s) since it was "
+                    "recorded")
+        return None
+
+    def _check_pending_after_disarm(self) -> None:
+        with self._mission_lock:
+            mission = self._mission
+            pending = mission.pending if mission is not None else None
+        if pending is not None:
+            why = self._pending_voided(pending)
+            if why is not None:
+                self._discard_pending(mission, why)
+
+    def _pending_expired(self, pending: PendingPick) -> Optional[str]:
+        max_age = self._measured("grasp.pending_pick_max_age_sec")
+        age = time.monotonic() - pending.recorded_mono
+        if max_age is None or age > max_age:
+            return f"pending for {age:.1f}s (grasp.pending_pick_max_age_sec {max_age})"
+        return None
+
+    def _supervise_pending(self, mission: Mission, now: float) -> None:
+        """While pending: the age bound and every STATE gate except the arming
+        itself (the disarm is ours); any of them discards (E11 items 4-5)."""
+        pending = mission.pending
+        if pending is None:
+            return
+        why = self._pending_expired(pending) or self._pending_voided(pending)
+        if why is None and mission.incoming is not None:
+            pose, _age, _ = self._robot_pose()
+            dctx = dc_replace(
+                self._mission_dispatch_context(mission, pose or pending.arrival_pose),
+                armed=True,
+            )
+            verdict = val.validate_dispatch(
+                dctx, self._make_context(mission.incoming, current_goal_id=None)
+            )
+            if not verdict.accepted and verdict.reason in _REAIM_STATE_REJECTIONS:
+                why = f"{verdict.reason} while pending: {verdict.detail}"
+        if why is not None:
+            self._discard_pending(mission, why)
+
+    def _on_rearm(self) -> None:
+        """A granted arming. With a pending aimed pick it approves exactly that pick
+        - after the gates of E11 item 4; the full arrival pass then runs again on a
+        settled base before the pick is sent. Nothing pending: nothing arm-related."""
+        with self._mission_lock:
+            mission = self._mission
+            pending = (
+                mission.pending
+                if mission is not None
+                and mission.state == NAV_PENDING_CONFIRM
+                and not mission.cancelling
+                else None
+            )
+        if pending is None:
+            return
+        why = self._pending_expired(pending) or self._pending_voided(pending)
+        with self._arming_lock:
+            fresh_arming = (self._arming.arm_count > pending.arm_count
+                            and self._arming.is_armed(self._safety_now()))
+        if why is None and not fresh_arming:
+            why = "no NEW arming after the pick was recorded"
+        if why is None:
+            why = self._target_shift_refusal(pending.object_xy, pending.target_in_base)
+        if why is not None:
+            self._discard_pending(mission, f"at the re-arm: {why}")
+            return
+        with self._mission_lock:
+            if mission.cancelling or mission.pending is not pending:
+                return
+            mission.pending = None
+            mission.confirmed = True
+            mission.confirm_pass = True
+            mission.reaim_done = True
+            mission.reaim_outcome = ""
+        self.get_logger().warn(
+            f"RE-ARM approves the pending aimed pick for target {mission.target_id} "
+            f"(pending {time.monotonic() - pending.recorded_mono:.1f}s, robot unmoved); "
+            "the full arrival pass runs again on a settled base, then the arm moves"
+        )
+        self._begin_settle(mission, phase="confirm")
 
     # -- re-aim at arrival ---------------------------------------------
     def _log_arrival_geometry(
@@ -3642,6 +4427,7 @@ class GoalGatewayNode(Node):
         in-flight re-validation and the re-aim goal. Same sources as
         `_dispatch_context`, against the datum and calibration the mission was
         resolved with."""
+        arm_ready, arm_detail = self._arm_ready()
         return val.DispatchContext(
             armed=self._is_armed(),
             dry_run=self._dry_run,
@@ -3664,6 +4450,8 @@ class GoalGatewayNode(Node):
             max_teleop_mode_age_sec=float(
                 self.get_parameter("max_teleop_mode_age_sec").value
             ),
+            arm_ready=arm_ready,
+            arm_detail=arm_detail,
         )
 
     def _start_reaim(
@@ -3848,11 +4636,16 @@ class GoalGatewayNode(Node):
                 mission.settling = True
                 mission.settle_started_at_sec = self._ros_now()
                 mission.settle_last_pose = None
+                mission.settle_anchor = None
                 mission.settle_last_stamp = None
                 mission.settle_phase = phase
                 mission.settle_result_pose = result_pose
                 mission.coast_summary = ""
         if withdrawn:
+            if self._confirm_pass_failed(
+                mission, "CANCELLED", f"before the settle ({mission.cancel_reason})"
+            ):
+                return
             self._clear_mission(mission)
             return
         self._nav_state = NAV_SETTLING
@@ -3902,10 +4695,16 @@ class GoalGatewayNode(Node):
         )
         if fresh and last is not None and not advanced:
             fresh = False
+        aimed = self._aimed_mode != AIMED_OFF
         if fresh and last is not None:
             dyaw = abs(math.remainder(pose[2] - last[2], math.tau))
             dxy = math.hypot(pose[0] - last[0], pose[1] - last[1])
-            if dyaw <= _SETTLE_YAW_EPS_RAD and dxy <= _SETTLE_XY_EPS_M:
+            still = dyaw <= _SETTLE_YAW_EPS_RAD and dxy <= _SETTLE_XY_EPS_M
+            if still and aimed and not self._localisation_settled(mission, pose, stamp):
+                still = False
+            elif not still:
+                mission.settle_anchor = None
+            if still:
                 with self._mission_lock:
                     if mission.cancelling:
                         return
@@ -3920,7 +4719,22 @@ class GoalGatewayNode(Node):
         if fresh:
             mission.settle_last_pose = pose
             mission.settle_last_stamp = stamp
-        if now - (mission.settle_started_at_sec or now) > _SETTLE_TIMEOUT_SEC:
+        timeout = (
+            self._measured("grasp.localisation_settle_timeout_sec")
+            if aimed else _SETTLE_TIMEOUT_SEC
+        )
+        if aimed and now - (mission.settle_started_at_sec or now) > timeout:
+            with self._mission_lock:
+                mission.settling = False
+            why = (
+                f"the localisation did not hold still for grasp.localisation_settle_sec "
+                f"{self._measured('grasp.localisation_settle_sec')}s within {timeout:.1f}s "
+                f"after the {mission.settle_phase} (pose within {_SETTLE_XY_EPS_M * 1000:.0f} "
+                f"mm / {math.degrees(_SETTLE_YAW_EPS_RAD):.1f} deg of the window's start)"
+            )
+            self._aimed_hold_off(mission, "LOCALISATION_NOT_SETTLED", why)
+            return
+        if not aimed and now - (mission.settle_started_at_sec or now) > _SETTLE_TIMEOUT_SEC:
             with self._mission_lock:
                 mission.settling = False
             summary = self._coast_summary(
@@ -3928,11 +4742,47 @@ class GoalGatewayNode(Node):
             )
             self._fail_attempt(
                 mission,
-                "NOT_SETTLED" if mission.settle_phase == "approach" else "REAIM_NOT_SETTLED",
+                {"approach": "NOT_SETTLED", "confirm": "CONFIRM_NOT_SETTLED"}.get(
+                    mission.settle_phase, "REAIM_NOT_SETTLED"
+                ),
                 f"the base did not stand still within {_SETTLE_TIMEOUT_SEC:.1f}s "
                 f"after the {mission.settle_phase}; not judging or picking on a "
                 f"moving base ({summary})",
             )
+
+    def _localisation_settled(
+        self, mission: Mission, pose: Tuple[float, float, float], stamp: float
+    ) -> bool:
+        """Aimed pick: the map -> base pose (localisation included) must stay within
+        the settle step's own bounds (_SETTLE_XY_EPS_M / _SETTLE_YAW_EPS_RAD) of the
+        window's FIRST still sample for grasp.localisation_settle_sec of TF time - a
+        late slam_toolbox correction restarts the window."""
+        anchor = mission.settle_anchor
+        if anchor is None:
+            mission.settle_anchor = (pose, stamp)
+            return False
+        a_pose, a_stamp = anchor
+        if (math.hypot(pose[0] - a_pose[0], pose[1] - a_pose[1]) > _SETTLE_XY_EPS_M
+                or abs(math.remainder(pose[2] - a_pose[2], math.tau)) > _SETTLE_YAW_EPS_RAD):
+            mission.settle_anchor = (pose, stamp)
+            return False
+        return stamp - a_stamp >= (self._measured("grasp.localisation_settle_sec") or math.inf)
+
+    def _aimed_hold_off(self, mission: Mission, reason: str, why: str) -> None:
+        """Counted, no re-approach: a pending/confirmed pick is discarded (held off and
+        disarmed), any other aimed arrival is held off."""
+        if mission.settle_phase == "confirm" or mission.confirmed:
+            self._discard_pending(mission, f"{reason}: {why}")
+            return
+        target_id = mission.target_id
+        latlon = self._mission_object_latlon(mission)
+        self.get_logger().error(
+            f"target {target_id}: {reason} - {why}. Counted, held off, no re-approach."
+        )
+        self._fail_attempt(mission, reason, why)
+        if target_id:
+            self._blacklist_target(target_id, f"{reason}: no re-approach", latlon=latlon)
+            self._publish_mission_status(mission, ExternalGoalStatus.STATE_BLACKLISTED, reason)
 
     def _coast_summary(
         self,
@@ -4027,15 +4877,128 @@ class GoalGatewayNode(Node):
         self._handle_disarm(event)
         self._fail_attempt(mission, "REAIM_ABORTED", f"action status {status}{error}")
 
+    def _arm_state_fresh(self, msg, rx: float, now_mono: float) -> Tuple[bool, str]:
+        """Fresh by receive time AND by the state's own stamp (same machine clock,
+        AP3 F3: a latched old state is not fresh)."""
+        limit = float(self.get_parameter("arm_state_max_age_sec").value)
+        age = now_mono - rx
+        if age > limit:
+            return False, f"/arm/state received {age:.1f}s ago (arm_state_max_age_sec {limit:.1f})"
+        stamp = msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9
+        stamp_age = self.get_clock().now().nanoseconds * 1e-9 - stamp
+        if stamp <= 0.0 or abs(stamp_age) > limit:
+            return False, (f"/arm/state stamped {stamp_age:.1f}s from now (arm_state_max_age_sec "
+                           f"{limit:.1f}; a latched old state is not fresh)")
+        return True, ""
+
+    @staticmethod
+    def _arm_state_says_ready(msg) -> Tuple[bool, str]:
+        if not msg.known:
+            return False, "the arm state is not known (a servo did not answer)"
+        if not msg.idle:
+            return False, f"the arm is busy ({msg.owner or 'not idle'})"
+        if not msg.at_home:
+            return False, "the arm is not at home" + (
+                "" if msg.gripper_at_home else " (gripper away from home)")
+        return True, ""
+
+    def _on_arm_state(self, msg) -> None:
+        now = time.monotonic()
+        prev = self._arm_state
+        ready = self._arm_state_says_ready(msg)[0]
+        gap = prev is None or now - prev[1] > float(
+            self.get_parameter("arm_state_max_age_sec").value)
+        if not ready or gap:
+            self._arm_ready_since = now if ready else None
+        elif self._arm_ready_since is None:
+            self._arm_ready_since = now
+        self._arm_state = (msg, now)
+
+    def _arm_ready(self) -> Tuple[bool, str]:
+        """ARM_NOT_HOME's input: the newest /arm/state known, idle, at home and fresh
+        (receive time and stamp), and continuously so for arm_state_ready_hold_sec.
+        Unknown or stale = not ready (fail closed)."""
+        if not self._arm_home_required:
+            return True, "arm-home gate off (simulation domain)"
+        got = self._arm_state
+        if got is None:
+            return False, "no /arm/state received (arm node not running?)"
+        msg, rx = got
+        now = time.monotonic()
+        fresh, why = self._arm_state_fresh(msg, rx, now)
+        if not fresh:
+            return False, why
+        ready, why = self._arm_state_says_ready(msg)
+        if not ready:
+            return False, why
+        hold = float(self.get_parameter("arm_state_ready_hold_sec").value)
+        since = self._arm_ready_since
+        if since is None or now - since < hold:
+            return False, (f"the arm is idle at home for {0.0 if since is None else now - since:.1f}s "
+                           f"of arm_state_ready_hold_sec {hold:.1f}")
+        return True, ""
+
+    def _on_arm_stop_epoch(self, msg) -> None:
+        """A CHANGE of the arm's stop epoch stops the gateway (user decision 2026-10-12,
+        "Space must always abort P"). A Space reaches this node as the new epoch up to
+        a mux tick before the keyboard mode does (audit r10 H1); a pick sent in that
+        window would carry the NEW epoch and the arm would accept it. So: disarm
+        (MODE_CHANGE - a Space is what that trigger stands for), cancel the mission and
+        any pick in flight; nothing resumes until the operator arms again.
+
+        Atomic with the pick's send (audit r10b G3): the disarm and the cancel happen
+        BEFORE the new value is stored, all under _mission_lock, and _on_arrival takes
+        its epoch in the same locked block as its `cancelling` check. A pick therefore
+        either is not sent or carries the OLD epoch, which the arm refuses.
+
+        The first value after this node starts only initialises - unless the gateway
+        is armed or holds a mission then: that value may already be a Space's, so it
+        stops like a change. A changed base (arm node restarted) also stops: the
+        gateway cannot tell it from a Space, and stopping is the safe reading."""
+        new = int(msg.data)
+        with self._mission_lock:
+            old = self._arm_stop_epoch
+            if old == new:
+                return
+            if old is None:
+                busy = self._mission is not None or self._is_armed()
+                if not busy:
+                    self._arm_stop_epoch = new
+                    self._arm_stop_epoch_warned = False
+                    return
+                detail = (f"first arm stop epoch {new} arrived while armed or on a "
+                          "mission: it may be a Space's (or an arm node restart); arm "
+                          "again to resume")
+            else:
+                detail = (f"arm stop epoch changed {old} -> {new} (Space handled by the "
+                          "arm, or arm node restarted); arm again to resume")
+            with self._arming_lock:
+                event = self._arming.disarm(TRIGGER_MODE_CHANGE, self._safety_now(), detail)
+            if event is not None:
+                self._handle_disarm(event)
+            else:
+                self.get_logger().warn(f"{detail} - gateway already disarmed")
+            # Also when already disarmed: a mission or pick may still be in flight (its
+            # cancel unconfirmed). Idempotent.
+            self._cancel_mission(f"disarm:{TRIGGER_MODE_CHANGE} (arm stop epoch)",
+                                 self._ros_now(), error=True)
+            self._arm_stop_epoch = new
+            self._arm_stop_epoch_warned = False
+
     def _on_pick_goal_response(self, mission: Mission, future) -> None:
         try:
             handle = future.result()
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f"send_goal to {self._pick_action_name} failed: {exc!r}")
+            if self._confirm_pass_failed(mission, "PICK_SEND_FAILED", repr(exc)):
+                return
             self._fail_attempt(mission, "PICK_SEND_FAILED", repr(exc))
             return
         if not handle.accepted:
-            self._fail_attempt(mission, "PICK_GOAL_REJECTED", "the arm server rejected the pick")
+            why = "the arm server rejected the pick"
+            if self._confirm_pass_failed(mission, "PICK_GOAL_REJECTED", why):
+                return
+            self._fail_attempt(mission, "PICK_GOAL_REJECTED", why)
             return
         with self._mission_lock:
             mission.pick_handle = handle
@@ -4055,6 +5018,8 @@ class GoalGatewayNode(Node):
             outcome = future.result()
         except Exception as exc:  # noqa: BLE001
             self.get_logger().error(f"pick result failed: {exc!r}")
+            if self._confirm_pass_failed(mission, "PICK_RESULT_FAILED", repr(exc)):
+                return
             self._fail_attempt(mission, "PICK_RESULT_FAILED", repr(exc))
             return
         with self._mission_lock:
@@ -4064,16 +5029,75 @@ class GoalGatewayNode(Node):
                 f"pick for target {mission.target_id} was cancelled "
                 f"({mission.cancel_reason or 'no reason recorded'}); NOT acknowledged"
             )
-            self._clear_mission(mission)
+            stop_event = None
+            if str(getattr(outcome.result, "reason", "") or "") == ARM_REASON_STOPPED:
+                # A Space during one of OUR cancels that keep the gate open (frame
+                # re-lock, line calibration, correlation lost): the arm ends CANCELED
+                # with reason STOPPED. Same rule as the STOPPED branch below (USER
+                # DECISION 2026-11-11, SR-15 rule 13): disarm BEFORE the slot is free.
+                with self._arming_lock:
+                    stop_event = self._arming.disarm(
+                        TRIGGER_MODE_CHANGE, self._safety_now(),
+                        f"pick for target {mission.target_id} ended CANCELED/STOPPED "
+                        "(Space handled by the arm during a cancel); arm again to resume",
+                    )
+            # Audit 2026-11-13 N6: a reason that never allows a re-approach (e.g. the
+            # arm's BASE_MOVED_DURING_PICK racing one of OUR gate-open cancels) is
+            # handled as in the ABORTED branch - counted and held off - so automatic
+            # cannot dispatch the target again.
+            reason = str(getattr(outcome.result, "reason", "") or "")
+            no_reapproach = (not mission.previewing and mission.aimed_sent
+                             and reason in AIM_NO_REAPPROACH)
+            try:
+                if not mission.previewing and self._confirm_pass_failed(
+                    mission,
+                    f"AIMED_{reason}" if no_reapproach else "PICK_CANCELLED",
+                    mission.cancel_reason or "no reason recorded",
+                ):
+                    return
+                if no_reapproach and self._aimed_refusal(mission, outcome.result):
+                    return
+                self._clear_mission(mission)
+            finally:
+                self._handle_disarm(stop_event)
+            return
+        if mission.previewing:
+            self._on_preview_result(mission, outcome)
             return
         result = outcome.result
         if outcome.status != GoalStatus.STATUS_SUCCEEDED or not result.success:
-            self.get_logger().error(
-                f"pick FAILED for target {mission.target_id}: "
-                f"{result.message or 'no message'}. Not acknowledged - the "
-                "acknowledgement means collected, and nothing was collected."
-            )
-            self._fail_attempt(mission, ACK_PICK_FAILED, result.message or "")
+            reason = str(getattr(result, "reason", "") or "") or ACK_PICK_FAILED
+            stop_event = None
+            if reason == ARM_REASON_STOPPED:
+                # Every mode (USER DECISION 2026-11-11). The arm publishes its new stop
+                # epoch only after torque-off, so this result can beat it here. Disarm
+                # as the epoch would (MODE_CHANGE, an ERROR diagnostic, SR-13) BEFORE
+                # anything below releases the mission slot: the dispatch tick must never
+                # find the slot free while still armed (SR-15 rule 13). In
+                # confirm_by_rearm the discard's PICK_CONFIRM disarm then finds the gate
+                # closed and changes nothing.
+                with self._arming_lock:
+                    stop_event = self._arming.disarm(
+                        TRIGGER_MODE_CHANGE, self._safety_now(),
+                        f"pick for target {mission.target_id} ended STOPPED "
+                        "(Space handled by the arm); arm again to resume",
+                    )
+            try:
+                if self._confirm_pass_failed(
+                    mission, f"AIMED_{reason}" if mission.aimed_sent else reason,
+                    f"action status {outcome.status}: {result.message or 'no message'}",
+                ):
+                    return
+                if mission.aimed_sent and self._aimed_refusal(mission, result):
+                    return
+                self.get_logger().error(
+                    f"pick FAILED for target {mission.target_id}: "
+                    f"{result.message or 'no message'}. Not acknowledged - the "
+                    "acknowledgement means collected, and nothing was collected."
+                )
+                self._fail_attempt(mission, ACK_PICK_FAILED, result.message or "")
+            finally:
+                self._handle_disarm(stop_event)
             return
 
         self.get_logger().info(
@@ -4119,10 +5143,10 @@ class GoalGatewayNode(Node):
                 "while disarmed). Their mission will not advance past this target "
                 "until an operator resolves it."
             )
-            self._finish_unacknowledged(mission, ACK_DISARMED, structural=False)
+            self._ack_refused(mission, ACK_DISARMED, structural=False)
             return
         if not mission.target_id:
-            self._finish_unacknowledged(mission, ACK_NOT_CORRELATED, structural=True)
+            self._ack_refused(mission, ACK_NOT_CORRELATED, structural=True)
             return
         # Condition 4, and the last chance to catch it. Structural here, unlike
         # at the pick gate: the object has already been collected, so re-driving
@@ -4140,17 +5164,28 @@ class GoalGatewayNode(Node):
                 "(SAFETY.md F-13). The object IS collected; only the id is "
                 "unprovable."
             )
-            self._finish_unacknowledged(
+            self._ack_refused(
                 mission, ACK_CORRELATION_CHANGED, structural=True
             )
             return
         if self._goal_done_pub is None:
-            self._finish_unacknowledged(mission, "NO_ACK_PUBLISHER", structural=True)
+            self._ack_refused(mission, "NO_ACK_PUBLISHER", structural=True)
             return
 
         msg = String()
         msg.data = mission.target_id
-        self._goal_done_pub.publish(msg)
+        try:
+            self._goal_done_pub.publish(msg)
+        except Exception as exc:  # noqa: BLE001
+            # An exception escaping here kills the executor: the gateway shuts down
+            # and a manual restart loses the blacklist. Whether anything reached the
+            # wire is unknowable; held off like every other refusal, never retried.
+            self.get_logger().error(
+                f"publishing trash_goal_done for target {mission.target_id} FAILED: "
+                f"{exc!r}. Treated as a refused acknowledgement."
+            )
+            self._ack_refused(mission, ACK_PUBLISH_FAILED, structural=True)
+            return
         self._acknowledged.append(mission.target_id)
         self._attempts.pop(mission.target_id, None)
         self.get_logger().warn(
@@ -4159,6 +5194,20 @@ class GoalGatewayNode(Node):
         )
         self._publish_mission_status(mission, ExternalGoalStatus.STATE_DONE, "", acknowledged=True)
         self._clear_mission(mission)
+
+    def _ack_refused(self, mission: Mission, reason: str, structural: bool) -> None:
+        """A refused acknowledgement after a successful pick. In confirm_by_rearm after
+        the re-arm (USER DECISION 2026-11-11, "3 a") a confirmed pick counts as
+        successful ONLY once `trash_goal_done` is out: every refusal ends like a
+        discarded pending pick (counted once, held off, disarmed PICK_CONFIRM unless
+        already disarmed, no re-approach). Modes off and automatic: unchanged."""
+        self._ack_suppressed_reason = reason
+        if self._confirm_pass_failed(
+            mission, f"ACK_REFUSED_{reason}",
+            "the pick succeeded but trash_goal_done was not published",
+        ):
+            return
+        self._finish_unacknowledged(mission, reason, structural=structural)
 
     def _finish_unacknowledged(
         self, mission: Mission, reason: str, structural: bool
@@ -4258,10 +5307,22 @@ class GoalGatewayNode(Node):
         that left `autonomous` all cancel the goal in flight here - through
         `validate_dispatch`, not through a second set of inline checks (C-5).
         """
+        if mission.cancelling and mission.pending is not None:
+            # Nothing is in flight while a pick is pending: a cancel (any safety
+            # trigger, a Space via the stop epoch) discards it at once.
+            self._discard_pending(mission, f"cancelled ({mission.cancel_reason})")
+            return
+        if mission.state == NAV_PENDING_CONFIRM:
+            self._supervise_pending(mission, now)
+            return
         if mission.cancelling and mission.settling:
             # Nothing is in flight while the base settles, so no result will
             # ever come to release this mission: a cancel here ends it at once,
             # without a pick.
+            if self._confirm_pass_failed(
+                mission, "CANCELLED", f"while settling ({mission.cancel_reason})"
+            ):
+                return
             self.get_logger().warn(
                 f"target {mission.target_id}: cancelled while settling after the "
                 f"re-aim ({mission.cancel_reason}). Not picking."
@@ -4292,6 +5353,13 @@ class GoalGatewayNode(Node):
                     "goal is still executing, only the upstream mechanisms will "
                     "stop it - the E-stop, the mux timeout, the firmware timeout."
                 )
+                # confirm_by_rearm after the re-arm: no pick result will come, so
+                # this release is the confirmed pick's non-success ("1 a").
+                if self._confirm_pass_failed(
+                    mission, "CANCEL_UNCONFIRMED",
+                    f"released without a result ({mission.cancel_reason})",
+                ):
+                    return
                 self._clear_mission(mission)
             return
         if mission.state == NAV_SETTLING:
@@ -4331,7 +5399,7 @@ class GoalGatewayNode(Node):
         if mission.state == NAV_REAIMING:
             holds, detail = self._reaim_correlation_holds(mission)
         else:
-            holds, detail = self._correlation_holds(mission)
+            holds, detail = self._correlation_holds(mission, hold=CORR_HOLD_DRIVE)
         if not holds:
             self._correlation_cancels += 1
             self._cancel_mission(
@@ -4378,6 +5446,12 @@ class GoalGatewayNode(Node):
         # NOT_ARMED and DRY_RUN come back as PREVIEW verdicts. Disarm already
         # cancels through the event path, so reaching here means the gate closed
         # without an event - belt and braces, and it must still cancel.
+        if verdict.reason == val.ARM_NOT_HOME:
+            self._arm_not_home_cancels += 1
+            self.get_logger().error(
+                f"ARM_NOT_HOME cancel #{self._arm_not_home_cancels} of target "
+                f"{mission.target_id} while driving: {verdict.detail}"
+            )
         self._cancel_mission(
             f"{verdict.reason}: {verdict.detail}", now, error=True
         )
@@ -5591,6 +6665,9 @@ class GoalGatewayNode(Node):
                 # question from `correlation` above (the goal that would be
                 # dispatched next). SAFETY.md F-13.
                 "mission_correlation": self._mission_correlation or None,
+                # Status unchanged while held; this says that it IS held.
+                "mission_correlation_hold": self._mission_correlation_hold or None,
+                "correlation_list_loss_hold_sec": self._list_loss_hold_sec,
                 "correlation_cancels": self._correlation_cancels,
                 "id_space_resets": self._id_space_resets,
                 # SAFETY.md F-28: diagnosable, not only enforced. `link_age` on

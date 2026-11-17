@@ -34,6 +34,7 @@ sys.path.insert(0, os.path.join(_HERE, "..", "src"))
 import rclpy  # noqa: E402
 
 from gripperx_external_msgs.msg import ExternalLinkStatus  # noqa: E402
+from shared_tf import SHARED_TF_FILE  # noqa: E402
 
 FAILURES = []
 
@@ -62,7 +63,8 @@ def frame_block(node):
 
 def main():
     rclpy.init(
-        args=["--ros-args", "-p", "expected_domain_id:=220", "-p", "use_sim_time:=false"]
+        args=["--ros-args", "-p", "expected_domain_id:=220", "-p", "use_sim_time:=false",
+              "--params-file", SHARED_TF_FILE]
     )
     from gripperx_external.goal_gateway_node import GoalGatewayNode
 

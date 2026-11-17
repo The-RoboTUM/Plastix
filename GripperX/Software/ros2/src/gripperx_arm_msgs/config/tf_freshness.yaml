@@ -1,0 +1,17 @@
+# ONE TF-freshness bound for goal_gateway_node AND arm_action_server - SR-16 E3:
+# the aimed pick's single transform obeys "the same freshness rule and the same
+# threshold parameter" as FR-12's reached check. Audit F4 / OP-47 (c), user
+# decision 2026-11-13 (option a): one file, loaded by both nodes in every launch path
+# (octopus_link.launch.py, arm.launch.py, real_robot.launch.py, teleop_real.launch.py);
+# neither node config carries the key. Here because both packages already depend on
+# gripperx_arm_msgs (the PickPlastic contract between them).
+# Startup-only in both nodes (SR-15 rule 14). No code default: without this file the
+# gateway refuses to start and the arm refuses every aimed P (AIMED_UNAVAILABLE).
+# Restart BOTH services after a change.
+/**:
+  ros__parameters:
+    # TO-VERIFY: max age (s) of a looked-up transform - the robot pose (gateway
+    # dispatch / reached check) and the aimed P's target and base-still transforms
+    # (arm). Not measured. USER DECISION 2026-11-05: 1.0 accepted as the starting
+    # value; stays TO-VERIFY until confirmed on the robot.
+    max_tf_age_sec: 1.0

@@ -25,7 +25,7 @@ Not covered this round (user decision): Status display SPI (GPIO38/39/40, HWR-21
 | 0.3 | **Common ground** (OP-H9): ESP GND ↔ MDD10A GND(s) ↔ encoder-supply GND ↔ 12 V motor-supply GND — confirm by continuity **before** power-on. | ☐ |
 | 0.4 | Test motor **mechanically secured / free-spinning**, wheel off the ground. | ☐ |
 | 0.5 | **Silkscreen check** (WIRING_PLAN §7 Q1): each `IOxx` label = the planned GPIO; GPIO33–37 (PSRAM) never probed. | ☐ |
-| 0.6 | **Pin-test firmware flashed** (Agent 1): boots STOPPED, drives exactly one pin per serial command. | ☐ |
+| 0.6 | **Pin-test firmware flashed** (work package 1): boots STOPPED, drives exactly one pin per serial command. | ☐ |
 
 ---
 
@@ -68,7 +68,7 @@ and encoders (see A2 below) — technical verification only, final acceptance is
   TODO, see ASBUILT.md); A3 and Part B below; bench PSU has **no current limiting** (gate 0.2 —
   inline fuse still to be added).
 
-### A2. Encoder inputs (needs encoder-capable firmware — Agent 3 / PCNT in pin-test fw)
+### A2. Encoder inputs (needs encoder-capable firmware — work package 3 / PCNT in pin-test fw)
 
 Wheels: **FL = 8/9**, **FR = 10/11**, **BL = 12/13**, **BR = 14/21** (A/B). PCNT via GPIO matrix.
 
@@ -111,14 +111,14 @@ mark N/A.
 | B2 | **IMU BNO085** i2c1 (GPIO2/3, pins 3/5) | `i2cdetect -y 1` → 0x4A/0x4B *(N/A if not fitted)* | ☐ |
 | B3 | **LIDAR_EN** GPIO23 (pin 16), default ON | *(only if switch HW present; else DEFERRED)* | ☐ |
 | B4 | **USB topology** | esp32-drive / steering_servo / arm_servo / 2× camera enumerate; udev symlinks resolve *(absent devices → N/A)* | ☐ |
-| B5 | **micro-ROS end-to-end** (after Agent 2 udev fix) | S3 binds as `/dev/esp32`, agent connects, `/hw/joint_states` ↔ `/hw/joint_commands` flow — **only with production stack isolated (gate 0.1)** | ☐ |
+| B5 | **micro-ROS end-to-end** (after work package 2 udev fix) | S3 binds as `/dev/esp32`, agent connects, `/hw/joint_states` ↔ `/hw/joint_commands` flow — **only with production stack isolated (gate 0.1)** | ☐ |
 
 ---
 
 ## Walkthrough order
 
-1. **Now, movement-free & parallel to the SW agents:** Pi checks B1–B4, ESP signal-level A1 (signal
+1. **Now, movement-free & parallel to the software work packages:** Pi checks B1–B4, ESP signal-level A1 (signal
    column) + A3.
-2. **After Agent 1 (pin-test fw):** A1 functional runs (per-channel approval gate).
-3. **After Agent 3 (encoder fw) / PCNT in pin-test fw:** A2 encoder tests.
-4. **After Agent 2 (udev) + stack isolation:** B5 end-to-end.
+2. **After work package 1 (pin-test fw):** A1 functional runs (per-channel approval gate).
+3. **After work package 3 (encoder fw) / PCNT in pin-test fw:** A2 encoder tests.
+4. **After work package 2 (udev) + stack isolation:** B5 end-to-end.

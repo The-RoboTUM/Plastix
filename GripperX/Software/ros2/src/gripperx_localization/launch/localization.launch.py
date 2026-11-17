@@ -6,6 +6,7 @@ from launch.actions import DeclareLaunchArgument, RegisterEventHandler
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import LifecycleNode, Node
+from launch_ros.parameter_descriptions import ParameterValue
 from launch_ros.event_handlers import OnStateTransition
 from launch_ros.actions import LifecycleTransition
 from launch_ros.substitutions import FindPackageShare
@@ -48,6 +49,10 @@ def generate_launch_description():
     default_map_yaml = str(localization_share / "maps" / "testworld_v1_map.yaml")
     default_rviz_config = str(localization_share / "rviz" / "localization.rviz")
     sim_time_param = {"use_sim_time": use_sim_time}
+    # imu0 fuses the yaw rate only, on the robot AND the twin, straight from
+    # localization.yaml (2.4). The twin-only imu0_twin_fusion override of 2.2
+    # (twin fused IMU yaw + yaw rate) is gone on purpose: the twin now runs the
+    # filter structure the robot runs (accepted by the user 2026-10-29). test/check_imu_wiring.py evaluates both.
 
     slam_condition = IfCondition(
         all_configs(
@@ -292,8 +297,14 @@ def generate_launch_description():
         executable="odom_divergence_monitor",
         name="odom_divergence_monitor",
         output="screen",
-        condition=IfCondition(enable_laser_odometry),
-        parameters=[localization_params, sim_time_param],
+        # Runs regardless of the scan matcher since 2.6: its yaw-rate channel
+        # (encoder vs gyro) needs no laser. The x/y channel needs /laser/odom and is
+        # switched with enable_laser_odometry.
+        parameters=[
+            localization_params,
+            sim_time_param,
+            {"xy_channel_enabled": ParameterValue(enable_laser_odometry, value_type=bool)},
+        ],
     )
 
     # THE OCTOPUS LINE CALIBRATION (gripperx_external). Started HERE, next to

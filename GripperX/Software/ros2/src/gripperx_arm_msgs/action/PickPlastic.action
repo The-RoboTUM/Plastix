@@ -1,9 +1,46 @@
 # Goal
 bool execute
+# Stop epoch (user decision 2026-10-12: Space must always abort P): the last value the
+# sender received on /arm/stop_epoch (std_msgs/Int64, latched), which arm_action_server
+# raises on every Space it handles. A goal whose epoch is not the current one - a Space
+# the sender had not seen yet, or 0 = not filled - is refused, nothing moves.
+int64 stop_epoch
+# Aimed P (FR-16 stage 1, user decisions 2026-10-13). false (the default): today's fixed
+# P - the taught grip pose of arm_poses.yaml, `target` is ignored. true: the grasp is at
+# P's grip height but at target's (x, y), gripper vertical, wrist roll searched. The
+# target is transformed ONCE, at the start, into base_link (TF fresh within
+# max_tf_age_sec, shared with the gateway); target.point.z is ignored; the target's own stamp is logged,
+# not age-limited (user decision 2026-10-13).
+bool aimed
+geometry_msgs/PointStamped target
+# Aimed only: run every refusal check of the aimed P - transform, allowed region, grasp
+# candidates, both arm paths from the measured pose - and return; nothing is claimed,
+# no torque, no bus write. reason PREVIEW_OK or the refusal. The gateway's mode
+# confirm_by_rearm previews before it disarms for the operator's confirmation.
+bool preview
+# Aimed only, the confirmed pick of mode confirm_by_rearm (SR-16 E11 item 4, audit F5):
+# with check_target_shift true the arm refuses (TARGET_SHIFTED, before any bus write)
+# when ITS pick-start transform puts the target more than max_target_shift_m from
+# preview_target_in_base (the preview's target_in_base, base_link, z ignored). A bound
+# that is not finite and > 0, or a non-finite preview point, is INVALID_TARGET.
+bool check_target_shift
+geometry_msgs/Point preview_target_in_base
+float64 max_target_shift_m
 ---
 # Result
 bool success
 string message
+# Machine-readable outcome: '' on success (PREVIEW_OK for a passed preview). An aimed P refused before any motion:
+# OUT_OF_REACH (outside the allowed grasp region - the gateway re-approaches),
+# ENVELOPE_REJECTED, NO_PATH, STALE_TF, BASE_MOVING, STEERING_UNKNOWN, INVALID_TARGET,
+# AIMED_UNAVAILABLE, TARGET_SHIFTED.
+# An aimed P aborted DURING its motion because the base moved (SR-17 rule 13 return home):
+# BASE_MOVED_DURING_PICK.
+# Otherwise (fixed or aimed): NO_PATH, REFUSED, STOPPED (Space), CANCELED, HOLDING, ERROR.
+string reason
+# Aimed P: the target as transformed into base_link at the start (frame_id empty when no
+# transform was made).
+geometry_msgs/PointStamped target_in_base
 ---
 # Feedback
 float32 progress

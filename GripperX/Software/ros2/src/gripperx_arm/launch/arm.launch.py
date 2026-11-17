@@ -17,7 +17,8 @@ def generate_launch_description():
     return LaunchDescription([
         DeclareLaunchArgument(
             'home_on_startup',
-            default_value='true',
+            # Permanently false (user decision 2026-08-25) - rationale in config/arm_poses.yaml.
+            default_value='false',
             description='Move the arm to poses.home on node start. Set false while '
                         'the home pose is being re-taught.',
             choices=['true', 'false'],
@@ -30,6 +31,11 @@ def generate_launch_description():
             output='screen',
             parameters=[
                 os.path.join(gripperx_arm, 'config', 'arm_poses.yaml'),
+                # SR-17 safety filter + FR-17 follower settings (TO-VERIFY values inside).
+                os.path.join(gripperx_arm, 'config', 'arm_safety_filter.yaml'),
+                # TF age bound shared with the goal gateway (SR-16 E3): no default.
+                os.path.join(get_package_share_directory('gripperx_arm_msgs'), 'config',
+                             'tf_freshness.yaml'),
                 {
                     'use_sim_time': False,
                     # Explicit bool: the node declares this as a bool and the

@@ -1,0 +1,24 @@
+# Parameters of jpeg_camera_node (our own driver, see its docstring for why not
+# usb_cam). HWR-22: MJPEG only over USB; frames are passed through undecoded.
+# video_device may be the /dev/v4l/by-id symlink; the node resolves it itself.
+/camera/front/camera_front:
+  ros__parameters:
+    video_device: "/dev/v4l/by-id/usb-Arducam_Technology_Co.__Ltd._Arducam_1080P_Low_Light_UC684-video-index0"
+    # Active mode. Changeable at runtime (reopens the camera): `ros2 param set` or the
+    # camera tile of the web teleop UI. Replaces the former width/height/fps parameters.
+    profile: "view"
+    profile_names: ["view", "detail"]
+    # Mode table. Sizes are camera-native MJPG modes; fps is the camera's own rate
+    # (no software throttle). Choice measured over the WLAN 2026-11-17 (README).
+    profiles:
+      view:
+        width: 320
+        height: 240
+        fps: 15.0
+      detail:
+        width: 640
+        height: 480
+        fps: 5.0
+    frame_id: "camera_link"  # mount pose TO-VERIFY (see README)
+    # TO-VERIFY: uncalibrated; a file:// calibration YAML comes with vision step 2.
+    camera_info_url: ""
